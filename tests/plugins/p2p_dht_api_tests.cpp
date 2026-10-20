@@ -18,6 +18,7 @@
 #include "../quic_p2p/libp2p_identity_fixture.hxx"
 
 import forge.api.core.handle;
+import forge.api.core.binding;
 import forge.api.core.descriptor;
 import forge.api.core.registry;
 import forge.api.core.types;
@@ -476,6 +477,64 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
        server.runtime(), server_dht->find_providers(providers, key, {.requested_count = 1}));
    BOOST_REQUIRE_EQUAL(stored_provider.size(), 1U);
    BOOST_CHECK(stored_provider.front().id == local_peer);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_client_only_provider_discovery_hands_complete_addrinfo_to_native_api_open) {
+   auto server = dht_application{"hint-dht-server"};
+   server.configure(configuration());
+   forge::asio::blocking::run(server.runtime(), server.startup());
+   auto server_cleanup = boost::scope::scope_exit{[&] { forge::asio::blocking::run(server.runtime(), server.shutdown()); }};
+   const auto server_node = node_handle(server);
+   const auto bootstrap = server_node->local_endpoint();
+   BOOST_REQUIRE(bootstrap);
+   auto configured_client = [&] {
+      auto config = configuration("client");
+      config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
+      config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
+      return config;
+   };
+   auto provider = dht_application{"hint-dht-client-provider"};
+   provider.configure(configured_client());
+   forge::asio::blocking::run(provider.runtime(), provider.startup());
+   auto provider_cleanup = boost::scope::scope_exit{[&] { forge::asio::blocking::run(provider.runtime(), provider.shutdown()); }};
+   const auto provider_node = node_handle(provider);
+   auto provider_diagnostics = provider.apis().get<node_plugin::diagnostics_api>(
+      {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1});
+   BOOST_REQUIRE(forge::asio::blocking::run(provider.runtime(),
+      wait_for_dht_server(provider_diagnostics.shared(), server_node->local_peer())));
+   const auto protocol = p2p::protocol_id{"/forge/test/unknown-provider-api/1"};
+   auto publication = provider_node->publish_api(forge::api::core::binding().serve(provider.apis()).build(), protocol);
+   const auto key = p2p::make_dht_key(forge::multiformats::multihash::sha2_256(
+      std::vector<std::uint8_t>{'h', 'i', 'n', 't'}).encode());
+   auto registration = forge::asio::blocking::run(provider.runtime(), dht_handle(provider)->provide(providers, key));
+   auto reader = dht_application{"hint-dht-independent-reader"};
+   reader.configure(configured_client());
+   forge::asio::blocking::run(reader.runtime(), reader.startup());
+   auto reader_cleanup = boost::scope::scope_exit{[&] { forge::asio::blocking::run(reader.runtime(), reader.shutdown()); }};
+   const auto reader_node = node_handle(reader);
+   auto diagnostics = reader.apis().get<node_plugin::diagnostics_api>(
+      {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1});
+   BOOST_REQUIRE(forge::asio::blocking::run(reader.runtime(),
+      wait_for_dht_server(diagnostics.shared(), server_node->local_peer())));
+   const auto unknown = [&] {
+      const auto snapshot = diagnostics->snapshot();
+      return std::ranges::none_of(snapshot.peers, [&](const auto& peer) { return peer.peer == provider_node->local_peer(); }) &&
+         std::ranges::none_of(snapshot.sessions, [&](const auto& session) { return session.remote_peer == provider_node->local_peer(); });
+   };
+   BOOST_REQUIRE(unknown());
+   auto found = forge::asio::blocking::run(reader.runtime(),
+      dht_handle(reader)->find_providers(providers, key, {.requested_count = 1}));
+   BOOST_REQUIRE_EQUAL(found.size(), 1U);
+   BOOST_REQUIRE(found.front().id == provider_node->local_peer());
+   BOOST_REQUIRE(!found.front().endpoints.empty());
+   BOOST_REQUIRE(unknown()); // Lookup is not an address-book or membership mutation.
+   auto connection = forge::asio::blocking::run(reader.runtime(), reader_node->open_api_connection(found.front().id, protocol,
+      {.require_authenticated_peer = true, .address_hints = std::move(found.front().endpoints)}));
+   BOOST_CHECK(connection.valid());
+   BOOST_CHECK_EQUAL(diagnostics->routing_status(providers).active, 1U); // Only the bootstrap is a DHT server.
+   forge::asio::blocking::run(reader.runtime(), connection.async_close());
+   forge::asio::blocking::run(provider.runtime(), registration.async_withdraw());
+   forge::asio::blocking::run(provider.runtime(), publication.async_close());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_reports_native_pubsub_scores_over_authenticated_tcp) {

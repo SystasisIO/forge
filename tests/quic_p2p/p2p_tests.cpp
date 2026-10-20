@@ -15266,8 +15266,8 @@ BOOST_AUTO_TEST_CASE(p2p_path_manager_tries_next_quic_endpoint_after_silent_udp_
 
 BOOST_AUTO_TEST_CASE(p2p_path_manager_tries_next_tcp_endpoint_after_upgrade_timeout) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
-   auto server = node{runtime, options_for(peer(205))};
-   auto client = node{runtime, options_for(peer(206))};
+   auto server = node{runtime, options_for(make_test_certificate_identity("path-fallback-server"))};
+   auto client = node{runtime, options_for(make_test_certificate_identity("path-fallback-client"))};
    register_echo(server);
 
    const auto stalled_endpoint = start_stalling_tcp_peer(runtime);

@@ -18,6 +18,8 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address_v6.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -34,6 +36,7 @@
 
 import forge.asio.blocking;
 import forge.asio.runtime;
+import forge.exceptions;
 import forge.multiformats.multiaddr;
 import forge.net.dns.types;
 import forge.net.p2p.connection_gater;
@@ -213,6 +216,7 @@ class stalled_ipv6_peer final {
  public:
    std::future<void> accepted;
    std::future<std::size_t> finished;
+   std::uint16_t port() const { return state_->acceptor.local_endpoint().port(); }
 };
 
 p2p::node::options addressing_options(std::string_view name, bool private_profile) {
@@ -513,6 +517,165 @@ BOOST_AUTO_TEST_CASE(p2p_dual_stack_dns_tcp_race_preserves_logical_ownership_and
          BOOST_TEST(client.diagnostics().resources.system.file_descriptors == 0U);
          dns.close();
       }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(operation_hints_open_unknown_peer_with_failed_root_and_no_durable_root_facts) {
+   for (const auto private_profile : {false, true}) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+      auto server = p2p::node{runtime, addressing_options("hint-target", private_profile)};
+      auto options = addressing_options("hint-client", private_profile);
+      options.direct_dial.max_concurrent_attempts = 1;
+      auto client = p2p::node{runtime, std::move(options)};
+      forge::asio::blocking::run(runtime, server.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto good = *server.local_endpoint();
+      auto refused = good;
+      auto reserved = tcp::acceptor{runtime.context()};
+      reserved.open(tcp::v4());
+      auto found = false;
+      for (auto port = std::uint16_t{10240}; port < 10340 && port < good.transport.port; ++port) {
+         auto error = boost::system::error_code{};
+         reserved.bind({boost::asio::ip::address_v4::loopback(), port}, error);
+         if (!error) { refused.transport.port = port; found = true; break; }
+      }
+      BOOST_REQUIRE(found);
+      reserved.close();
+      BOOST_CHECK(!client.peers().find(server.local_peer()));
+      auto stream = forge::asio::blocking::run(runtime, client.async_open_protocol_stream(server.local_peer(),
+         p2p::builtins::ping, {.allow_relay = false, .timeout = 3s, .max_direct_endpoints = 2,
+            .allow_hole_punch = false, .address_hints = {refused.to_multiaddr(), good.to_multiaddr()}}));
+      BOOST_CHECK(stream.authentication() != p2p::peer_authentication::unverified);
+      BOOST_CHECK_GE(client.metrics().direct_failures, 1U);
+      forge::asio::blocking::run(runtime, stream.async_close());
+      if (const auto row = client.peers().find(server.local_peer())) {
+         for (const auto& endpoint : row->endpoints) {
+            BOOST_CHECK_EQUAL(endpoint.successes, 0U);
+            BOOST_CHECK_EQUAL(endpoint.failures, 0U);
+            BOOST_CHECK(!endpoint.sources.learned);
+            BOOST_CHECK(endpoint.address.components() != refused.to_multiaddr().components());
+         }
+      }
+      forge::asio::blocking::run(runtime, client.async_stop());
+      forge::asio::blocking::run(runtime, server.async_stop());
+      BOOST_CHECK_EQUAL(client.diagnostics().resources.active_dials, 0U);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(operation_hints_enforce_bounds_identity_and_gater_before_publication) {
+   auto runtime = forge::asio::runtime{};
+   auto server = p2p::node{runtime, addressing_options("hint-auth-target", false)};
+   forge::asio::blocking::run(runtime, server.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+   const auto endpoint = server.local_endpoint()->to_multiaddr();
+   auto gate = std::make_shared<dns_candidate_gate>(server.local_peer());
+   auto gated_options = addressing_options("hint-gated", false);
+   gated_options.connection_gater = gate;
+   gated_options.dns_resolution.bounds.max_roots = 1;
+   auto gated = p2p::node{runtime, std::move(gated_options)};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, gated.async_open_protocol_stream(server.local_peer(),
+      p2p::builtins::ping, {.address_hints = {endpoint, endpoint}})), p2p::exceptions::invalid_options);
+   BOOST_CHECK_EQUAL(gate->forbidden_peer_calls.load(), 0U);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, gated.async_open_protocol_stream(server.local_peer(),
+      p2p::builtins::ping, {.allow_relay = false, .address_hints = {endpoint}})), p2p::exceptions::connection_rejected);
+   BOOST_CHECK_GE(gate->forbidden_peer_calls.load(), 1U);
+   BOOST_CHECK(!gated.peers().find(server.local_peer()));
+   auto wrong = p2p::node{runtime, addressing_options("hint-wrong-identity", false)};
+   const auto expected = p2p::make_peer_id({.type = p2p::public_key::type::ed25519,
+      .data = std::vector<std::uint8_t>(32, 77)});
+   auto substituted = *server.local_endpoint();
+   substituted.peer = expected;
+   BOOST_CHECK_EXCEPTION(forge::asio::blocking::run(runtime, wrong.async_open_protocol_stream(expected,
+      p2p::builtins::ping, {.allow_relay = false, .address_hints = {substituted.to_multiaddr()}})),
+      forge::exceptions::base, [](const auto& error) {
+         return p2p::exceptions::code_of(error) == p2p::exceptions::code::peer_verification_failed;
+      });
+   BOOST_CHECK(wrong.diagnostics().sessions.empty());
+   if (const auto row = wrong.peers().find(expected)) BOOST_CHECK(row->endpoints.empty());
+   auto restricted = p2p::node{runtime, addressing_options("hint-private-circuit", true)};
+   auto circuit = *server.local_endpoint();
+   circuit.peer = server.local_peer();
+   circuit.relayed = p2p::endpoint::circuit{expected};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, restricted.async_open_protocol_stream(expected,
+      p2p::builtins::ping, {.address_hints = {circuit.to_multiaddr()}})), p2p::exceptions::invalid_options);
+   BOOST_CHECK_EQUAL(restricted.diagnostics().resources.active_dials, 0U);
+   forge::asio::blocking::run(runtime, restricted.async_stop());
+   forge::asio::blocking::run(runtime, wrong.async_stop());
+   forge::asio::blocking::run(runtime, gated.async_stop());
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(operation_hints_cannot_crowd_an_independently_known_root_out_of_the_shared_bound) {
+   auto runtime = forge::asio::runtime{};
+   auto server = p2p::node{runtime, addressing_options("hint-known-server", false)};
+   auto options = addressing_options("hint-known-client", false);
+   options.dns_resolution.bounds.max_roots = 1;
+   auto client = p2p::node{runtime, std::move(options)};
+   forge::asio::blocking::run(runtime, server.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+   const auto known = *server.local_endpoint();
+   client.peers().learn_endpoint(server.local_peer(), known);
+   auto untrusted = known;
+   untrusted.transport.port = 1;
+   auto stream = forge::asio::blocking::run(runtime, client.async_open_protocol_stream(server.local_peer(),
+      p2p::builtins::ping, {.allow_relay = false, .timeout = 2s, .allow_hole_punch = false,
+         .address_hints = {untrusted.to_multiaddr()}}));
+   BOOST_CHECK(stream.authentication() != p2p::peer_authentication::unverified);
+   BOOST_CHECK_EQUAL(client.metrics().direct_failures, 0U);
+   forge::asio::blocking::run(runtime, stream.async_close());
+   forge::asio::blocking::run(runtime, client.async_stop());
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(operation_hints_pin_open_identity_even_in_explicit_insecure_memory_mode) {
+   auto runtime = forge::asio::runtime{};
+   auto server = p2p::node{runtime, addressing_options("hint-memory-server", false)};
+   auto options = addressing_options("hint-memory-client", false);
+   options.allow_insecure_test_mode = true;
+   options.stream_security = p2p::node::stream_security::noise;
+   auto client = p2p::node{runtime, std::move(options)};
+   forge::asio::blocking::run(runtime, server.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+   const auto expected = p2p::make_peer_id({.type = p2p::public_key::type::ed25519,
+      .data = std::vector<std::uint8_t>(32, 76)});
+   auto hint = *server.local_endpoint();
+   hint.peer = expected;
+   BOOST_CHECK_EXCEPTION(forge::asio::blocking::run(runtime, client.async_open_protocol_stream(expected,
+      p2p::builtins::ping, {.allow_relay = false, .timeout = 2s, .allow_hole_punch = false,
+         .address_hints = {hint.to_multiaddr()}})), forge::exceptions::base, [](const auto& error) {
+         return p2p::exceptions::code_of(error) == p2p::exceptions::code::peer_verification_failed;
+      });
+   BOOST_CHECK(!client.peers().find(expected));
+   // Reject misattribution, not the independently authenticated connection.
+   BOOST_CHECK_NO_THROW(static_cast<void>(forge::asio::blocking::run(runtime, client.async_ping(server.local_peer()))));
+   forge::asio::blocking::run(runtime, client.async_stop());
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(operation_hints_direct_deadline_and_cancellation_join_native_handshake) {
+   for (const auto cancel : {false, true}) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+      auto client = p2p::node{runtime, addressing_options("hint-cancel-client", false)};
+      auto identity = p2p::node{runtime, addressing_options("hint-stalled-identity", false)};
+      auto stalled = stalled_ipv6_peer{runtime, 0};
+      const auto hint = forge::multiformats::multiaddr::parse("/ip6/::1/tcp/" + std::to_string(stalled.port()) +
+         "/p2p/" + identity.local_peer().to_string());
+      auto signal = boost::asio::cancellation_signal{};
+      auto executor = boost::asio::make_strand(runtime.context());
+      auto opened = boost::asio::co_spawn(executor, client.async_open_protocol_stream(identity.local_peer(),
+         p2p::builtins::ping, {.allow_relay = false, .timeout = cancel ? 3s : 400ms,
+            .allow_hole_punch = false, .address_hints = {hint}}),
+         boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+      BOOST_REQUIRE(stalled.accepted.wait_for(2s) == std::future_status::ready);
+      if (cancel) boost::asio::post(executor, [&] { signal.emit(boost::asio::cancellation_type::all); });
+      BOOST_REQUIRE(opened.wait_for(2s) == std::future_status::ready);
+      try { static_cast<void>(opened.get()); BOOST_FAIL("stalled hinted handshake unexpectedly opened"); }
+      catch (const forge::exceptions::base& error) {
+         BOOST_CHECK(p2p::exceptions::code_of(error) == (cancel ? p2p::exceptions::code::canceled : p2p::exceptions::code::timeout));
+      }
+      BOOST_REQUIRE(stalled.finished.wait_for(2s) == std::future_status::ready);
+      BOOST_CHECK_GT(stalled.finished.get(), 0U);
+      BOOST_CHECK_EQUAL(client.diagnostics().resources.active_dials, 0U);
+      BOOST_CHECK_EQUAL(client.diagnostics().resources.transient.outbound_connections, 0U);
+      BOOST_CHECK(!client.peers().find(identity.local_peer()));
+      forge::asio::blocking::run(runtime, client.async_stop());
+      forge::asio::blocking::run(runtime, identity.async_stop());
    }
 }
 

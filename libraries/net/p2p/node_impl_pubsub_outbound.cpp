@@ -76,6 +76,7 @@ import forge.net.yamux.session;
 #include "details/node_impl.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/cancellation_latch.hxx"
+#include "details/operation_deadline.hxx"
 #include "details/peer_failure.hxx"
 
 namespace forge::net::p2p {
@@ -497,7 +498,7 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                      owned_rpc = std::move(owned_fallback);
                   }
                   try {
-                     stream = co_await open_protocol_on_direct_session(peer, protocol, session,
+                     stream = co_await open_protocol_on_session(peer, protocol, session,
                          attempt == 0 ? open_timeout : remaining_timeout(started, open_timeout, "GossipSub fallback negotiation"),
                          cancellation, &open_phase);
                      break;
@@ -744,7 +745,9 @@ void node::impl::record_pubsub_send_failure(const peer_id& peer, const forge::ex
    }
 }
 
-boost::asio::awaitable<void> node::impl::announce_pubsub_subscriptions(const peer_id& peer) {
+boost::asio::awaitable<void> node::impl::announce_pubsub_subscriptions(const peer_id& peer,
+    std::optional<std::chrono::steady_clock::time_point> deadline_at,
+    std::shared_ptr<cancellation_latch> cancellation) {
    if (!options.capabilities.has(capabilities::pubsub)) {
       co_return;
    }
@@ -759,10 +762,33 @@ boost::asio::awaitable<void> node::impl::announce_pubsub_subscriptions(const pee
       co_return;
    }
    auto send_generation = std::optional<std::uint64_t>{};
+   const auto now = std::chrono::steady_clock::now();
+   const auto expires_at = deadline_at.value_or(now + options.limits.topology.query_timeout);
+   if (expires_at <= now) { throw_operation_timeout("P2P subscription announcement"); }
+   auto stop = std::make_shared<detail::worker_stop_bridge>();
+   auto subscription = cancellation_latch::subscribe(cancellation, [stop] noexcept { stop->request_stop(); });
+   auto deadline = operation_deadline{runtime.context(), std::chrono::ceil<std::chrono::milliseconds>(expires_at - now)};
+   deadline.arm([stop] noexcept { stop->request_stop(); });
+   auto failure = std::exception_ptr{};
    try {
-      co_await send_pubsub_rpc(peer, pubsub::rpc{.subscriptions = std::move(subscriptions)}, send_generation);
-   } catch (const forge::exceptions::base& error) {
-      record_pubsub_send_failure(peer, error, send_generation);
+      co_await detail::async_run_with_owner_cancellation(stop,
+         [this, peer, subscriptions = std::move(subscriptions), stop,
+          &send_generation](boost::asio::cancellation_slot slot) mutable -> boost::asio::awaitable<void> {
+            co_await send_pubsub_rpc(peer, pubsub::rpc{.subscriptions = std::move(subscriptions)}, send_generation,
+               {}, true, {}, {}, stop, slot);
+         });
+   } catch (...) { failure = std::current_exception(); }
+   const auto completed = deadline.finish();
+   if (cancellation && cancellation->stop_requested()) {
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P subscription announcement canceled");
+   }
+   if (!completed) { throw_operation_timeout("P2P subscription announcement"); }
+   if (stop->stop_requested()) {
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P subscription announcement canceled");
+   }
+   if (failure) {
+      try { std::rethrow_exception(failure); }
+      catch (const forge::exceptions::base& error) { record_pubsub_send_failure(peer, error, send_generation); }
    }
 }
 

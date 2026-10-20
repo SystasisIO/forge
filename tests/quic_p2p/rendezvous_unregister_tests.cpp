@@ -1,4 +1,5 @@
 #include <boost/test/unit_test.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -13,7 +14,6 @@
 #include <exception>
 #include <future>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -24,6 +24,7 @@
 
 #include "libp2p_identity_fixture.hxx"
 
+import forge.asio.gate;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.exceptions;
@@ -42,6 +43,8 @@ import forge.net.p2p.topology;
 import forge.net.quic.exceptions;
 import forge.net.transport.exceptions;
 import forge.net.yamux.exceptions;
+
+#include "session_admission_test_access.hxx"
 
 namespace {
 namespace p2p = forge::net::p2p;
@@ -138,6 +141,24 @@ boost::asio::awaitable<void> wait_for_probe_resource_quiescence(const p2p::node&
    }
 }
 
+boost::asio::awaitable<void> wait_for_identified_registration(const p2p::node& node) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   const auto deadline = std::chrono::steady_clock::now() + 2s;
+   for (;;) {
+      const auto snapshot = node.diagnostics();
+      if (snapshot.sessions.size() == 1U &&
+          snapshot.sessions.front().identify_state == p2p::identify::state::identified &&
+          snapshot.resources.system.outbound_streams == 0U &&
+          snapshot.resources.system.inbound_streams == 0U &&
+          snapshot.resources.active_protocol_scopes == 0U &&
+          snapshot.resources.active_protocol_peer_scopes == 0U) { co_return; }
+      if (std::chrono::steady_clock::now() >= deadline) {
+         throw std::runtime_error{"static Rendezvous registration did not identify and drain"};
+      }
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   }
+}
+
 boost::asio::awaitable<p2p::rendezvous::message> read_request(p2p::stream& stream) {
    constexpr auto maximum = std::size_t{64 * 1024};
    auto bytes = std::vector<std::uint8_t>{};
@@ -194,8 +215,6 @@ struct donor_state {
    forge::asio::notification allow_remove;
    forge::asio::notification allow_fin;
    forge::asio::notification allow_cleanup;
-   std::mutex failures_mutex;
-   std::vector<std::exception_ptr> failures;
 
    explicit donor_state(reply value) : response(value) {}
 
@@ -296,7 +315,8 @@ struct unregister_fixture {
    bool finished = false;
 
    unregister_fixture(bool quic, reply response, p2p::protocol_id probe_protocol = {},
-                      p2p::node::protocol_handler probe_handler = {}) : state(std::make_shared<donor_state>(response)),
+                      p2p::node::protocol_handler probe_handler = {}, bool managed = true)
+       : state(std::make_shared<donor_state>(response)),
        point(runtime, options_for("unregister-point")) {
       state->point = &point;
       received = state->received.get_future();
@@ -317,7 +337,7 @@ struct unregister_fixture {
       coordinate->peer = point.local_peer();
       auto options = options_for("unregister-client");
       auto& topology = options.limits.topology;
-      topology.operating_mode = p2p::topology::mode::managed;
+      topology.operating_mode = managed ? p2p::topology::mode::managed : p2p::topology::mode::static_only;
       topology.peers = {.low = 1, .target = 1, .high = 3};
       topology.refresh_interval = 60s;
       topology.query_timeout = response == reply::silent ? 1s : 3s;
@@ -328,7 +348,17 @@ struct unregister_fixture {
       client = std::make_unique<p2p::node>(runtime, std::move(options));
       run(client->async_listen(listen));
       static_cast<void>(run(client->async_start()));
-      static_cast<void>(run(client->async_refresh_discovery()));
+      if (managed) {
+         static_cast<void>(run(client->async_refresh_discovery()));
+      } else {
+         static_cast<void>(run(client->async_connect(*coordinate)));
+         const auto record = p2p::detail::local_signed_peer_record_for_test(*client);
+         BOOST_REQUIRE(!record.empty());
+         const auto registered = run(client->async_rendezvous_register(point.local_peer(),
+             {.namespace_name = std::string{namespace_name}, .signed_peer_record = record, .ttl = 7200s}));
+         BOOST_CHECK(registered.status_value == p2p::rendezvous::status::ok);
+         run(wait_for_identified_registration(*client));
+      }
       BOOST_REQUIRE_EQUAL(point.peers().discover_rendezvous(namespace_name, 0, 8).size(), 1U);
       const auto sessions = client->diagnostics().sessions;
       BOOST_REQUIRE_EQUAL(sessions.size(), 1U);
@@ -385,16 +415,6 @@ struct unregister_fixture {
       require_outbound_resources(*client, 1);
    }
 };
-
-auto capture_unregister_failures(const std::shared_ptr<donor_state>& state) {
-   forge::exceptions::set_log_sink([state](std::string_view message) {
-      if (message.starts_with("P2P topology rendezvous unregister failed")) {
-         const auto lock = std::scoped_lock{state->failures_mutex};
-         state->failures.push_back(std::current_exception());
-      }
-   });
-   return boost::scope::scope_exit{[] { forge::exceptions::set_log_sink({}); }};
-}
 
 struct half_close_probe {
    std::promise<void> request_finished;
@@ -480,7 +500,6 @@ BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_retains_operation_and_stream_unti
    for (const auto quic : {false, true}) {
       BOOST_TEST_CONTEXT("quic=" << quic) {
          auto fixture = unregister_fixture{quic, reply::fin};
-         auto capture = capture_unregister_failures(fixture.state);
          auto stopping = fixture.stop();
          joined(fixture.received);
          fixture.require_held(stopping);
@@ -493,21 +512,16 @@ BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_retains_operation_and_stream_unti
          joined(stopping);
          require_outbound_resources(*fixture.client, 0);
          BOOST_TEST(fixture.state->unregister_requests.load() == 1U);
-         {
-            const auto lock = std::scoped_lock{fixture.state->failures_mutex};
-            BOOST_TEST(fixture.state->failures.empty());
-         }
          fixture.finish();
       }
    }
 }
 
-BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_timeout_reset_and_payload_preserve_failure_and_release_resources) {
+BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_managed_shutdown_joins_timeout_reset_and_payload_cleanup) {
    for (const auto quic : {false, true}) {
       for (const auto response : {reply::silent, reply::reset, reply::unexpected_data}) {
          BOOST_TEST_CONTEXT("quic=" << quic << " response=" << static_cast<int>(response)) {
             auto fixture = unregister_fixture{quic, response};
-            auto capture = capture_unregister_failures(fixture.state);
             const auto started = std::chrono::steady_clock::now();
             auto stopping = fixture.stop();
             joined(fixture.received);
@@ -527,24 +541,60 @@ BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_timeout_reset_and_payload_preserv
             BOOST_TEST(fixture.point.diagnostics().resources.system.inbound_streams == 0U);
             BOOST_TEST(fixture.state->unregister_requests.load() == 1U);
             BOOST_REQUIRE_EQUAL(fixture.point.peers().discover_rendezvous(namespace_name, 0, 8).size(), 1U);
-            auto failure = std::exception_ptr{};
-            {
-               const auto lock = std::scoped_lock{fixture.state->failures_mutex};
-               BOOST_REQUIRE_EQUAL(fixture.state->failures.size(), 1U);
-               failure = fixture.state->failures.front();
-            }
-            BOOST_REQUIRE(failure);
-            try { std::rethrow_exception(failure); }
-            catch (const forge::exceptions::base& error) {
-               if (response == reply::silent) { BOOST_CHECK(p2p::exceptions::is(error, p2p::exceptions::code::timeout)); }
-               else if (response == reply::unexpected_data) {
-                  BOOST_CHECK(p2p::exceptions::is(error, p2p::exceptions::code::protocol_error));
-               } else {
-                  BOOST_CHECK(forge::net::yamux::exceptions::code_of(error) == forge::net::yamux::exceptions::code::stream_reset ||
-                              forge::net::quic::exceptions::code_of(error) == forge::net::quic::exceptions::code::stream_reset);
-               }
-            }
             fixture.finish();
+         }
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_native_operation_preserves_exact_failure_without_manager_retry) {
+   for (const auto quic : {false, true}) {
+      for (const auto response : {reply::silent, reply::reset, reply::unexpected_data}) {
+         BOOST_TEST_CONTEXT("quic=" << quic << " response=" << static_cast<int>(response)) {
+            // Public REGISTER populates the real point, but static topology does
+            // not own that registration and cannot issue a second UNREGISTER.
+            auto fixture = unregister_fixture{quic, response, {}, {}, false};
+            const auto started = std::chrono::steady_clock::now();
+            auto operation = boost::asio::co_spawn(fixture.runtime.context(),
+                p2p::detail::unregister_topology_rendezvous_for_test(
+                    *fixture.client, 0, std::string{namespace_name}), boost::asio::use_future);
+            auto cleanup = boost::scope::scope_exit{[&] {
+               fixture.state->allow_remove.notify();
+               fixture.state->allow_fin.notify();
+               fixture.state->allow_cleanup.notify();
+               if (operation.valid()) {
+                  if (operation.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+                  try { operation.get(); }
+                  catch (...) {} // The typed assertion below owns the operation's failure.
+               }
+            }};
+            joined(fixture.received);
+            fixture.require_held(operation);
+            if (response != reply::silent) { fixture.state->allow_remove.notify(); }
+            BOOST_CHECK_EXCEPTION(joined(operation), forge::exceptions::base, [=](const auto& error) {
+               if (response == reply::silent) {
+                  return p2p::exceptions::is(error, p2p::exceptions::code::timeout);
+               }
+               if (response == reply::unexpected_data) {
+                  return p2p::exceptions::is(error, p2p::exceptions::code::protocol_error);
+               }
+               return quic
+                   ? forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset)
+                   : forge::net::yamux::exceptions::is(error, forge::net::yamux::exceptions::code::stream_reset);
+            });
+            BOOST_TEST(static_cast<bool>(std::chrono::steady_clock::now() - started < 4s));
+            fixture.state->allow_remove.notify();
+            fixture.state->allow_cleanup.notify();
+            const auto termination = joined(fixture.cleanup_terminated);
+            BOOST_CHECK(termination == peer_termination::stream_reset ||
+                termination == peer_termination::cancellation_cleanup);
+            require_outbound_resources(*fixture.client, 0);
+            BOOST_REQUIRE_EQUAL(fixture.client->diagnostics().sessions.size(), 1U);
+            BOOST_TEST(fixture.state->unregister_request_fin.load());
+            BOOST_TEST(fixture.state->unregister_requests.load() == 1U);
+            BOOST_REQUIRE_EQUAL(fixture.point.peers().discover_rendezvous(namespace_name, 0, 8).size(), 1U);
+            fixture.finish();
+            BOOST_TEST(fixture.state->unregister_requests.load() == 1U);
          }
       }
    }

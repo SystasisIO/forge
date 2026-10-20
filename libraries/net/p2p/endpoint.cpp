@@ -133,7 +133,10 @@ bool endpoint::is_direct_tcp() const noexcept {
 }
 
 endpoint parse_endpoint(std::string_view value) {
-   const auto parsed = forge::multiformats::multiaddr::parse(value);
+   return parse_endpoint(forge::multiformats::multiaddr::parse(value));
+}
+
+endpoint parse_endpoint(const forge::multiformats::multiaddr& parsed) {
    const auto& components = parsed.components();
    if (components.size() < 2) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint must include address and transport components");

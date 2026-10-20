@@ -145,6 +145,8 @@ class node {
       std::size_t max_direct_endpoints = 4;
       std::size_t max_relay_candidates = 4;
       bool allow_hole_punch = true;
+      // Untrusted, operation-scoped direct/circuit roots; never address-book facts.
+      std::vector<forge::multiformats::multiaddr> address_hints;
    };
 
    struct session_info {
@@ -293,6 +295,8 @@ class node {
  private:
    friend struct node_session_fixture;
    struct impl;
+   static boost::asio::awaitable<forge::net::p2p::stream> open_protocol_owned(
+      std::shared_ptr<impl>, peer_id, protocol_id, open_options);
    std::shared_ptr<impl> impl_;
 };
 

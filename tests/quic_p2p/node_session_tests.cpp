@@ -328,6 +328,16 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static boost::asio::awaitable<forge::asio::gate::ticket> hold_admission(node& owner) {
+      return owner.impl_->session_admission_gate.acquire();
+   }
+   static std::vector<std::uint8_t> local_signed_peer_record(node& owner) {
+      return owner.impl_->local_identify_document(std::nullopt).signed_peer_record;
+   }
+   static boost::asio::awaitable<void> unregister_topology_rendezvous(
+       node& owner, std::size_t point_index, std::string namespace_name) {
+      return owner.impl_->async_unregister_topology_rendezvous(point_index, std::move(namespace_name));
+   }
    static dht::profile records_profile() {
       auto profile = custom_dht_profile({"/forge/test/node/records/1"}, dht::mode::server,
           {.peers = true, .providers = true, .values = true}, {
@@ -2466,7 +2476,130 @@ struct node_session_fixture {
       run(false);
    }
 
-   static void blocked_admission(bool timeout) {
+   static void announcement_gate_retains_carrier(bool timeout, bool quic) {
+      using namespace std::chrono_literals;
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+      auto options = passive_reachability_options("announcement-budget-owner");
+      options.capabilities.bits |= capabilities::pubsub;
+      options.stream_security = node::stream_security::noise;
+      options.dht_profiles.clear();
+      options.limits.topology.operating_mode = topology::mode::static_only;
+      options.limits.topology.query_timeout = 5s;
+      options.relay_policy.auto_discovery_enabled = false;
+      auto owner = node{runtime, std::move(options)};
+      auto remote_options = passive_reachability_options("announcement-budget-remote");
+      remote_options.capabilities.bits |= capabilities::pubsub;
+      remote_options.stream_security = node::stream_security::noise;
+      remote_options.dht_profiles.clear();
+      remote_options.limits.topology.operating_mode = topology::mode::static_only;
+      remote_options.relay_policy.auto_discovery_enabled = false;
+      auto remote = node{runtime, std::move(remote_options)};
+      const auto self = owner.impl_;
+      auto context = boost::asio::io_context{};
+      auto cancellation = std::make_shared<cancellation_latch>();
+      auto write_gate = std::make_shared<forge::asio::gate>();
+      auto held = bounded_result(runtime, write_gate->acquire());
+      auto attempt = detail::direct_attempt{};
+      auto cleanup = boost::scope::scope_exit{[&] {
+         cancellation->request_stop();
+         held.release();
+         context.restart();
+         context.run_for(2s);
+         for (auto* current : {&owner, &remote}) { current->request_stop(); }
+         for (auto* current : {&owner, &remote}) {
+            try { bounded_result(runtime, current->async_stop()); }
+            catch (...) { BOOST_ERROR("announcement fixture node cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, remote.async_listen(
+          parse_endpoint(quic ? "/ip4/127.0.0.1/udp/0/quic-v1" : "/ip4/127.0.0.1/tcp/0")));
+      auto address = remote.local_endpoint();
+      BOOST_REQUIRE(address);
+      address->peer = remote.local_peer();
+      attempt = bounded_result(runtime, self->connect_direct_attempt(*address,
+          node::connect_options{.expected_peer = remote.local_peer(), .allow_relay = false,
+              .timeout = 3s, .allow_hole_punch = false}));
+      auto roots = std::vector<forge::multiformats::multiaddr>{address->to_multiaddr()};
+      auto session_id = std::uint64_t{};
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_REQUIRE(self->sessions.empty());
+         session_id = self->next_session_id;
+         self->pubsub_value.handlers.try_emplace("gated-announcement");
+         // Reserve the real committed session's outbound gate before publication,
+         // without replacing any transport or adding a runtime callback.
+         self->pubsub_value.outbound.emplace(remote.local_peer(), node::impl::pubsub_state::outbound_generation{
+             .session_id = session_id,
+             .generation = self->pubsub_value.next_outbound_generation++,
+             .write_gate = write_gate,
+         });
+      }
+      const auto started = std::chrono::steady_clock::now();
+      const auto deadline = started + (timeout ? 400ms : 5s);
+      auto pending = boost::asio::co_spawn(context,
+          self->commit_direct_attempt(std::move(attempt), std::move(roots), deadline, cancellation),
+          boost::asio::use_future);
+      BOOST_REQUIRE(drive_until(context, [&] {
+         const auto lock = std::scoped_lock{self->mutex};
+         return self->pubsub_value.outbound_budget.total() != 0;
+      }));
+      BOOST_REQUIRE(std::chrono::steady_clock::now() < deadline);
+      BOOST_REQUIRE(pending.wait_for(0ms) == std::future_status::timeout);
+      auto carrier = std::shared_ptr<node::impl::session_state>{};
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         carrier = self->sessions.at(session_id);
+         BOOST_CHECK(carrier->authentication ==
+             (quic ? peer_authentication::quic_tls : peer_authentication::noise));
+         BOOST_CHECK(self->pubsub_value.outbound.at(remote.local_peer()).write_gate == write_gate);
+         BOOST_TEST(!self->pubsub_value.outbound.at(remote.local_peer()).stream);
+      }
+      if (!timeout) { cancellation->request_stop(); }
+      BOOST_REQUIRE(drive_until(context, [&] { return pending.wait_for(0ms) == std::future_status::ready; }));
+      BOOST_CHECK_EXCEPTION(static_cast<void>(pending.get()), forge::exceptions::base, [timeout](const auto& error) {
+         return exceptions::code_of(error) == (timeout ? exceptions::code::timeout : exceptions::code::canceled);
+      });
+      BOOST_TEST(static_cast<bool>(std::chrono::steady_clock::now() - started < 2s));
+      BOOST_TEST(held.active());
+      BOOST_TEST(!write_gate->closed());
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_CHECK(self->sessions.at(session_id) == carrier);
+         BOOST_TEST(!carrier->closed);
+         BOOST_TEST(carrier->connection.valid());
+         BOOST_TEST(self->retiring_sessions.empty());
+         BOOST_TEST(self->pubsub_value.outbound_budget.total() == 0U);
+      }
+      BOOST_TEST(owner.diagnostics().resources.system.outbound_connections == 1U);
+      bounded_result(runtime, self->identify_session(carrier));
+      const auto ping = bounded_result(runtime, owner.async_ping(remote.local_peer(),
+          node::open_options{.allow_relay = false, .timeout = 1s, .allow_hole_punch = false}));
+      BOOST_TEST(ping >= 0ms);
+
+      // The canceled waiter must not own or close another writer's gate. Once
+      // that writer releases it, a fresh announcement can use the same carrier.
+      held.release();
+      auto reacquired = bounded_result(runtime, write_gate->acquire());
+      reacquired.release();
+      bounded_result(runtime, self->announce_pubsub_subscriptions(
+          remote.local_peer(), std::chrono::steady_clock::now() + 1s));
+      auto outbound = std::shared_ptr<forge::net::p2p::stream>{};
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         outbound = self->pubsub_value.outbound.at(remote.local_peer()).stream;
+         BOOST_REQUIRE(outbound);
+         BOOST_TEST(outbound->valid());
+         BOOST_CHECK(self->sessions.at(session_id) == carrier);
+         BOOST_TEST(self->pubsub_value.outbound_budget.total() == 0U);
+      }
+      bounded_result(runtime, outbound->async_close());
+      BOOST_TEST(owner.diagnostics().resources.system.outbound_streams == 0U);
+      BOOST_TEST(carrier->connection.valid());
+      BOOST_TEST(bounded_result(runtime, owner.async_ping(remote.local_peer(),
+          node::open_options{.allow_relay = false, .timeout = 1s, .allow_hole_punch = false})) >= 0ms);
+   }
+
+   static void blocked_admission(bool timeout, bool late_close = false) {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto owner = node{runtime, fixture_options("admission-owner")};
       auto self = owner.impl_;
@@ -2495,7 +2628,8 @@ struct node_session_fixture {
       auto roots = std::vector<forge::multiformats::multiaddr>{attempt.target.to_multiaddr()};
       const auto remote = attempt.connection.peer;
       const auto deadline = std::chrono::steady_clock::now() +
-          (timeout ? std::chrono::milliseconds{400} : std::chrono::seconds{5});
+          (timeout ? std::chrono::milliseconds{400} : late_close ? std::chrono::milliseconds{200} :
+             std::chrono::milliseconds{5000});
 
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) {
          barrier->released = true;
@@ -2531,6 +2665,12 @@ struct node_session_fixture {
       BOOST_TEST(self->sessions.empty());
       BOOST_TEST(self->retiring_sessions.empty());
 
+      if (late_close) {
+         std::this_thread::sleep_until(deadline + std::chrono::milliseconds{20});
+         context.restart();
+         context.poll();
+         BOOST_CHECK(pending.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+      }
       barrier->released = true;
       barrier->changed.notify();
       BOOST_REQUIRE(drive_until(context, [&] {
@@ -2538,7 +2678,7 @@ struct node_session_fixture {
       }));
       // The gate is deliberately still held: cancellation/timeout, not release,
       // must have completed the operation and its terminal cleanup.
-      BOOST_CHECK_EXCEPTION(pending.get(), forge::exceptions::base, [timeout](const auto& error) {
+      BOOST_CHECK_EXCEPTION(static_cast<void>(pending.get()), forge::exceptions::base, [timeout](const auto& error) {
          return exceptions::code_of(error) ==
              (timeout ? exceptions::code::timeout : exceptions::code::canceled);
       });
@@ -2559,6 +2699,19 @@ struct node_session_fixture {
 
 namespace detail {
 
+boost::asio::awaitable<forge::asio::gate::ticket> hold_session_admission_for_test(node& owner) {
+   return node_session_fixture::hold_admission(owner);
+}
+
+std::vector<std::uint8_t> local_signed_peer_record_for_test(node& owner) {
+   return node_session_fixture::local_signed_peer_record(owner);
+}
+
+boost::asio::awaitable<void> unregister_topology_rendezvous_for_test(
+    node& owner, std::size_t point_index, std::string namespace_name) {
+   return node_session_fixture::unregister_topology_rendezvous(owner, point_index, std::move(namespace_name));
+}
+
 void fail_next_connection_manager_prepare_for_test(node& owner) {
    node_session_fixture::fail_next_connection_manager_prepare(owner);
 }
@@ -2567,6 +2720,22 @@ void fail_next_connection_manager_prepare_for_test(node& owner) {
 
 BOOST_AUTO_TEST_CASE(p2p_dial_cancellation_interrupts_occupied_admission_and_awaits_native_close) {
    node_session_fixture::blocked_admission(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_admission_cancellation_remains_canceled_after_close_drains_past_deadline) {
+   node_session_fixture::blocked_admission(false, true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_subscription_announcement_gate_observes_original_connect_deadline_and_preserves_carrier) {
+   for (const auto quic : {false, true}) {
+      BOOST_TEST_CONTEXT("quic=" << quic) { node_session_fixture::announcement_gate_retains_carrier(true, quic); }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_subscription_announcement_gate_observes_connect_cancellation_and_preserves_carrier) {
+   for (const auto quic : {false, true}) {
+      BOOST_TEST_CONTEXT("quic=" << quic) { node_session_fixture::announcement_gate_retains_carrier(false, quic); }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_record_capacity_one_to_two_reaches_node_owned_store) {
