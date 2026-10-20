@@ -38,8 +38,15 @@ unverified staging data into availability. Product-selected descriptors are the
 trust anchor; network inventory/discovery results are hints, not authorization.
 Existing sessions watch `store::async_wait_change`; the same bounded writer
 coalesces verified additions into small HAVE batches and replacements/invalidation
-into an inventory. Provider registration advertises a content endpoint hint, not
-complete payload possession: an empty initial verified bitmap remains empty.
+into an inventory. Explicit `async_share` grants permission to advertise, not to
+bypass per-caller admission. An operation-owned availability watcher registers
+on the first verified piece, and cancels/joins the registration when the last
+verified piece disappears. Partial availability is eligible, not a claim of
+complete payload possession. Nonempty content with zero verified pieces is not
+advertised. Validated all-empty content may advertise its metadata endpoint.
+This watcher is independent of RPC sessions and is joined before lease release;
+the capability adapter alone owns provider renewal. Downloads do not implicitly
+advertise: compose an explicit sharing handle over that store if desired.
 
 ## Permission And Accounting
 
@@ -88,11 +95,17 @@ Tickets cover full-piece store read/verification working memory, not just the
 requested range, and follow received blocks through writer completion.
 
 Temporarily occupied payload capacity is backpressure, not a peer fault. An
-unsent pick is rolled back and its temporary request ticket released before
-waiting for the common budget or operation state to change. Release/rebind wakes
-waiters across operations sharing the authenticated peer. The post-rollback
-predicate checks combined request/piece capacity, so its own ticket release
-cannot create a retry spin or a lost wakeup. No piece ticket is released early.
+unsent pick is rolled back before waiting for the common budget or operation
+state to change. Request plus new-piece capacity is reserved atomically, then
+split into ownership tickets without changing counters or notifying waiters.
+A failed probe releases nothing and cannot wake another failed probe. If a new
+piece is blocked, Core can select only already admitted partial pieces using
+its additive allowed-piece filter, without altering inventory or priorities.
+Release/rebind wakes waiters across operations sharing the authenticated peer.
+The post-rollback predicate checks combined request/piece capacity. Empty piece
+owners left by choke/reject are retired only without a writer or any active
+request/receive owner; active I/O retains its full piece ticket. `capacity_waits`
+counts admission waits, while `capacity_waiters` is the current number waiting.
 Waiting is cancellable and bounded by `request_timeout` without useful operation
 progress and by the fixed total deadline. This local wait pauses peer-idle;
 control input does not extend the admission deadline. Work exceeding configured

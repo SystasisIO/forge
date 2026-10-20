@@ -17,6 +17,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -97,6 +98,7 @@ boost::asio::awaitable<void> peer_session::connect_owned(std::shared_ptr<peer_se
    if (cleanup_failed) { owner->cancel(); self->interrupt(); }
    self->_requests.clear();
    self->_commands.clear();
+   { auto lock = std::scoped_lock{owner->mutex}; owner->retire_empty_pieces(); }
    if (self->_connection) {
       if (failure) self->_connection->cancel();
       try { co_await self->_connection->async_close(); } catch (...) { if (!failure) failure = std::current_exception(); }
@@ -166,6 +168,7 @@ boost::asio::awaitable<void> peer_session::download_read(std::shared_ptr<peer_se
          } else {
             FORGE_THROW_EXCEPTION(protocol::exceptions::invalid_message, "Swarm unexpected download message");
          }
+         { auto lock = std::scoped_lock{self->_owner->mutex}; self->_owner->retire_empty_pieces(); }
          self->_changed.notify(); self->_owner->changed.notify();
       }
       { auto lock = std::scoped_lock{self->_mutex}; self->_output_closed = true; }
@@ -199,6 +202,7 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
          std::uint64_t progress;
          {
             auto lock = std::scoped_lock{self->_owner->mutex};
+            self->_owner->retire_empty_pieces();
             complete = self->_owner->picker->inspect().complete;
             progress = self->_owner->useful_progress;
             const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now());
@@ -218,30 +222,56 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
             if (!complete && !cancel && self->_remote && !self->_choked) {
                auto request_lock = std::scoped_lock{self->_mutex};
                if (self->_requests.empty()) {
-                  auto admitted = self->_owner->budget->try_reserve(self->_owner->number, self->_scope->peer, waiting_for);
-                  if (!admitted) blocked = true;
-                  else {
-                     capacity = std::move(*admitted);
-                     auto picked = self->_owner->picker->pick(*self->_remote, now, 1);
-                     if (!picked.empty()) {
-                        request = picked.front();
-                        const auto new_piece = !self->_owner->pieces.contains(request->piece);
-                        try {
-                           piece = self->_owner->piece(request->piece, self->_scope->peer);
-                           if (piece) {
-                              self->_requests.emplace(request->id, owned_request{*request, std::move(capacity), piece, piece->generation});
-                           } else {
-                              static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
-                              waiting_for.items += 1;
-                              waiting_for.bytes += 2ULL * core::piece_length(self->_owner->manifest, request->piece);
-                              waiting_for.pieces = 1;
-                              request.reset(); blocked = true;
+                  auto picked = self->_owner->picker->pick(*self->_remote, now, 1);
+                  if (!picked.empty()) {
+                     request = picked.front();
+                     bool new_piece = !self->_owner->pieces.contains(request->piece);
+                     auto amount = waiting_for;
+                     if (new_piece) {
+                        ++amount.items; amount.pieces = 1;
+                        amount.bytes += 2ULL * core::piece_length(self->_owner->manifest, request->piece);
+                     }
+                     try {
+                        // A failed combined probe changes no budget counters and
+                        // emits no wake. Waiters cannot ping-pong request tickets.
+                        auto admitted = self->_owner->budget->try_reserve(self->_owner->number, self->_scope->peer, amount);
+                        if (!admitted) {
+                           waiting_for = amount;
+                           static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
+                           request.reset(); blocked = true;
+                           if (new_piece && !self->_owner->pieces.empty()) {
+                              auto allowed = std::vector<core::piece_id>{};
+                              allowed.reserve(self->_owner->pieces.size());
+                              for (const auto& [id, work] : self->_owner->pieces) allowed.push_back(id);
+                              picked = self->_owner->picker->pick(*self->_remote, now, 1,
+                                 std::span<const core::piece_id>{allowed});
+                              if (!picked.empty()) {
+                                 request = picked.front(); new_piece = false;
+                                 amount = {0, 1, 3ULL * core::block_size, 0};
+                                 admitted = self->_owner->budget->try_reserve(self->_owner->number, self->_scope->peer, amount);
+                                 if (!admitted) {
+                                    waiting_for = amount;
+                                    static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
+                                    request.reset();
+                                 }
+                              }
                            }
-                        } catch (...) {
+                        }
+                        if (admitted && request) {
+                           capacity = std::move(*admitted);
+                           if (new_piece) {
+                              piece = self->_owner->piece(request->piece, capacity.split(
+                                 {0, 1, 2ULL * core::piece_length(self->_owner->manifest, request->piece), 1}));
+                           } else piece = self->_owner->pieces.at(request->piece);
+                           self->_requests.emplace(request->id, owned_request{*request, std::move(capacity), piece, piece->generation});
+                           blocked = false;
+                        }
+                     } catch (...) {
+                        if (request) {
                            static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
                            if (new_piece) self->_owner->pieces.erase(request->piece);
-                           throw;
                         }
+                        throw;
                      }
                   }
                }
@@ -269,8 +299,8 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
             if (now >= *capacity_deadline) {
                FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm resource admission stalled without useful progress");
             }
-            // Recheck AFTER releasing our temporary request ticket. Waiting
-            // on its own release epoch would otherwise spin, not backpressure.
+            // Capture before checking the complete admission predicate. Failed
+            // probes no longer release tickets or generate spurious wakeups.
             const auto budget_epoch = self->_owner->budget->changed.epoch();
             if (self->_owner->budget->available(self->_owner->number, self->_scope->peer, waiting_for)) {
                co_await boost::asio::post(co_await boost::asio::this_coro::executor, boost::asio::use_awaitable);
@@ -279,7 +309,8 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
             auto local_work = self->_scope->pause_idle();
             using namespace boost::asio::experimental::awaitable_operators;
             std::exception_ptr wait_failure;
-            { auto lock = std::scoped_lock{self->_owner->mutex}; ++self->_owner->state.capacity_waiters; }
+            { auto lock = std::scoped_lock{self->_owner->mutex};
+              ++self->_owner->state.capacity_waiters; ++self->_owner->state.capacity_waits; }
             try {
                co_await (self->_owner->budget->changed.async_wait_until(budget_epoch, *capacity_deadline, self->_scope->stop.get_token()) ||
                   self->_owner->changed.async_wait_until(epoch, *capacity_deadline, self->_scope->stop.get_token()));

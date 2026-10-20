@@ -183,19 +183,35 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
          { auto lock = std::scoped_lock{operation->mutex}; operation->worker = owned_worker; }
          if (operation->stop.stop_requested()) owned_worker->cancel();
       } else if (operation->providers) {
-         auto scope = std::make_shared<detail::call_scope>(operation, "register:" + std::to_string(operation->number));
-         scope->bind({}); scope->start();
-         std::exception_ptr registration_failure;
+         operation->availability_capacity = self->budget->reserve(operation->number,
+            "local:" + std::to_string(operation->number), {0, 1, 4096, 0});
+         { auto lock = std::scoped_lock{operation->mutex}; operation->availability_watch_done = false; }
          try {
-            auto advertisement = co_await operation->providers->async_register(operation->content, operation->realm,
-               scope->stop.get_token(), scope->deadline);
-            const auto resource = advertisement.get();
-            { auto lock = std::scoped_lock{operation->mutex}; operation->registration = std::move(advertisement); }
-            if (operation->stop.stop_requested() && resource) resource->cancel();
-         } catch (...) { registration_failure = std::current_exception(); }
-         co_await scope->finish();
-         if (registration_failure) std::rethrow_exception(registration_failure);
-         scope->check();
+            boost::asio::co_spawn(self->scheduler.runtime_context().context(), detail::operation_state::watch_availability(operation),
+               [operation](std::exception_ptr failure) {
+                  if (failure) {
+                     { auto lock = std::scoped_lock{operation->mutex}; operation->availability_failure = failure; }
+                     operation->cancel();
+                  }
+                  operation->availability_capacity.release();
+                  { auto lock = std::scoped_lock{operation->mutex}; operation->availability_watch_done = true; }
+                  operation->changed.notify();
+               });
+         } catch (...) {
+            { auto lock = std::scoped_lock{operation->mutex}; operation->availability_watch_done = true; }
+            throw;
+         }
+         while (true) {
+            const auto epoch = operation->changed.epoch();
+            bool ready;
+            std::exception_ptr registration_failure;
+            { auto lock = std::scoped_lock{operation->mutex};
+              ready = operation->availability_ready || operation->availability_watch_done;
+              registration_failure = operation->availability_failure; }
+            if (registration_failure) std::rethrow_exception(registration_failure);
+            if (ready) break;
+            co_await operation->changed.async_wait(epoch);
+         }
       }
       operation->check();
    } catch (...) { failure = std::current_exception(); }

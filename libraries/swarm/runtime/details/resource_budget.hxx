@@ -37,6 +37,7 @@ class resource_budget::ticket {
    ticket(const ticket&) = delete;
    ticket& operator=(const ticket&) = delete;
    void release() noexcept;
+   [[nodiscard]] ticket split(resource_limits);
    void rebind(std::string peer);
  private:
    ticket(std::shared_ptr<resource_budget>, std::uint64_t, std::string, resource_limits);

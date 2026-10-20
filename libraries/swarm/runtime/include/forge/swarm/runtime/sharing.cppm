@@ -2,6 +2,7 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 export module forge.swarm.runtime.engine:sharing;
@@ -18,6 +19,7 @@ struct operation_status {
    std::size_t upload_candidates = 0;
    std::size_t unchoked_peers = 0;
    std::size_t capacity_waiters = 0;
+   std::uint64_t capacity_waits = 0;
    bool complete = false;
    bool canceled = false;
    bool closed = false;

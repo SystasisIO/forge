@@ -92,6 +92,16 @@ resource_budget::ticket& resource_budget::ticket::operator=(ticket&& other) noex
 void resource_budget::ticket::release() noexcept {
    if (auto owner = std::exchange(_owner, {})) owner->release(_operation, _peer, _amount);
 }
+resource_budget::ticket resource_budget::ticket::split(resource_limits amount) {
+   if (!_owner || !fits({0, 0, 0, 0}, amount, _amount)) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm ticket split exceeds reservation");
+   }
+   // Copy the peer key before changing ownership; allocation failure leaves
+   // the original reservation intact. Splitting does not free or notify capacity.
+   auto result = ticket{_owner, _operation, _peer, amount};
+   subtract(_amount, amount);
+   return result;
+}
 void resource_budget::ticket::rebind(std::string peer) {
    if (!_owner || peer == _peer) return;
    {

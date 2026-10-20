@@ -11,6 +11,9 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
       resource_budget::ticket capacity;
       std::uint64_t generation = 0;
    };
+   struct registration_work {
+      std::unique_ptr<capabilities::registration> resource;
+   };
    operation_state(std::uint64_t, std::uint64_t picker_seed, std::uint64_t choker_seed,
       core::descriptor, std::shared_ptr<core::store>, std::string,
       forge::asio::task::scheduler&, forge::asio::compute::executor, std::shared_ptr<admission>,
@@ -23,7 +26,8 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    void enter();
    void leave() noexcept;
    [[nodiscard]] std::uint64_t next_peer();
-   [[nodiscard]] std::shared_ptr<piece_work> piece(core::piece_id, const std::string& peer);
+   [[nodiscard]] std::shared_ptr<piece_work> piece(core::piece_id, resource_budget::ticket);
+   void retire_empty_pieces();
    void upload_enter(core::peer_id);
    void upload_leave(core::peer_id) noexcept;
    void upload_interest(core::peer_id, bool);
@@ -35,6 +39,7 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    static boost::asio::awaitable<void> run(std::shared_ptr<operation_state>, std::vector<std::string>);
    static boost::asio::awaitable<bool> publish_if_complete(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> watch_deadline(std::shared_ptr<operation_state>);
+   static boost::asio::awaitable<void> watch_availability(std::shared_ptr<operation_state>);
 
    const std::uint64_t number;
    const std::uint64_t picker_seed;
@@ -66,8 +71,13 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    resource_budget::ticket metadata_capacity;
    resource_budget::ticket algorithm_capacity;
    resource_budget::ticket timer_capacity;
-   // Retained after close: cancellation may snapshot its raw address unlocked.
-   std::unique_ptr<capabilities::registration> registration;
+   // The holder is allocated before async_register, and retains its unique
+   // resource through every concurrent cancellation snapshot and joined close.
+   std::shared_ptr<registration_work> registration;
+   resource_budget::ticket availability_capacity;
+   std::exception_ptr availability_failure;
+   bool availability_watch_done = true;
+   bool availability_ready = false;
    std::shared_ptr<forge::asio::task::handle> worker;
    std::shared_ptr<resource_budget::ticket> orchestration_capacity;
    std::exception_ptr failure;

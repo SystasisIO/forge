@@ -47,10 +47,10 @@ operation_state::operation_state(std::uint64_t id, std::uint64_t picker_seed, st
      config{limits}, budget{std::move(resources)}, downloading{downloading}, total_deadline{deadline} {}
 void operation_state::cancel() noexcept {
    std::shared_ptr<forge::asio::task::handle> task;
-   capabilities::registration* advertisement;
-   { auto lock = std::scoped_lock{mutex}; state.canceled = true; task = worker; advertisement = registration.get(); }
+   std::shared_ptr<registration_work> advertisement;
+   { auto lock = std::scoped_lock{mutex}; state.canceled = true; task = worker; advertisement = registration; }
    stop.request_stop();
-   if (advertisement) advertisement->cancel();
+   if (advertisement) advertisement->resource->cancel();
    if (task) task->cancel();
    changed.notify();
 }
@@ -84,15 +84,20 @@ void operation_state::leave() noexcept {
    changed.notify();
 }
 std::uint64_t operation_state::next_peer() { auto lock = std::scoped_lock{mutex}; return peer_sequence++; }
-std::shared_ptr<operation_state::piece_work> operation_state::piece(core::piece_id id, const std::string& peer) {
+std::shared_ptr<operation_state::piece_work> operation_state::piece(core::piece_id id, resource_budget::ticket capacity) {
    // Called under the short picker lock; no store call or await here.
    if (auto found = pieces.find(id); found != pieces.end()) return found->second;
-   auto capacity = budget->try_reserve(number, peer, {0, 1, 2ULL * core::piece_length(manifest, id), 1});
-   if (!capacity) return {};
    auto work = std::make_shared<piece_work>();
-   work->capacity = std::move(*capacity);
+   work->capacity = std::move(capacity);
    pieces.emplace(id, work);
    return work;
+}
+void operation_state::retire_empty_pieces() {
+   // Called under mutex. Active requests and receive/verification locals retain
+   // shared ownership, even before writer creation or after Core cancellation.
+   std::erase_if(pieces, [](const auto& entry) {
+      return entry.second.use_count() == 1 && !entry.second->writer;
+   });
 }
 bool operation_state::upload_select_locked() {
    auto inventory = std::vector<core::choker::candidate>{};
@@ -203,10 +208,6 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
    }
    if (self->inspect().closed) co_return;
    auto failure = std::exception_ptr{};
-   if (self->registration) {
-      self->registration->cancel();
-      try { co_await self->registration->async_close(); } catch (...) { failure = std::current_exception(); }
-   }
    if (self->worker && !self->joined) {
       self->worker->cancel();
       try { co_await self->worker->wait(); } catch (...) { /* Expected operation cancellation; async_wait reports worker errors. */ }
@@ -217,13 +218,15 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
    if (self->orchestration_capacity) self->orchestration_capacity->release();
    while (true) {
       const auto epoch = self->changed.epoch();
-      bool timer_done;
-      { auto lock = std::scoped_lock{self->mutex}; timer_done = self->deadline_watch_done; }
-      if (self->inspect().active_calls == 0 && timer_done) break;
+      bool watchers_done;
+      { auto lock = std::scoped_lock{self->mutex};
+        watchers_done = self->deadline_watch_done && self->availability_watch_done; }
+      if (self->inspect().active_calls == 0 && watchers_done) break;
       co_await self->changed.async_wait(epoch);
    }
    self->pieces.clear();
    if (!failure && self->timer_failure) failure = self->timer_failure;
+   if (!failure && self->availability_failure) failure = self->availability_failure;
    // Store is caller-owned. Never request_stop/close it, even on failure.
    if (self->lease.active()) {
       try { static_cast<void>(co_await self->store->async_checkpoint()); }
@@ -238,6 +241,7 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
    self->metadata_capacity.release();
    self->algorithm_capacity.release();
    self->timer_capacity.release();
+   self->availability_capacity.release();
    { auto lock = std::scoped_lock{self->mutex}; self->worker.reset(); self->state.closed = true; }
    self->changed.notify();
    if (failure) std::rethrow_exception(failure);
@@ -338,6 +342,68 @@ boost::asio::awaitable<void> operation_state::watch_deadline(std::shared_ptr<ope
       }
       if (expired) { self->cancel(); co_return; }
       co_await self->changed.async_wait_until(epoch, *self->total_deadline);
+   }
+}
+boost::asio::awaitable<void> operation_state::watch_availability(std::shared_ptr<operation_state> self) {
+   // Only explicit sharing owns advertising permission. Storage owns change
+   // generations; no RPC, discovery polling or second renewal loop is involved.
+   auto available = self->store->snapshot();
+   const auto eligible = [&] {
+      return self->manifest.files.empty() ||
+         std::ranges::any_of(available.verified, [](auto byte) { return byte != 0; }) ||
+         std::ranges::all_of(self->manifest.files, [](const auto& file) { return file.size == 0; });
+   };
+   const auto ready = [&] {
+      { auto lock = std::scoped_lock{self->mutex}; self->availability_ready = true; }
+      self->changed.notify();
+   };
+   while (!self->stop.stop_requested()) {
+      if (!eligible()) {
+         ready();
+         try { available = co_await self->store->async_wait_change(available.generation, self->stop.get_token()); }
+         catch (...) { if (!self->stop.stop_requested()) throw; co_return; }
+         continue;
+      }
+      // Allocate the stable holder before the external capability starts. A
+      // cancellation snapshot retains the unique resource even after withdrawal.
+      auto hold = std::make_shared<registration_work>();
+      auto scope = std::make_shared<call_scope>(self, "register:" + std::to_string(self->number));
+      scope->bind({}); scope->start();
+      std::exception_ptr failure;
+      try {
+         hold->resource = co_await self->providers->async_register(self->content, self->realm,
+            scope->stop.get_token(), scope->deadline);
+         if (!hold->resource) {
+            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Swarm registration capability returned empty hold");
+         }
+         { auto lock = std::scoped_lock{self->mutex}; self->registration = hold; }
+         if (self->stop.stop_requested()) hold->resource->cancel();
+         scope->check();
+      } catch (...) { failure = std::current_exception(); }
+      try { co_await scope->finish(); } catch (...) { if (!failure) failure = std::current_exception(); }
+      scope.reset();
+      if (!failure) {
+         ready();
+         try {
+            // Re-read after the possibly slow registration callback. Generation
+            // replacement/invalidation is coalesced, never inferred from requests.
+            available = self->store->snapshot();
+            while (eligible() && !self->stop.stop_requested()) {
+               available = co_await self->store->async_wait_change(available.generation, self->stop.get_token());
+            }
+         } catch (...) { failure = std::current_exception(); }
+      }
+      if (hold->resource) {
+         hold->resource->cancel();
+         try { co_await hold->resource->async_close(); }
+         catch (...) {
+            const auto drain_failure = std::current_exception();
+            { auto lock = std::scoped_lock{self->mutex}; self->registration.reset(); }
+            std::rethrow_exception(drain_failure);
+         }
+      }
+      { auto lock = std::scoped_lock{self->mutex}; self->registration.reset(); }
+      if (failure && !self->stop.stop_requested()) std::rethrow_exception(failure);
    }
 }
 
