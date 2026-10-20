@@ -269,6 +269,21 @@ def headers(evidence):
     print("READY: Clang22.1.8 and live libc++220108 <vector>/<functional>; no Forge build")
 
 
+def compiler_rt_install_path(prefix):
+    prefix = prefix.resolve(strict=True)
+    require(prefix.is_dir(), "Stage C installed prefix is not a directory")
+    compiler = prefix / "bin/clang"
+    require(compiler.is_file() and compiler.resolve(strict=True).is_relative_to(prefix),
+            "Stage C Clang missing/outside installed prefix")
+    output, _ = run([str(compiler), "--print-resource-dir"])
+    resource = Path(output.strip())
+    require(resource.is_absolute(), "Stage C resource directory must be absolute")
+    resolved = resource.resolve(strict=True)
+    require(resource == resolved and resolved.is_dir() and resolved != prefix and resolved.is_relative_to(prefix),
+            "Stage C resource directory must be canonical and inside installed prefix")
+    print(resolved.relative_to(prefix))
+
+
 def sha256(file):
     digest = hashlib.sha256()
     with file.open("rb") as stream:
@@ -411,6 +426,8 @@ def main():
     stage0_guard.add_argument("evidence", type=Path)
     header = mode.add_parser("headers")
     header.add_argument("evidence", type=Path)
+    resource = mode.add_parser("compiler-rt-install-path")
+    resource.add_argument("prefix", type=Path)
     identity = mode.add_parser("recipe")
     identity.add_argument("evidence", type=Path)
     disk = mode.add_parser("disk")
@@ -452,6 +469,8 @@ def main():
         stage0(args.evidence)
     elif args.mode == "headers":
         headers(args.evidence)
+    elif args.mode == "compiler-rt-install-path":
+        compiler_rt_install_path(args.prefix)
     elif args.mode == "recipe":
         recipe(args.evidence)
     elif args.mode == "disk":

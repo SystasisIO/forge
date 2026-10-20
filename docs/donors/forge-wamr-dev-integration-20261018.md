@@ -69,6 +69,55 @@ retirement records are under `wamr-ci-190-20261020-r10`. No merge or live produc
 change is performed; performance, full bounded-profile and final delivered
 provenance requirements remain open, including retained EOS-derived utilities.
 
+## CI59 And Current Public Follow-Up (2026-10-20)
+
+[VM run59](https://github.com/SystasisIO/forge/actions/runs/39322192883) is
+complete at published head `ae50b6f8`, actual synthetic merge `a92eb494` with
+dev `94657d50`. Independent archive/registry/XML/LastTest review confirms
+ARM JIT/AOT **82/82**, ARM interpreter **25/25**, and Intel interpreter
+Debug/Release **27/27** each, without failures, disabled or skipped CTests.
+These results do not qualify the later context-owner or typed-admission fixes.
+
+The previous nested libc++ header failure is resolved: Linux Stage C header
+admission, build and install all pass. Publication now stops at the relocated
+ABI checker: `HARNESS_ERROR: ASan/UBSan compiler-rt archives missing`. The
+standalone compiler-rt build installed those archives under `prefix/lib/linux`,
+outside the installed driver's resource tree. The checker correctly refuses
+that unusable layout. All five dependent Linux lanes fail downloading the
+unpublished qualified artifact before Forge configure; their VM runtime gates
+remain **NOT_RUN**, not observed interpreter/JIT/AOT failures.
+
+The CI-only follow-up derives the existing, canonical prefix-owned resource
+directory from that installed Clang and supplies its prefix-relative path as
+the supported `COMPILER_RT_INSTALL_PATH:PATH`. Explicit cache typing prevents
+CMake from converting an untyped relative input against the configure working
+directory. The official LLVM22.1.8 install mechanism retains `lib/linux` below
+that resource root. Stage A/B, pins, layout choice, linker/LLD/RPATH settings,
+relocation and real sanitizer archive/compile/link/run checks are unchanged.
+There are no manual runtime copies, symlinks, search fallbacks or driver
+resource overrides. Metadata tests pass **71/71**, including all sixty earlier
+cases; a real CMake cache probe accepts the typed form and rejects the untyped
+negative control. A fresh real Linux producer and its dependent jobs remain
+required. Evidence: `wamr-ci-190-20261020-r10/linux-source59-review-r1` and
+`linux-runtime-layout-fix-r1`.
+
+Separately, exact clean public head `a06624ff` with WAMR `f6fe6d5` includes
+both reviewed runtime corrections below. A normal full producer/install and
+the complete selected JIT/AOT registry pass **84/84** in 126.41 seconds. All
+three installed VM component consumers pass, including the five nested
+optimizing/session checks. Source, helper and provider-role evidence receives
+independent scoped GO. This is an ON/JIT snapshot, not LLVM-free delivery or
+product acceptance. Additional installed interpreter/execution physical maps
+remain **NOT_RUN**; older OFF evidence retains its earlier revision scope.
+Evidence: `wamr-ci-190-20261020-r10/public-current-a066-r1`.
+
+Current live dev `8afc1977` adds shared child-signal handling and optional
+TLSNotary support. A read-only merge simulation identifies conflicts in root
+CMake and the optimizing README; the feature branch is not rebased or merged.
+That new integration context is not qualified by `a066` or earlier CI merges.
+All mandatory product, Linux, bounded-profile, performance and final delivered
+provenance requirements remain open until their own evidence closes them.
+
 ## Prepared Context Owner Follow-Up (2026-10-20)
 
 Current Spine dev `230d4102` with the coherent CI58 merge tree `9cd98e54`

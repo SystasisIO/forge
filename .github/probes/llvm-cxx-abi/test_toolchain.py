@@ -470,6 +470,81 @@ class IntelRuntimeTests(unittest.TestCase):
                 TOOLCHAIN.intel_headers(self.prefix, self.root)
 
 
+class CompilerRTInstallPathTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.prefix = self.root / "install"
+        (self.prefix / "bin").mkdir(parents=True)
+        self.compiler = self.prefix / "bin/clang"
+        self.compiler.write_text("metadata-only fixture; never executed\n")
+        self.resource = self.prefix / "lib/clang/22"
+        (self.resource / "include").mkdir(parents=True)
+
+    def check(self, resource):
+        output = io.StringIO()
+        with patch.object(TOOLCHAIN, "run", return_value=(str(resource) + "\n", "")) as query, \
+                contextlib.redirect_stdout(output):
+            TOOLCHAIN.compiler_rt_install_path(self.prefix)
+        query.assert_called_once_with([str(self.compiler), "--print-resource-dir"])
+        return output.getvalue()
+
+    def test_owned_resource_base_without_future_runtime_directory(self):
+        self.assertFalse((self.resource / "lib/linux").exists())
+        self.assertEqual(self.check(self.resource), "lib/clang/22\n")
+
+    def test_resource_base_is_derived_not_hardcoded(self):
+        resource = self.prefix / "lib/clang/driver-reported-version"
+        resource.mkdir()
+        self.assertEqual(self.check(resource), "lib/clang/driver-reported-version\n")
+
+    def test_relative_or_empty_resource_base_refused(self):
+        for resource in ("", "lib/clang/22", "(runtime dir is not present)"):
+            with self.subTest(resource=resource), self.assertRaisesRegex(ValueError, "must be absolute"):
+                self.check(resource)
+
+    def test_missing_or_non_directory_resource_base_refused(self):
+        for resource in (self.prefix / "absent", self.compiler):
+            with self.subTest(resource=resource), self.assertRaises((OSError, ValueError)):
+                self.check(resource)
+
+    def test_outside_or_prefix_root_resource_base_refused(self):
+        outside = self.root / "install-other/lib/clang/22"
+        outside.mkdir(parents=True)
+        for resource in (outside, self.prefix, self.prefix / "../install-other/lib/clang/22"):
+            with self.subTest(resource=resource), self.assertRaisesRegex(ValueError, "inside installed prefix"):
+                self.check(resource)
+
+    def test_resource_base_symlinks_refused(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        for name, target in (("internal", self.resource), ("external", outside),
+                             ("dangling", self.root / "absent"), ("parent", self.prefix / "lib")):
+            alias = self.prefix / name
+            alias.symlink_to(target, target_is_directory=True)
+            resource = alias / "clang/22" if name == "parent" else alias
+            with self.subTest(kind=name), self.assertRaises((OSError, ValueError)):
+                self.check(resource)
+
+    def test_installed_driver_missing_or_outside_prefix_refused(self):
+        self.compiler.unlink()
+        with patch.object(TOOLCHAIN, "run") as query:
+            with self.assertRaisesRegex(ValueError, "Clang missing/outside"):
+                TOOLCHAIN.compiler_rt_install_path(self.prefix)
+            outside = self.root / "outside-clang"
+            outside.touch()
+            self.compiler.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "Clang missing/outside"):
+                TOOLCHAIN.compiler_rt_install_path(self.prefix)
+            query.assert_not_called()
+
+    def test_resource_query_failure_is_fatal(self):
+        with patch.object(TOOLCHAIN, "run", side_effect=ValueError("fixture resource query failure")), \
+                self.assertRaisesRegex(ValueError, "resource query failure"):
+            TOOLCHAIN.compiler_rt_install_path(self.prefix)
+
+
 class ProvisioningTests(unittest.TestCase):
     def final_runtime_command(self):
         source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
@@ -479,7 +554,8 @@ class ProvisioningTests(unittest.TestCase):
 
     def test_final_runtimes_use_driver_headers_and_bind_stage_a_link_search(self):
         _, command = self.final_runtime_command()
-        environment = dict(os.environ, prefix="/fixture/install", source="/fixture/source", work="/fixture/work")
+        environment = dict(os.environ, prefix="/fixture/install", source="/fixture/source", work="/fixture/work",
+                           compiler_rt_install_path="lib/clang/22")
         script = 'set -euo pipefail\ncapture_cmake() { printf "%s\\n" "$@"; }\n' + command
         result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -487,6 +563,8 @@ class ProvisioningTests(unittest.TestCase):
         for flag in ("-DCMAKE_C_COMPILER=/fixture/install/bin/clang",
                      "-DCMAKE_CXX_COMPILER=/fixture/install/bin/clang++",
                      "-DCMAKE_CXX_FLAGS=-stdlib=libc++",
+                     "-DCOMPILER_RT_INSTALL_PATH:PATH=lib/clang/22",
+                     "-DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF",
                      "-DCMAKE_BUILD_RPATH=/fixture/install/lib",
                      "-DCMAKE_INSTALL_RPATH=$ORIGIN", "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF"):
             self.assertIn(flag, args)
@@ -502,7 +580,54 @@ class ProvisioningTests(unittest.TestCase):
     def final_runtime_header_checks(self):
         source, _ = self.final_runtime_command()
         checks = "   log_run final-runtimes-headers " + source.split("   log_run final-runtimes-headers ", 1)[1]
+        return source, checks.split("   # Standalone compiler-rt", 1)[0]
+
+    def final_runtime_resource_checks(self):
+        source, _ = self.final_runtime_command()
+        checks = "   log_run final-runtimes-resource-prefix " + source.split("   log_run final-runtimes-resource-prefix ", 1)[1]
         return source, checks.split("   log_run final-runtimes-configure ", 1)[0]
+
+    def test_final_runtime_resource_derivation_precedes_configure(self):
+        source, checks = self.final_runtime_resource_checks()
+        command = checks.split("\n", 1)[0]
+        script = 'set -euo pipefail\nlog_run() { printf "%s\\n" "$@"; }\n' + command
+        environment = dict(os.environ, prefix="/fixture/install", checker="/fixture/checker.py")
+        result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["final-runtimes-resource-prefix", "python3",
+                         "/fixture/checker.py", "compiler-rt-install-path", "/fixture/install"])
+        self.assertLess(source.index("log_run llvm-install "), source.index("log_run final-runtimes-resource-prefix "))
+        self.assertLess(source.index("log_run final-runtimes-resource-prefix "), source.index("log_run final-runtimes-configure "))
+
+    def test_final_runtime_resource_failure_prevents_configure(self):
+        source, checks = self.final_runtime_resource_checks()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        script = (prologue + '\npython3() { echo "fixture resource failure" >&2; return 77; }\n'
+                  + checks + '\necho UNEXPECTED_CONFIGURE\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix="/fixture/install")
+            result = subprocess.run(["bash", "-c", script, "runtime-resource-test", temporary], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 77)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertNotIn("UNEXPECTED_CONFIGURE", result.stdout)
+            self.assertIn("fixture resource failure", (Path(temporary) / "final-runtimes-resource-prefix.log").read_text())
+
+    def test_final_runtime_checked_resource_result_drives_configure(self):
+        source, checks = self.final_runtime_resource_checks()
+        _, command = self.final_runtime_command()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        script = (prologue + '\npython3() { printf "%s\\n" "lib/clang/driver-reported-version"; }\n'
+                  + 'capture_cmake() { printf "%s\\n" "$@"; }\n' + checks
+                  + "log_run final-runtimes-configure " + command)
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix="/fixture/install",
+                               source="/fixture/source", work="/fixture/work")
+            result = subprocess.run(["bash", "-c", script, "runtime-resource-test", temporary], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = (Path(temporary) / "final-runtimes-configure.log").read_text().splitlines()
+            self.assertIn("-DCOMPILER_RT_INSTALL_PATH:PATH=lib/clang/driver-reported-version", args)
 
     def test_final_runtime_header_check_uses_installed_tools_without_include_override(self):
         source, checks = self.final_runtime_header_checks()
@@ -576,7 +701,7 @@ class ProvisioningTests(unittest.TestCase):
                   + "log_run final-runtimes-configure " + command + '\necho UNEXPECTED_SUCCESS\n')
         with tempfile.TemporaryDirectory() as temporary:
             environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix="/fixture/install",
-                               source="/fixture/source", work="/fixture/work")
+                               source="/fixture/source", work="/fixture/work", compiler_rt_install_path="lib/clang/22")
             result = subprocess.run(["bash", "-c", script, "runtime-test", temporary], env=environment,
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 78)

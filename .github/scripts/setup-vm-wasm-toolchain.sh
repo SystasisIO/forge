@@ -251,6 +251,10 @@ headers = json.loads(pathlib.Path(sys.argv[2]).read_text())["headers"]
 if set(headers) != {"vector", "functional"} or not all(pathlib.Path(p).resolve(strict=True).is_relative_to(prefix) for p in headers.values()):
     raise SystemExit("HARNESS_ERROR: Stage C C++ headers outside installed prefix")
 ' "$prefix" "$evidence/final-runtimes-headers/header-result.json"
+   # Standalone compiler-rt must install below the installed driver's resource root.
+   # Explicit PATH typing keeps CMake from absolutizing this prefix-relative value.
+   log_run final-runtimes-resource-prefix python3 "$checker" compiler-rt-install-path "$prefix"
+   compiler_rt_install_path="$(cat "$evidence/final-runtimes-resource-prefix.log")"
    log_run final-runtimes-configure /usr/bin/cmake -S "$source/runtimes" -B "$work/final-runtimes" -G Ninja \
       -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
@@ -263,6 +267,7 @@ if set(headers) != {"vector", "functional"} or not all(pathlib.Path(p).resolve(s
       -DLLVM_CONFIG_PATH="$prefix/bin/llvm-config" -DLLVM_DIR="$prefix/lib/cmake/llvm" \
       -DCMAKE_JOB_POOLS=link=1 -DCMAKE_JOB_POOL_LINK=link \
       '-DLLVM_ENABLE_RUNTIMES=compiler-rt;libunwind;libcxxabi;libcxx' \
+      "-DCOMPILER_RT_INSTALL_PATH:PATH=$compiler_rt_install_path" \
       -DLLVM_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF \
       -DLIBUNWIND_INCLUDE_TESTS=OFF -DCOMPILER_RT_INCLUDE_TESTS=OFF \
       -DLIBCXX_INCLUDE_BENCHMARKS=OFF -DLIBCXX_INCLUDE_DOCS=OFF \
