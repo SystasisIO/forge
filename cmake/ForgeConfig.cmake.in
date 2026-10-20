@@ -36,6 +36,7 @@ set(
    swarm_protocol
    swarm_conversion
    swarm_api
+   swarm_runtime
    chain_core
    chain_savanna_values
    chain_protocol
@@ -210,6 +211,11 @@ macro(_forge_add_component component)
          _forge_add_component(swarm_protocol)
          _forge_add_component(api_core)
          _forge_add_component(api_auth)
+      elseif("${component}" STREQUAL "swarm_runtime")
+         _forge_add_component(swarm_core)
+         _forge_add_component(swarm_api)
+         _forge_add_component(asio)
+         _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "chain_core")
          _forge_add_component(exceptions)
          _forge_add_component(raw)

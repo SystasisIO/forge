@@ -76,6 +76,21 @@ target_link_libraries(test_forge_swarm_api PRIVATE forge_swarm_api forge_api_tra
    forge_asio forge_raw Boost::included_unit_test_framework)
 add_test(NAME test_forge_swarm_api COMMAND test_forge_swarm_api)
 set_tests_properties(test_forge_swarm_api PROPERTIES TIMEOUT 90)
+add_executable(test_forge_swarm_runtime
+   swarm_runtime/main.cpp
+   swarm_runtime/quota_tests.cpp
+   swarm_runtime/runtime_tests.cpp
+)
+target_link_libraries(test_forge_swarm_runtime PRIVATE
+   forge_swarm_runtime forge_swarm_storage Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_runtime COMMAND test_forge_swarm_runtime)
+set_tests_properties(test_forge_swarm_runtime PROPERTIES TIMEOUT 120)
+add_executable(test_forge_swarm_runtime_integration unit/main.cpp swarm_runtime_integration/transfer_tests.cpp)
+target_link_libraries(test_forge_swarm_runtime_integration PRIVATE
+   forge_swarm_runtime forge_swarm_storage forge_api_transport forge_api_stream forge_net_tcp
+   Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_runtime_integration COMMAND test_forge_swarm_runtime_integration)
+set_tests_properties(test_forge_swarm_runtime_integration PROPERTIES TIMEOUT 120)
 add_test(NAME test_forge_package_dependency_boundary
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/package_dependency_boundary_tests.py)
 set_tests_properties(test_forge_package_dependency_boundary PROPERTIES TIMEOUT 60)
@@ -3379,7 +3394,7 @@ add_custom_target(
       --test-command forge_package_swarm_db_component
    DEPENDS test_forge_package_install
 )
-foreach(swarm_component IN ITEMS protocol conversion api)
+foreach(swarm_component IN ITEMS protocol conversion api runtime)
    add_custom_target(test_forge_package_swarm_${swarm_component}_component
       COMMAND ${CMAKE_CTEST_COMMAND}
          --build-and-test
@@ -4502,7 +4517,7 @@ add_test(
       --test-command forge_package_swarm_db_component
 )
 set_tests_properties(test_forge_package_swarm_db_component PROPERTIES DEPENDS test_forge_package_install)
-foreach(swarm_component IN ITEMS protocol conversion api)
+foreach(swarm_component IN ITEMS protocol conversion api runtime)
    add_test(NAME test_forge_package_swarm_${swarm_component}_component
       COMMAND ${CMAKE_CTEST_COMMAND}
          --build-and-test

@@ -14,6 +14,9 @@ Forge.API authentication and codecs without owning a network node.
 metadata and validates imported descriptors without allocating or saving DB rows.
 Link the individual leaf target and import only the required modules.
 
-There is no family aggregate module or target. Production runtime scheduling,
-authorization, retention and payment are outside these value/contract components;
-the runtime implementation follows separately.
+[Runtime](runtime/README.md) composes active transfers and product-supplied
+admission/quota capabilities on caller-owned execution. It does not load plugins,
+open a database or own a second P2P node. The optional plugin follows separately.
+
+There is no family aggregate module or target. Product authorization decisions,
+retention and payments remain outside the reusable engine.

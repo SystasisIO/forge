@@ -228,7 +228,14 @@ BOOST_AUTO_TEST_CASE(partial_enospc_write_never_marks_blocks_or_pieces_available
    auto store = run(storage::file_store::async_open(env.options(manifest)));
    auto writer = store->begin({0, 0});
    auto fault = faults::scope{{.write_enospc = 2, .short_write = 97}};
-   BOOST_CHECK_THROW(run(writer->async_write(0, bytes)), storage::exceptions::io_error);
+   BOOST_CHECK_THROW(run_with_diagnostics(writer->async_write(0, bytes), [&] {
+      const auto disk = env.disk.snapshot();
+      const auto failures = fault.snapshot();
+      std::fprintf(stderr, "disk: failed=%llu completed=%llu pending=%zu running=%zu; writes=%llu errors=%llu\n",
+         static_cast<unsigned long long>(disk.failed), static_cast<unsigned long long>(disk.completed),
+         static_cast<std::size_t>(disk.pending), static_cast<std::size_t>(disk.running),
+         static_cast<unsigned long long>(failures.writes), static_cast<unsigned long long>(failures.injected_errors));
+   }), storage::exceptions::io_error);
    BOOST_REQUIRE_EQUAL(fault.snapshot().injected_errors, 1U);
    BOOST_CHECK_EQUAL(fault.snapshot().writes, 2U);
    const auto state = store->snapshot();

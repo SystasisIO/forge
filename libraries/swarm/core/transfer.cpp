@@ -339,7 +339,15 @@ bool transfer::endgame() const {
 }
 
 std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std::uint32_t count) {
+   return pick(id, now, count, std::nullopt);
+}
+
+std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std::uint32_t count,
+                                            std::optional<std::span<const piece_id>> allowed) {
    validate_time(now);
+   const auto eligible = [&](std::uint32_t index) {
+      return !allowed || std::ranges::find(*allowed, _pieces[index].id) != allowed->end();
+   };
    auto& source = peer(id);
    auto result = std::vector<request>{};
    const auto remaining_bytes = [&] {
@@ -367,7 +375,7 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
    auto partials = std::vector<std::uint32_t>{};
    partials.reserve(_partials.size());
    for (const auto& [index, partial] : _partials) {
-      if (_pieces[index].priority != 0U && bitmap_test(source.availability, index))
+      if (_pieces[index].priority != 0U && bitmap_test(source.availability, index) && eligible(index))
          partials.push_back(index);
    }
    std::sort(partials.begin(), partials.end(), [&](auto a, auto b) { return key(a) < key(b); });
@@ -386,7 +394,7 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
          }
          while (cursor != _order.end()) {
             const auto index = std::get<3>(*cursor++);
-            if (_partials.contains(index) || !bitmap_test(source.availability, index) ||
+            if (_partials.contains(index) || !bitmap_test(source.availability, index) || !eligible(index) ||
                 _pieces[index].length > _limits.unfinished_bytes - _unfinished_bytes ||
                 !fits(minimum_block_length(index)))
                continue;
@@ -443,7 +451,7 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
             owned.emplace(value.piece, value.offset);
       }
       for (const auto& [index, partial] : _partials) {
-         if (_pieces[index].priority == 0U || !bitmap_test(source.availability, index) ||
+         if (_pieces[index].priority == 0U || !bitmap_test(source.availability, index) || !eligible(index) ||
              !fits(minimum_block_length(index)))
             continue;
          for (auto block = 0U; block < partial.blocks.size(); ++block) {
