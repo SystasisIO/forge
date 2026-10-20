@@ -1,3 +1,5 @@
+module;
+
 #include <boost/test/unit_test.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -24,6 +26,8 @@
 
 #include "libp2p_identity_fixture.hxx"
 
+module forge.net.p2p.node;
+
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.asio.runtime;
@@ -34,7 +38,6 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.envelope;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identify;
-import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.rendezvous;
