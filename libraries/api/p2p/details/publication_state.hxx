@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 
 namespace forge::api::p2p::detail {
 
@@ -24,6 +25,8 @@ class publication_state final : public std::enable_shared_from_this<publication_
    publication_state& operator=(const publication_state&) = delete;
 
    [[nodiscard]] bool active() const noexcept;
+   [[nodiscard]] std::stop_token stop_token() const noexcept;
+   void bind_native(std::stop_token);
    void close() noexcept;
    boost::asio::awaitable<void> async_close();
 
@@ -39,6 +42,8 @@ class publication_state final : public std::enable_shared_from_this<publication_
    close_handler close_;
    drain_handler drain_;
    active_handler active_;
+   std::stop_source stop_;
+   std::unique_ptr<std::stop_callback<std::function<void()>>> native_stop_;
    forge::asio::notification close_ready_;
    forge::asio::notification drain_ready_;
    std::exception_ptr close_failure_;

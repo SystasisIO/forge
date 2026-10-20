@@ -13,6 +13,8 @@ module;
 #include <mutex>
 #include <set>
 #include <string>
+#include <stop_token>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -41,19 +43,24 @@ namespace {
 } // namespace
 
 publication_catalog::generation::generation(std::string protocol, std::vector<entry> entries)
-    : protocol_{std::move(protocol)}, entries_{std::move(entries)} {}
+    : protocol_{std::move(protocol)}, entries_{std::move(entries)},
+      child_stop_handler_{[signal = stop_]() mutable noexcept { signal.request_stop(); }} {}
 
 void publication_catalog::generation::set_child(std::shared_ptr<forge::api::p2p::publication> child) noexcept {
+   static_assert(std::is_nothrow_constructible_v<std::stop_callback<std::function<void()>>,
+      std::stop_token, std::function<void()>&&>);
    auto current = std::shared_ptr<forge::api::p2p::publication>{};
    auto close = false;
    {
       const auto lock = std::scoped_lock{mutex_};
-      if (!child_) {
-         child_ = std::move(child);
-      }
+      if (child_) { return; }
+      child_ = std::move(child);
       current = child_;
       close = !active_;
    }
+   // Storage and callable are prepared before publication. Installation cannot
+   // fail, but can synchronously invoke observers, so do it outside all locks.
+   child_stop_.emplace(current->stop_token(), std::move(child_stop_handler_));
    if (close && current) {
       current->close();
    }
@@ -68,6 +75,7 @@ const std::vector<entry>& publication_catalog::generation::entries() const noexc
 }
 
 bool publication_catalog::generation::active() const noexcept {
+   if (stop_.stop_requested()) { return false; }
    auto child = std::shared_ptr<forge::api::p2p::publication>{};
    {
       const auto lock = std::scoped_lock{mutex_};
@@ -79,10 +87,13 @@ bool publication_catalog::generation::active() const noexcept {
    return child && child->active();
 }
 
+std::stop_token publication_catalog::generation::stop_token() const noexcept { return stop_.get_token(); }
+
 void publication_catalog::generation::close() noexcept {
    auto child = std::shared_ptr<forge::api::p2p::publication>{};
-   if (seal(child) && child) {
-      child->close();
+   if (seal(child)) {
+      stop_.request_stop();
+      if (child) { child->close(); }
    }
 }
 
@@ -121,6 +132,7 @@ publication_catalog::publish(forge::plugins::net::p2p::node::api& p2p, forge::ap
                              forge::net::p2p::protocol_id protocol, forge::api::transport::options options,
                              std::vector<entry> entries, std::size_t max_apis) {
    auto next = std::make_shared<generation>(protocol.value, std::move(entries));
+   auto child = std::make_shared<forge::api::p2p::publication>();
    const auto owner = std::weak_ptr<publication_catalog>{shared_from_this()};
    auto outer = forge::api::p2p::detail::publication_access::make(
       owner_executor_,
@@ -134,7 +146,7 @@ publication_catalog::publish(forge::plugins::net::p2p::node::api& p2p, forge::ap
       [next]() -> boost::asio::awaitable<void> {
          co_await next->async_close();
       },
-      [next] { return next->active(); });
+      [next] { return next->active(); }, next->stop_token());
 
    const auto protocol_value = protocol.value;
    auto new_protocol = false;
@@ -167,12 +179,11 @@ publication_catalog::publish(forge::plugins::net::p2p::node::api& p2p, forge::ap
       ++inflight_publishes_;
    }
 
-   auto child = std::shared_ptr<forge::api::p2p::publication>{};
    try {
-      child = std::make_shared<forge::api::p2p::publication>(
-         p2p.publish_api(std::move(plan), std::move(protocol), std::move(options)));
+      *child = p2p.publish_api(std::move(plan), std::move(protocol), std::move(options));
    } catch (...) {
-      if (cancel_reservation(protocol_value, next, new_protocol)) {
+      const auto closed = cancel_reservation(protocol_value, next, new_protocol);
+      if (closed) {
          FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "resolver API publications are closed");
       }
       throw;
@@ -259,9 +270,12 @@ void publication_catalog::close_generation(const std::shared_ptr<generation>& ge
          auto node = active_.extract(found);
          closing_.insert(std::move(node));
          retired = true;
-         const auto ordered = std::ranges::find(order_, generation->protocol());
-         if (ordered != order_.end()) {
-            order_.erase(ordered);
+         // A replacement owns this slot until it commits or rolls back.
+         if (!pending_.contains(generation->protocol())) {
+            const auto ordered = std::ranges::find(order_, generation->protocol());
+            if (ordered != order_.end()) {
+               order_.erase(ordered);
+            }
          }
       }
    }
@@ -534,7 +548,7 @@ bool publication_catalog::cancel_reservation(const std::string& protocol, const 
       const auto found = pending_.find(protocol);
       if (found != pending_.end() && found->second == generation) {
          pending_.erase(found);
-         if (remove_order) {
+         if (remove_order || !active_.contains(protocol)) {
             const auto ordered = std::ranges::find(order_, protocol);
             if (ordered != order_.end()) {
                order_.erase(ordered);

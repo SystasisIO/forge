@@ -37,3 +37,8 @@ generation and requests cancellation of only its owned API sessions.
 publication installs a new generation atomically; an older token cannot remove
 the replacement. This is application-level lifecycle ownership and does not
 change libp2p negotiation, Identify, or raw stream semantics.
+
+`publication::stop_token()` is sticky generation-retirement notification,
+including replacement of an idle publication. It is not a drain barrier;
+retain and await `async_close()` before releasing owned runtime resources.
+Retirement callbacks may reenter and run outside registry/state mutexes.

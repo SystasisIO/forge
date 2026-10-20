@@ -8,6 +8,7 @@ module;
 #include <list>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <mutex>
 #include <optional>
 #include <string>

@@ -5,6 +5,7 @@ module;
 
 #include <functional>
 #include <memory>
+#include <stop_token>
 
 export module forge.api.p2p.publication;
 
@@ -26,6 +27,8 @@ class publication {
    publication& operator=(publication&& other) noexcept;
 
    [[nodiscard]] bool active() const noexcept;
+   // Loss of admission, including replacement; not a drain-completion fence.
+   [[nodiscard]] std::stop_token stop_token() const noexcept;
    void close() noexcept;
    boost::asio::awaitable<void> async_close();
 
@@ -47,7 +50,7 @@ struct publication_access {
       boost::asio::any_io_executor owner_executor,
       std::function<void()> close,
       std::function<boost::asio::awaitable<void>()> drain,
-      std::function<bool()> active);
+      std::function<bool()> active, std::stop_token native = {});
 };
 
 } // namespace detail
@@ -60,8 +63,10 @@ namespace forge::api::p2p::detail {
    boost::asio::any_io_executor owner_executor,
    std::function<void()> close,
    std::function<boost::asio::awaitable<void>()> drain,
-   std::function<bool()> active);
+   std::function<bool()> active, std::stop_token native);
 [[nodiscard]] bool publication_active(
+   std::shared_ptr<publication_state> state) noexcept;
+[[nodiscard]] std::stop_token publication_stop_token(
    std::shared_ptr<publication_state> state) noexcept;
 void close_publication(std::shared_ptr<publication_state> state) noexcept;
 boost::asio::awaitable<void> async_close_publication(

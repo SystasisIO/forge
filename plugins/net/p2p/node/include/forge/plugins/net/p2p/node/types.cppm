@@ -15,6 +15,7 @@ import forge.api.transport.options;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.pubsub;
+import forge.multiformats.multiaddr;
 
 export namespace forge::plugins::net::p2p::node {
 
@@ -32,6 +33,7 @@ struct remote_options {
    std::optional<std::uint32_t> max_frame_size;
    // Successful open then proves authentication of the requested Peer ID.
    bool require_authenticated_peer = false;
+   std::vector<forge::multiformats::multiaddr> address_hints;
 };
 
 struct publish_options {

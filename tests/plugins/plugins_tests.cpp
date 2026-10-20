@@ -1898,6 +1898,43 @@ BOOST_AUTO_TEST_CASE(p2p_resolver_publication_replacement_keeps_catalog_and_rout
    forge::asio::blocking::run(server.runtime(), server.shutdown());
 }
 
+BOOST_AUTO_TEST_CASE(p2p_resolver_reentrant_stop_close_preserves_replacement_catalog) {
+   auto server = resolver_publication_application{};
+   server.configure(test_p2p_config(test_peer(242)));
+   forge::asio::blocking::run(server.runtime(), server.startup());
+   auto cleanup = boost::scope::scope_exit{[&] {
+      forge::asio::blocking::run(server.runtime(), server.shutdown());
+   }};
+   auto resolver = server.apis().get<forge::plugins::net::p2p::resolver::api>(
+       {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
+   const auto protocol = forge::net::p2p::protocol_id{.value = "/forge/api/resolver-reentrant-replacement/1"};
+   auto first = resolver->publish_api(node_test_plan(server.apis()), protocol);
+   auto stop_calls = std::atomic<std::size_t>{0};
+   auto close_on_stop = std::stop_callback{first.stop_token(), [&]() noexcept {
+      stop_calls.fetch_add(1, std::memory_order_relaxed);
+      first.close();
+   }};
+
+   auto second = resolver->publish_api(peer_context_test_plan(server.apis()), protocol);
+   BOOST_TEST(stop_calls.load(std::memory_order_relaxed) == 1U);
+   BOOST_TEST(!first.active());
+   BOOST_TEST(second.active());
+   const auto replacement_entries = resolver->local_apis();
+   BOOST_REQUIRE_EQUAL(replacement_entries.size(), 1U);
+   BOOST_TEST(replacement_entries.front().id.value == "peer-context.test");
+   BOOST_TEST(replacement_entries.front().protocol == protocol.value);
+
+   forge::asio::blocking::run(server.runtime(), first.async_close());
+   BOOST_TEST(second.active());
+   const auto after_old_close = resolver->local_apis();
+   BOOST_REQUIRE_EQUAL(after_old_close.size(), 1U);
+   BOOST_CHECK(after_old_close == replacement_entries);
+
+   forge::asio::blocking::run(server.runtime(), second.async_close());
+   BOOST_TEST(resolver->local_apis().empty());
+   BOOST_TEST(stop_calls.load(std::memory_order_relaxed) == 1U);
+}
+
 BOOST_AUTO_TEST_CASE(p2p_resolver_repeated_publication_replacement_retires_before_shutdown) {
    auto server = resolver_publication_application{};
    server.configure(test_p2p_config(test_peer(243)));

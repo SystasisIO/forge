@@ -17,6 +17,7 @@ module;
 #include <exception>
 #include <list>
 #include <memory>
+#include <stop_token>
 #include <map>
 #include <mutex>
 #include <optional>
