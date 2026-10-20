@@ -136,6 +136,14 @@ The first XML audit parser failed on the local Homebrew Python/expat linkage;
 its partial capture is retained. The unchanged XML audit succeeded with explicit
 system Python3.9.6, without package/DYLD changes or rerunning/relabeling tests.
 
+The independent repeat at exact `b9557e72bb9e9b3a1b2cdff597ab691c84f295cc`
+also passes the same **84/84** (115.91 seconds), installed **3/3**, nested **5/5**
+and shared-signal **one CTest/five cases** with a freshly rebuilt matching helper.
+Its separate postrun receipt is
+`452140c5c70daa8e60d6a72de6dbdeed3429d660a130c62d38d20fb10b8de1d1`;
+evidence: `wamr-ci-190-20261020-r11/base-refresh-r2`. This repeat has independent
+evidence GO, still scoped to Darwin ARM64 ON and not Linux/product acceptance.
+
 CI60 on feature head `a4126e87` now confirms the Linux compiler-rt resource fix:
 the source-built producer passes relocation, sanitizer compile/link/run and
 publishes its qualified toolchain. Five Linux consumers then fail **before
@@ -148,9 +156,17 @@ against the original workflow and GREEN with the candidate, **79/79** total.
 LLVM pins/build mechanisms, absolute-path ABI checks, later pinned CMake3.31.6,
 macOS steps, guards and runtime selections are unchanged. The workflow hash
 normally produces a fresh recipe key; CI60 is not reused as that qualification.
-Fresh real Linux execution
-is still required; CI61 does not include this follow-up. Evidence:
+Fresh real Linux execution is still required; CI61 does not include this follow-up. Evidence:
 `wamr-ci-190-20261020-r11/ci60-review` and `linux-consumer-prereq-fix-r1`.
+CI62 then fails before LLVM in the new negative metadata test: all eight
+missing-tool subcases return the expected refusal but GNU Bash omits the expected
+ERR diagnostic inside the mock function. The test-only correction explicitly
+returns that failure to the caller, matching the other existing mocks. All 79
+test methods, all 217 assertion calls, the original 71 tests and the production
+workflow/guards are unchanged. Real RED is CI62; the old suite already passed
+on macOS, so no local RED is claimed. Fresh Linux GREEN is required after this
+one-line correction. Evidence: `wamr-ci-190-20261020-r11/ci62-review` and
+`ci62-mock-return-fix-r1`.
 The PR stays draft and must not be merged into dev under this authorization.
 All mandatory product, Linux, bounded-profile, performance and final delivered
 provenance requirements remain open until their own evidence closes them.

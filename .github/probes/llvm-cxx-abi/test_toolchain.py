@@ -913,7 +913,7 @@ sudo() {
 test() {
    if [[ "$1" == -x ]]; then
       record "test $*"
-      [[ "$2" != "$MISSING" ]]
+      [[ "$2" != "$MISSING" ]] || return 1
    else
       builtin test "$@"
    fi
