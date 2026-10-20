@@ -87,6 +87,18 @@ retains the original hold until cleanup. Adapters must bound their own queues.
 Tickets cover full-piece store read/verification working memory, not just the
 requested range, and follow received blocks through writer completion.
 
+Temporarily occupied payload capacity is backpressure, not a peer fault. An
+unsent pick is rolled back and its temporary request ticket released before
+waiting for the common budget or operation state to change. Release/rebind wakes
+waiters across operations sharing the authenticated peer. The post-rollback
+predicate checks combined request/piece capacity, so its own ticket release
+cannot create a retry spin or a lost wakeup. No piece ticket is released early.
+Waiting is cancellable and bounded by `request_timeout` without useful operation
+progress and by the fixed total deadline. This local wait pauses peer-idle;
+control input does not extend the admission deadline. Work exceeding configured
+capacity fails immediately; allocation/store errors are not retried as capacity
+pressure. Product quota exhaustion remains denial, not this local resource wait.
+
 Each peer has independent reader/writer coroutines and at most one outstanding
 download block. Core picking/verification generations remain shared per operation;
 a per-piece gate serializes writer operations. Upload candidates/slot decisions

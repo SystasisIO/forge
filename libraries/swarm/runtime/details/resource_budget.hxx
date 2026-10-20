@@ -9,12 +9,17 @@ class resource_budget : public std::enable_shared_from_this<resource_budget> {
    class ticket;
    resource_budget(resource_limits, resource_limits, resource_limits);
    [[nodiscard]] ticket reserve(std::uint64_t operation, std::string peer, resource_limits);
+   [[nodiscard]] std::optional<ticket> try_reserve(std::uint64_t operation, std::string peer, resource_limits);
+   [[nodiscard]] bool available(std::uint64_t operation, const std::string& peer, resource_limits) const;
+   forge::asio::notification changed;
  private:
+   void validate_capacity(resource_limits) const;
+   bool available_locked(std::uint64_t, const std::string&, resource_limits) const;
    void release(std::uint64_t, const std::string&, resource_limits) noexcept;
    static bool fits(resource_limits, resource_limits, resource_limits);
    static void add(resource_limits&, resource_limits);
    static void subtract(resource_limits&, resource_limits);
-   std::mutex _mutex;
+   mutable std::mutex _mutex;
    resource_limits _limits;
    resource_limits _operation_limits;
    resource_limits _peer_limits;

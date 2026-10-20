@@ -4,11 +4,14 @@ module;
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <forge/exceptions/macros.hpp>
 
 module forge.swarm.runtime.engine;
+
+import forge.asio.notification;
 
 #include "details/resource_budget.hxx"
 
@@ -29,27 +32,49 @@ void resource_budget::subtract(resource_limits& target, resource_limits value) {
    target.calls -= value.calls; target.items -= value.items; target.bytes -= value.bytes; target.pieces -= value.pieces;
 }
 resource_budget::ticket resource_budget::reserve(std::uint64_t operation, std::string peer, resource_limits amount) {
-   auto lock = std::scoped_lock{_mutex};
-   const auto& key = peer;
-   const auto op = _operations.contains(operation) ? _operations.at(operation) : resource_limits{0, 0, 0, 0};
-   const auto remote = _peers.contains(key) ? _peers.at(key) : resource_limits{0, 0, 0, 0};
-   if (!fits(_used, amount, _limits) || !fits(op, amount, _operation_limits) || !fits(remote, amount, _peer_limits)) {
+   auto result = try_reserve(operation, std::move(peer), amount);
+   if (!result) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm resource reservation exhausted");
    }
+   return std::move(*result);
+}
+void resource_budget::validate_capacity(resource_limits amount) const {
+   const auto zero = resource_limits{0, 0, 0, 0};
+   if (!fits(zero, amount, _limits) || !fits(zero, amount, _operation_limits) || !fits(zero, amount, _peer_limits)) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm work exceeds configured resource capacity");
+   }
+}
+bool resource_budget::available_locked(std::uint64_t operation, const std::string& peer, resource_limits amount) const {
+   const auto op = _operations.contains(operation) ? _operations.at(operation) : resource_limits{0, 0, 0, 0};
+   const auto remote = _peers.contains(peer) ? _peers.at(peer) : resource_limits{0, 0, 0, 0};
+   return fits(_used, amount, _limits) && fits(op, amount, _operation_limits) && fits(remote, amount, _peer_limits);
+}
+bool resource_budget::available(std::uint64_t operation, const std::string& peer, resource_limits amount) const {
+   auto lock = std::scoped_lock{_mutex};
+   validate_capacity(amount);
+   return available_locked(operation, peer, amount);
+}
+std::optional<resource_budget::ticket> resource_budget::try_reserve(
+   std::uint64_t operation, std::string peer, resource_limits amount) {
+   auto lock = std::scoped_lock{_mutex};
+   validate_capacity(amount);
+   if (!available_locked(operation, peer, amount)) return std::nullopt;
    // Allocate map entries before committing counters.
-   auto [oi, inserted] = _operations.try_emplace(operation, op);
-   try { _peers.try_emplace(key, remote); }
+   auto [oi, inserted] = _operations.try_emplace(operation, resource_limits{0, 0, 0, 0});
+   try { _peers.try_emplace(peer, resource_limits{0, 0, 0, 0}); }
    catch (...) { if (inserted) _operations.erase(oi); throw; }
-   add(_used, amount); add(_operations.at(operation), amount); add(_peers.at(key), amount);
+   add(_used, amount); add(_operations.at(operation), amount); add(_peers.at(peer), amount);
    return ticket{shared_from_this(), operation, std::move(peer), amount};
 }
 void resource_budget::release(std::uint64_t operation, const std::string& peer, resource_limits amount) noexcept {
-   auto lock = std::scoped_lock{_mutex};
-   const auto& key = peer;
-   subtract(_used, amount); subtract(_operations.at(operation), amount); subtract(_peers.at(key), amount);
-   const auto empty = [](resource_limits value) { return !value.calls && !value.items && !value.bytes && !value.pieces; };
-   if (empty(_operations.at(operation))) _operations.erase(operation);
-   if (empty(_peers.at(key))) _peers.erase(key);
+   {
+      auto lock = std::scoped_lock{_mutex};
+      subtract(_used, amount); subtract(_operations.at(operation), amount); subtract(_peers.at(peer), amount);
+      const auto empty = [](resource_limits value) { return !value.calls && !value.items && !value.bytes && !value.pieces; };
+      if (empty(_operations.at(operation))) _operations.erase(operation);
+      if (empty(_peers.at(peer))) _peers.erase(peer);
+   }
+   changed.notify();
 }
 resource_budget::ticket::ticket() = default;
 resource_budget::ticket::ticket(std::shared_ptr<resource_budget> owner, std::uint64_t operation,
@@ -69,18 +94,21 @@ void resource_budget::ticket::release() noexcept {
 }
 void resource_budget::ticket::rebind(std::string peer) {
    if (!_owner || peer == _peer) return;
-   auto lock = std::scoped_lock{_owner->_mutex};
-   const auto destination = _owner->_peers.contains(peer) ? _owner->_peers.at(peer) : resource_limits{0, 0, 0, 0};
-   if (!fits(destination, _amount, _owner->_peer_limits)) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm authenticated remote peer limit exhausted");
+   {
+      auto lock = std::scoped_lock{_owner->_mutex};
+      const auto destination = _owner->_peers.contains(peer) ? _owner->_peers.at(peer) : resource_limits{0, 0, 0, 0};
+      if (!fits(destination, _amount, _owner->_peer_limits)) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm authenticated remote peer limit exhausted");
+      }
+      auto [target, inserted] = _owner->_peers.try_emplace(peer, destination);
+      add(target->second, _amount);
+      auto old = _owner->_peers.find(_peer);
+      subtract(old->second, _amount);
+      if (!old->second.calls && !old->second.items && !old->second.bytes && !old->second.pieces)
+         _owner->_peers.erase(old);
+      _peer = std::move(peer);
    }
-   auto [target, inserted] = _owner->_peers.try_emplace(peer, destination);
-   add(target->second, _amount);
-   auto old = _owner->_peers.find(_peer);
-   subtract(old->second, _amount);
-   if (!old->second.calls && !old->second.items && !old->second.bytes && !old->second.pieces)
-      _owner->_peers.erase(old);
-   _peer = std::move(peer);
+   _owner->changed.notify();
 }
 
 } // namespace forge::swarm::runtime::detail

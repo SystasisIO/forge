@@ -87,12 +87,14 @@ std::uint64_t operation_state::next_peer() { auto lock = std::scoped_lock{mutex}
 std::shared_ptr<operation_state::piece_work> operation_state::piece(core::piece_id id, const std::string& peer) {
    // Called under the short picker lock; no store call or await here.
    if (auto found = pieces.find(id); found != pieces.end()) return found->second;
+   auto capacity = budget->try_reserve(number, peer, {0, 1, 2ULL * core::piece_length(manifest, id), 1});
+   if (!capacity) return {};
    auto work = std::make_shared<piece_work>();
-   work->capacity = budget->reserve(number, peer, {0, 1, 2ULL * core::piece_length(manifest, id), 1});
+   work->capacity = std::move(*capacity);
    pieces.emplace(id, work);
    return work;
 }
-void operation_state::upload_select_locked() {
+bool operation_state::upload_select_locked() {
    auto inventory = std::vector<core::choker::candidate>{};
    inventory.reserve(candidates.size());
    for (const auto& [id, candidate] : candidates) inventory.push_back(candidate);
@@ -100,12 +102,15 @@ void operation_state::upload_select_locked() {
    const auto round_time = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
    if (round_time <= upload_time) {
       upload_next = upload_time + std::chrono::milliseconds{1};
-      return;
+      return false;
    }
    upload_time = round_time;
    const auto plan = upload->select(inventory, upload_time, true);
-   allowed = std::set<core::peer_id>{plan.unchoked.begin(), plan.unchoked.end()};
+   auto next = std::set<core::peer_id>{plan.unchoked.begin(), plan.unchoked.end()};
+   const auto changed = next != allowed;
+   allowed = std::move(next);
    upload_next = now + config.upload_round;
+   return changed;
 }
 void operation_state::upload_enter(core::peer_id id) {
    {
@@ -144,9 +149,17 @@ void operation_state::upload_served(core::peer_id id, std::uint64_t bytes) {
    }
 }
 bool operation_state::upload_allowed(core::peer_id id) {
-   auto lock = std::scoped_lock{mutex};
-   if (std::chrono::steady_clock::now() >= upload_next) upload_select_locked();
-   return allowed.contains(id) && candidates.contains(id) && candidates.at(id).interested;
+   bool updated = false;
+   bool result;
+   {
+      auto lock = std::scoped_lock{mutex};
+      if (std::chrono::steady_clock::now() >= upload_next) updated = upload_select_locked();
+      result = allowed.contains(id) && candidates.contains(id) && candidates.at(id).interested;
+   }
+   // A different writer can have observed the old plan before this round and
+   // then read the new, later upload_next. Wake it to advertise its new state.
+   if (updated) changed.notify();
+   return result;
 }
 boost::asio::awaitable<void> operation_state::wait(std::shared_ptr<operation_state> self) {
    if (!self) { FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "Swarm download handle empty"); }

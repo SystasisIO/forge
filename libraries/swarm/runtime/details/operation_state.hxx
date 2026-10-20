@@ -29,7 +29,7 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    void upload_interest(core::peer_id, bool);
    void upload_served(core::peer_id, std::uint64_t);
    [[nodiscard]] bool upload_allowed(core::peer_id);
-   void upload_select_locked();
+   bool upload_select_locked();
    static boost::asio::awaitable<void> wait(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> close(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> run(std::shared_ptr<operation_state>, std::vector<std::string>);

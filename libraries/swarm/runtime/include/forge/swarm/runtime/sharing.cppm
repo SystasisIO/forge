@@ -17,6 +17,7 @@ struct operation_status {
    std::size_t active_calls = 0;
    std::size_t upload_candidates = 0;
    std::size_t unchoked_peers = 0;
+   std::size_t capacity_waiters = 0;
    bool complete = false;
    bool canceled = false;
    bool closed = false;

@@ -3,6 +3,7 @@
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/multiple_exceptions.hpp>
 #include <boost/test/unit_test.hpp>
 #include <array>
 #include <atomic>
@@ -12,8 +13,10 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -138,10 +141,36 @@ struct link_observation {
    std::atomic_uint connected{0};
    std::atomic_uint closed{0};
    std::atomic_uint canceled{0};
+   std::atomic_uint cancel_requests{0};
+   std::atomic_uint noop_cancel_requests{0};
    std::atomic_uint succeeded{0};
    std::atomic_uint failed{0};
    std::atomic_uint destroyed_open{0};
+   std::mutex mutex;
+   std::exception_ptr first_failure;
+   void record_failure(std::exception_ptr error) {
+      auto lock = std::scoped_lock{mutex};
+      if (!first_failure) first_failure = std::move(error);
+   }
+   std::exception_ptr failure() {
+      auto lock = std::scoped_lock{mutex};
+      return first_failure;
+   }
 };
+
+std::string failure_text(std::exception_ptr error, unsigned depth = 0) {
+   if (!error) return "none";
+   if (depth == 4) return "nested exception depth limit";
+   try { std::rethrow_exception(error); }
+   catch (const boost::asio::multiple_exceptions& value) {
+      return "Asio multiple_exceptions: " + failure_text(value.first_exception(), depth + 1);
+   } catch (const forge::exceptions::base& value) {
+      return std::string{value.code().category().name()} + ":" + std::to_string(value.code().value()) + " " + value.what();
+   } catch (const std::system_error& value) {
+      return std::string{value.code().category().name()} + ":" + std::to_string(value.code().value()) + " " + value.what();
+   } catch (const std::exception& value) { return value.what(); }
+   catch (...) { return "non-standard exception"; }
+}
 
 class trusted_peer_bridge final : public peer {
  public:
@@ -155,7 +184,10 @@ class trusted_peer_bridge final : public peer {
       api::duplex_stream<forge::swarm::protocol::peer_message, forge::swarm::protocol::peer_message> stream) override {
       ++active;
       try { co_await implementation->exchange(std::move(request), trusted(), std::move(stream)); ++observation->succeeded; }
-      catch (...) { ++observation->failed; --active; changed.notify(); throw; }
+      catch (...) {
+         observation->record_failure(std::current_exception());
+         ++observation->failed; --active; changed.notify(); throw;
+      }
       --active; changed.notify();
    }
    std::atomic_uint active{0};
@@ -173,7 +205,11 @@ class local_connection final : public swarm::capabilities::connection {
    ~local_connection() override { if (!closed) ++observation->destroyed_open; }
    api::handle<peer> remote() const override { return api::handle<peer>{bridge}; }
    caller remote_identity() const override { if (fail_identity) throw std::bad_alloc{}; return principal(); }
-   void cancel() noexcept override { ++observation->canceled; }
+   void cancel() noexcept override {
+      ++observation->cancel_requests;
+      if (bridge->active && !abort_requested.exchange(true)) ++observation->canceled;
+      else ++observation->noop_cancel_requests;
+   }
    boost::asio::awaitable<void> async_close() override {
       while (true) {
          const auto epoch = bridge->changed.epoch();
@@ -187,6 +223,7 @@ class local_connection final : public swarm::capabilities::connection {
    std::shared_ptr<link_observation> observation;
    bool fail_identity;
    bool closed = false;
+   std::atomic_bool abort_requested{false};
 };
 
 class local_network final : public swarm::capabilities {
@@ -322,6 +359,92 @@ class selection_peer final : public peer {
          }
       }
    }
+};
+
+class choked_peer final : public peer {
+ public:
+   std::atomic_bool ready{false};
+   std::atomic_uint requests{0};
+   forge::asio::notification changed;
+   boost::asio::awaitable<void> metadata(forge::swarm::protocol::metadata_request, caller,
+      api::stream_writer<forge::swarm::protocol::metadata_chunk>) override { co_return; }
+   boost::asio::awaitable<void> exchange(forge::swarm::protocol::exchange_request request, caller,
+      api::duplex_stream<forge::swarm::protocol::peer_message, forge::swarm::protocol::peer_message> stream) override {
+      static_cast<void>(co_await stream.async_read());
+      static_cast<void>(co_await stream.async_read());
+      co_await stream.async_write({forge::swarm::protocol::handshake{1, request.swarm, request.realm, 0}});
+      co_await stream.async_write({forge::swarm::protocol::inventory{{1}}});
+      co_await stream.async_write({forge::swarm::protocol::choke{true}});
+      ready = true; changed.notify();
+      while (auto message = co_await stream.async_read()) {
+         if (std::holds_alternative<forge::swarm::protocol::request>(message->body)) ++requests;
+      }
+   }
+};
+
+// One payload holder for cross-operation admission, or one winner plus a
+// permanently choked sibling. Shallow extra inventory writes acknowledge that
+// the client consumed choke before the test opens the payload gate.
+class gated_peer final : public peer {
+ public:
+   gated_peer(core::descriptor manifest, std::vector<std::uint8_t> bytes, bool separate_operations)
+      : manifest{std::move(manifest)}, bytes{std::move(bytes)}, separate_operations{separate_operations} {}
+   std::array<std::atomic_bool, 3> ready{};
+   std::array<std::atomic_uint, 3> requests{};
+   std::array<forge::asio::notification, 3> release;
+   std::atomic_uint input_eof{0};
+   forge::asio::notification changed;
+   boost::asio::awaitable<bool> async_ready(unsigned role, unsigned minimum_requests,
+      std::chrono::steady_clock::time_point deadline) {
+      while (true) {
+         const auto epoch = changed.epoch();
+         if (ready.at(role) && requests.at(role) >= minimum_requests) co_return true;
+         if (std::chrono::steady_clock::now() >= deadline) co_return false;
+         co_await changed.async_wait_until(epoch, deadline);
+      }
+   }
+   boost::asio::awaitable<void> metadata(forge::swarm::protocol::metadata_request, caller,
+      api::stream_writer<forge::swarm::protocol::metadata_chunk>) override { co_return; }
+   boost::asio::awaitable<void> exchange(forge::swarm::protocol::exchange_request request, caller,
+      api::duplex_stream<forge::swarm::protocol::peer_message, forge::swarm::protocol::peer_message> stream) override {
+      const auto role = entered.fetch_add(1);
+      if (role >= ready.size()) throw std::logic_error{"unexpected reconnect in gated peer"};
+      static_cast<void>(co_await stream.async_read());
+      static_cast<void>(co_await stream.async_read());
+      const auto choked = !separate_operations && role == 1;
+      co_await stream.async_write({forge::swarm::protocol::handshake{1, request.swarm, request.realm, 0}});
+      co_await stream.async_write({forge::swarm::protocol::inventory{{1}}});
+      co_await stream.async_write({forge::swarm::protocol::choke{choked}});
+      if (separate_operations) {
+         co_await stream.async_write({forge::swarm::protocol::inventory{{1}}});
+         co_await stream.async_write({forge::swarm::protocol::inventory{{1}}});
+      }
+      ready.at(role) = true; changed.notify();
+      while (auto message = co_await stream.async_read()) {
+         forge::swarm::protocol::validate(*message, manifest);
+         if (auto* block = std::get_if<forge::swarm::protocol::request>(&message->body)) {
+            if (choked) throw std::logic_error{"request sent to choked sibling"};
+            ++requests.at(role); changed.notify();
+            if (separate_operations) co_await release.at(role).async_wait(0);
+            else {
+               while (true) {
+                  const auto epoch = changed.epoch();
+                  if (ready[0] && ready[1]) break;
+                  co_await changed.async_wait(epoch);
+               }
+            }
+            auto data = std::vector<std::uint8_t>{bytes.begin() + block->offset, bytes.begin() + block->offset + block->length};
+            co_await stream.async_write({forge::swarm::protocol::block{block->id, block->piece, block->offset, std::move(data)}});
+         }
+      }
+      ++input_eof; changed.notify();
+      co_await stream.async_close();
+   }
+ private:
+   core::descriptor manifest;
+   std::vector<std::uint8_t> bytes;
+   bool separate_operations;
+   std::atomic_uint entered{0};
 };
 
 BOOST_AUTO_TEST_CASE(local_generated_calls_require_trusted_caller_and_explicit_policy) {
@@ -666,7 +789,10 @@ BOOST_AUTO_TEST_CASE(connected_peer_sees_only_verified_store_changes_without_rec
       forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
    auto runtime = forge::asio::runtime{};
    auto tasks = forge::asio::task::scheduler{runtime};
-   auto engine = std::make_shared<swarm::engine>(tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>());
+   // Interest coalesced in the current real millisecond must use upload_next,
+   // not wait for a periodic round beyond this call's existing three seconds.
+   auto config = swarm::engine::options{}; config.upload_round = 10s;
+   auto engine = std::make_shared<swarm::engine>(tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), nullptr, config);
    auto body = [&]() -> boost::asio::awaitable<void> {
       auto share = co_await engine->async_share(manifest, store);
       auto handle = api::handle<peer>{engine};
@@ -676,6 +802,7 @@ BOOST_AUTO_TEST_CASE(connected_peer_sees_only_verified_store_changes_without_rec
          forge::swarm::protocol::exchange_request{id, {}}, trusted());
       co_await call.async_write({forge::swarm::protocol::handshake{1, id, {}, 0}});
       co_await call.async_write({forge::swarm::protocol::interest{true}});
+      auto unchoked = false;
       while (auto message = co_await call.async_read()) {
          if (auto* inventory = std::get_if<forge::swarm::protocol::inventory>(&message->body)) {
             BOOST_CHECK(!core::bitmap_test(inventory->pieces, 0)); break;
@@ -687,11 +814,14 @@ BOOST_AUTO_TEST_CASE(connected_peer_sees_only_verified_store_changes_without_rec
       co_await writer->async_commit(); writer.reset();
       auto announced = false;
       while (auto message = co_await call.async_read()) {
+         if (auto* choke = std::get_if<forge::swarm::protocol::choke>(&message->body)) unchoked = !choke->choked;
          if (auto* have = std::get_if<forge::swarm::protocol::have>(&message->body)) {
-            BOOST_CHECK(have->piece == core::piece_id(0, 0)); announced = true; break;
+            BOOST_CHECK(have->piece == core::piece_id(0, 0)); announced = true;
          }
+         if (announced && unchoked) break;
       }
       BOOST_CHECK(announced);
+      BOOST_CHECK(unchoked);
       co_await call.async_write({forge::swarm::protocol::request{1, {0, 0}, 0, 32}});
       auto received = false;
       while (auto message = co_await call.async_read()) {
@@ -700,7 +830,9 @@ BOOST_AUTO_TEST_CASE(connected_peer_sees_only_verified_store_changes_without_rec
          }
       }
       BOOST_CHECK(received);
-      call.cancel(); try { co_await call.async_finish(); } catch (...) {}
+      co_await call.async_close();
+      while (co_await call.async_read()) {}
+      co_await call.async_finish();
       co_await share.async_close(); co_await engine->async_close(); co_await store->async_close(); co_await tasks.shutdown();
    };
    forge::asio::blocking::run(runtime, body());
@@ -827,7 +959,7 @@ BOOST_AUTO_TEST_CASE(four_io_workers_share_picker_and_finish_streams_cleanly) {
       auto download = co_await client.async_download(manifest, store, {}, {}, std::chrono::steady_clock::now() + 10s);
       auto failure = std::exception_ptr{};
       try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
-      BOOST_CHECK(!failure);
+      BOOST_CHECK_MESSAGE(!failure, failure_text(failure));
       BOOST_CHECK(download.inspect().complete);
       BOOST_CHECK_EQUAL(download.inspect().traffic.verified, bytes.size());
       BOOST_CHECK(store->snapshot().published);
@@ -835,12 +967,161 @@ BOOST_AUTO_TEST_CASE(four_io_workers_share_picker_and_finish_streams_cleanly) {
       co_await download.async_close(); co_await share.async_close();
       BOOST_CHECK_EQUAL(network->observation->connected.load(), 2U);
       BOOST_CHECK_EQUAL(network->observation->closed.load(), 2U);
-      BOOST_CHECK_EQUAL(network->observation->succeeded.load(), 2U);
-      BOOST_CHECK_EQUAL(network->observation->failed.load(), 0U);
-      BOOST_CHECK_EQUAL(network->observation->canceled.load(), 0U);
+      BOOST_TEST_MESSAGE("four-I/O server failure: " << failure_text(network->observation->failure()));
+      BOOST_TEST_CONTEXT("server failure=" << failure_text(network->observation->failure()) <<
+         "; cancel requests=" << network->observation->cancel_requests.load() <<
+         "; first active cancel requests=" << network->observation->canceled.load() <<
+         "; duplicate/after-terminal cancel requests=" << network->observation->noop_cancel_requests.load()) {
+         BOOST_CHECK_EQUAL(network->observation->succeeded.load(), 2U);
+         BOOST_CHECK_EQUAL(network->observation->failed.load(), 0U);
+         BOOST_CHECK_EQUAL(network->observation->canceled.load(), 0U);
+         BOOST_CHECK_EQUAL(network->observation->cancel_requests.load(), 0U);
+      }
       BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
       co_await client.async_close(); co_await server->async_close();
       co_await store->async_close(); co_await seed->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(choked_download_waits_without_reserving_spare_data_capacity) {
+   auto fixture = swarm_test::fixture{};
+   const auto manifest = swarm_test::describe({swarm_test::data(32)});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto remote = std::make_shared<choked_peer>();
+   auto network = std::make_shared<local_network>(remote);
+   auto config = swarm::engine::options{};
+   config.peers = 1; config.attempts = 1;
+   // Exactly the two stream-scope items plus its retained control ticket. Data
+   // cannot fit: merely waiting for an eligible pick must not abort this call.
+   config.per_peer.items = 3;
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto download = co_await engine.async_download(manifest, store);
+      const auto deadline = std::chrono::steady_clock::now() + 3s;
+      while (true) {
+         const auto epoch = remote->changed.epoch();
+         if (remote->ready || std::chrono::steady_clock::now() >= deadline) break;
+         co_await remote->changed.async_wait_until(epoch, deadline);
+      }
+      BOOST_CHECK(remote->ready.load());
+      BOOST_CHECK_MESSAGE(network->observation->failed.load() == 0U, failure_text(network->observation->failure()));
+      BOOST_CHECK_EQUAL(network->observation->cancel_requests.load(), 0U);
+      BOOST_CHECK_EQUAL(download.inspect().active_calls, 1U);
+      BOOST_CHECK_EQUAL(remote->requests.load(), 0U);
+      co_await download.async_close();
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await engine.async_close(); co_await store->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(shared_budget_wakes_other_operation_and_cancellation_joins_blocked_call) {
+   auto first = swarm_test::fixture{};
+   auto second = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(32);
+   const auto manifest = swarm_test::describe({bytes});
+   auto first_store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(first.options(manifest)))};
+   auto second_store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(second.options(manifest)))};
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto remote = std::make_shared<gated_peer>(manifest, bytes, true);
+   auto network = std::make_shared<local_network>(remote);
+   auto config = swarm::engine::options{};
+   config.peers = 1; config.attempts = 1; config.per_peer.pieces = 1;
+   auto engine = swarm::engine{tasks, first.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      const auto deadline = std::chrono::steady_clock::now() + 3s;
+      auto a = co_await engine.async_download(manifest, first_store, {}, {}, deadline);
+      const auto held = co_await remote->async_ready(0, 1, deadline);
+      BOOST_CHECK(held);
+      auto b = co_await engine.async_download(manifest, second_store, {}, {}, deadline);
+      const auto blocked = co_await remote->async_ready(1, 0, deadline);
+      BOOST_CHECK(blocked);
+      while (b.inspect().capacity_waiters == 0 && std::chrono::steady_clock::now() < deadline)
+         co_await boost::asio::post(co_await boost::asio::this_coro::executor, boost::asio::use_awaitable);
+      BOOST_CHECK_EQUAL(b.inspect().capacity_waiters, 1U);
+      BOOST_CHECK_EQUAL(remote->requests[1].load(), 0U);
+      BOOST_CHECK_EQUAL(b.inspect().active_calls, 1U);
+      co_await b.async_close();
+      BOOST_CHECK(b.inspect().closed);
+      BOOST_CHECK_EQUAL(b.inspect().active_calls, 0U);
+      BOOST_CHECK_EQUAL(b.inspect().capacity_waiters, 0U);
+      BOOST_CHECK(!a.inspect().canceled);
+      BOOST_CHECK(!first_store->snapshot().published);
+      auto c = co_await engine.async_download(manifest, second_store, {}, {}, deadline);
+      const auto waiting = co_await remote->async_ready(2, 0, deadline);
+      BOOST_CHECK(waiting);
+      while (c.inspect().capacity_waiters == 0 && std::chrono::steady_clock::now() < deadline)
+         co_await boost::asio::post(co_await boost::asio::this_coro::executor, boost::asio::use_awaitable);
+      BOOST_CHECK_EQUAL(c.inspect().capacity_waiters, 1U);
+      BOOST_CHECK_EQUAL(remote->requests[2].load(), 0U);
+      BOOST_CHECK_EQUAL(c.inspect().active_calls, 1U);
+      remote->release[2].notify();
+      remote->release[0].notify();
+      auto failure = std::exception_ptr{};
+      try { co_await a.async_wait(); co_await c.async_wait(); } catch (...) { failure = std::current_exception(); }
+      BOOST_CHECK_MESSAGE(!failure, failure_text(failure));
+      BOOST_CHECK(a.inspect().complete); BOOST_CHECK(c.inspect().complete);
+      BOOST_CHECK_EQUAL(remote->requests[0].load(), 1U);
+      BOOST_CHECK_EQUAL(remote->requests[1].load(), 0U);
+      BOOST_CHECK_EQUAL(remote->requests[2].load(), 1U);
+      BOOST_CHECK_EQUAL(remote->input_eof.load(), 2U);
+      if (!failure) {
+         BOOST_CHECK(swarm_test::read_file(first.root / "result") == bytes);
+         BOOST_CHECK(swarm_test::read_file(second.root / "result") == bytes);
+      }
+      co_await a.async_close(); co_await c.async_close();
+      BOOST_CHECK_EQUAL(c.inspect().capacity_waiters, 0U);
+      BOOST_CHECK_EQUAL(network->observation->connected.load(), 3U);
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 3U);
+      BOOST_CHECK_EQUAL(network->observation->succeeded.load(), 2U);
+      BOOST_CHECK_EQUAL(network->observation->failed.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await engine.async_close(); co_await first_store->async_close(); co_await second_store->async_close();
+      co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(global_completion_half_closes_and_joins_choked_sibling_successfully) {
+   auto fixture = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(32);
+   const auto manifest = swarm_test::describe({bytes});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   auto runtime = forge::asio::runtime{{.worker_threads = 4}};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto remote = std::make_shared<gated_peer>(manifest, bytes, false);
+   auto network = std::make_shared<local_network>(remote); network->routes = 2;
+   auto config = swarm::engine::options{}; config.peers = 2; config.attempts = 1;
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto download = co_await engine.async_download(manifest, store, {}, {}, std::chrono::steady_clock::now() + 3s);
+      auto failure = std::exception_ptr{};
+      try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
+      BOOST_TEST_CONTEXT("server failure=" << failure_text(network->observation->failure())) {
+         BOOST_CHECK_MESSAGE(!failure, failure_text(failure));
+         BOOST_CHECK(download.inspect().complete);
+         BOOST_CHECK_EQUAL(download.inspect().traffic.verified, bytes.size());
+         BOOST_CHECK_EQUAL(remote->requests[0].load(), 1U);
+         BOOST_CHECK_EQUAL(remote->requests[1].load(), 0U);
+         BOOST_CHECK_EQUAL(remote->input_eof.load(), 2U);
+         BOOST_CHECK_EQUAL(network->observation->succeeded.load(), 2U);
+         BOOST_CHECK_EQUAL(network->observation->failed.load(), 0U);
+         BOOST_CHECK_EQUAL(network->observation->cancel_requests.load(), 0U);
+      }
+      if (!failure) BOOST_CHECK(swarm_test::read_file(fixture.root / "result") == bytes);
+      co_await download.async_close();
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 2U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await engine.async_close(); co_await store->async_close(); co_await tasks.shutdown();
    };
    forge::asio::blocking::run(runtime, body());
 }
@@ -871,6 +1152,7 @@ BOOST_AUTO_TEST_CASE(input_half_close_drains_delayed_block_and_successful_termin
       auto failure = std::exception_ptr{};
       auto blocks = 0U;
       auto eof = false;
+      auto terminal_waited = false;
       try {
          co_await call.async_write({forge::swarm::protocol::handshake{1, id, {}, 0}});
          co_await call.async_write({forge::swarm::protocol::interest{true}});
@@ -892,12 +1174,16 @@ BOOST_AUTO_TEST_CASE(input_half_close_drains_delayed_block_and_successful_termin
             }
          }
          eof = true;
+         terminal_waited = true;
          co_await call.async_finish();
       } catch (...) { failure = std::current_exception(); call.cancel(); }
       store->release_reads.notify();
-      try { co_await call.async_finish(); } catch (...) { if (!failure) failure = std::current_exception(); }
+      if (!terminal_waited) {
+         terminal_waited = true;
+         try { co_await call.async_finish(); } catch (...) { if (!failure) failure = std::current_exception(); }
+      }
       co_await share.async_close();
-      BOOST_CHECK(!failure); BOOST_CHECK(eof); BOOST_CHECK_EQUAL(blocks, 1U);
+      BOOST_CHECK_MESSAGE(!failure, failure_text(failure)); BOOST_CHECK(eof); BOOST_CHECK_EQUAL(blocks, 1U);
       const auto accounting = policy->grant->inspect();
       BOOST_CHECK_EQUAL(accounting.traffic.queued, bytes.size());
       BOOST_CHECK_EQUAL(accounting.traffic.uncertain, 0U);

@@ -1,7 +1,10 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -150,6 +153,7 @@ boost::asio::awaitable<void> peer_session::download_read(std::shared_ptr<peer_se
             }
             auto canceled = self->_owner->picker->set_choked(*self->_remote, choke->choked,
                std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()));
+            self->_choked = choke->choked;
             for (const auto& request : canceled) self->retract(request.id);
          } else if (auto* reject = std::get_if<protocol::reject>(&message->body)) {
             auto lock = std::scoped_lock{self->_owner->mutex};
@@ -174,6 +178,8 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
       auto control = self->_owner->budget->reserve(self->_owner->number, self->_scope->peer, {0, 1, 256, 0});
       co_await self->_call->async_write({protocol::handshake{1, self->_owner->content, self->_owner->realm, 0}});
       co_await self->_call->async_write({protocol::interest{true}});
+      std::optional<std::chrono::steady_clock::time_point> capacity_deadline;
+      std::uint64_t capacity_progress = 0;
       while (true) {
          const auto epoch = self->_owner->changed.epoch();
          self->_scope->check();
@@ -186,31 +192,57 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
          std::optional<core::transfer::request> request;
          std::optional<command> cancel;
          std::shared_ptr<operation_state::piece_work> piece;
-         auto capacity = self->_owner->budget->reserve(self->_owner->number, self->_scope->peer,
-            {0, 1, 3ULL * core::block_size, 0});
+         resource_budget::ticket capacity;
+         auto waiting_for = resource_limits{0, 1, 3ULL * core::block_size, 0};
+         bool blocked = false;
          bool complete;
+         std::uint64_t progress;
          {
             auto lock = std::scoped_lock{self->_owner->mutex};
             complete = self->_owner->picker->inspect().complete;
+            progress = self->_owner->useful_progress;
             const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now());
-            auto expired = self->_owner->picker->expire(now);
-            // Ownership checks also discard late frames after expiration.
-            for (const auto& item : expired) {
-               if (auto session = self->_owner->sessions[item.peer].lock()) session->retract(item.id);
-            }
             {
                auto request_lock = std::scoped_lock{self->_mutex};
                if (!self->_commands.empty()) { cancel.emplace(std::move(self->_commands.front())); self->_commands.pop_front(); }
             }
-            if (self->_remote && !complete) {
+            if (!complete && !cancel) {
+               auto expired = self->_owner->picker->expire(now);
+               // Ownership checks also discard late frames after expiration.
+               for (const auto& item : expired) {
+                  if (auto session = self->_owner->sessions[item.peer].lock()) session->retract(item.id);
+               }
                auto request_lock = std::scoped_lock{self->_mutex};
-               if (self->_requests.empty() && !cancel) {
-                  auto picked = self->_owner->picker->pick(*self->_remote, now, 1);
-                  if (!picked.empty()) {
-                     request = picked.front();
-                     try { piece = self->_owner->piece(request->piece, self->_scope->peer); }
-                     catch (...) { static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now)); throw; }
-                     self->_requests.emplace(request->id, owned_request{*request, std::move(capacity), piece, piece->generation});
+               if (!self->_commands.empty()) { cancel.emplace(std::move(self->_commands.front())); self->_commands.pop_front(); }
+            }
+            if (!complete && !cancel && self->_remote && !self->_choked) {
+               auto request_lock = std::scoped_lock{self->_mutex};
+               if (self->_requests.empty()) {
+                  auto admitted = self->_owner->budget->try_reserve(self->_owner->number, self->_scope->peer, waiting_for);
+                  if (!admitted) blocked = true;
+                  else {
+                     capacity = std::move(*admitted);
+                     auto picked = self->_owner->picker->pick(*self->_remote, now, 1);
+                     if (!picked.empty()) {
+                        request = picked.front();
+                        const auto new_piece = !self->_owner->pieces.contains(request->piece);
+                        try {
+                           piece = self->_owner->piece(request->piece, self->_scope->peer);
+                           if (piece) {
+                              self->_requests.emplace(request->id, owned_request{*request, std::move(capacity), piece, piece->generation});
+                           } else {
+                              static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
+                              waiting_for.items += 1;
+                              waiting_for.bytes += 2ULL * core::piece_length(self->_owner->manifest, request->piece);
+                              waiting_for.pieces = 1;
+                              request.reset(); blocked = true;
+                           }
+                        } catch (...) {
+                           static_cast<void>(self->_owner->picker->cancel(*self->_remote, request->id, now));
+                           if (new_piece) self->_owner->pieces.erase(request->piece);
+                           throw;
+                        }
+                     }
                   }
                }
             }
@@ -221,11 +253,41 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
             co_return;
          }
          if (request) {
+            capacity_deadline.reset();
             self->_owner->add_fact(&facts::requested, request->length);
             co_await self->_call->async_write({protocol::request{request->id, request->piece, request->offset, request->length}});
             continue;
          }
          capacity.release();
+         if (blocked) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!capacity_deadline || capacity_progress != progress) {
+               capacity_deadline = std::min(now + self->_owner->config.transfer.request_timeout,
+                  self->_owner->total_deadline.value_or(std::chrono::steady_clock::time_point::max()));
+               capacity_progress = progress;
+            }
+            if (now >= *capacity_deadline) {
+               FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm resource admission stalled without useful progress");
+            }
+            // Recheck AFTER releasing our temporary request ticket. Waiting
+            // on its own release epoch would otherwise spin, not backpressure.
+            const auto budget_epoch = self->_owner->budget->changed.epoch();
+            if (self->_owner->budget->available(self->_owner->number, self->_scope->peer, waiting_for)) {
+               co_await boost::asio::post(co_await boost::asio::this_coro::executor, boost::asio::use_awaitable);
+               continue;
+            }
+            auto local_work = self->_scope->pause_idle();
+            using namespace boost::asio::experimental::awaitable_operators;
+            std::exception_ptr wait_failure;
+            { auto lock = std::scoped_lock{self->_owner->mutex}; ++self->_owner->state.capacity_waiters; }
+            try {
+               co_await (self->_owner->budget->changed.async_wait_until(budget_epoch, *capacity_deadline, self->_scope->stop.get_token()) ||
+                  self->_owner->changed.async_wait_until(epoch, *capacity_deadline, self->_scope->stop.get_token()));
+            } catch (...) { wait_failure = std::current_exception(); }
+            { auto lock = std::scoped_lock{self->_owner->mutex}; --self->_owner->state.capacity_waiters; }
+            if (wait_failure) std::rethrow_exception(wait_failure);
+            continue;
+         }
          co_await self->_owner->changed.async_wait_until(epoch,
             std::chrono::steady_clock::now() + self->_owner->config.transfer.request_timeout, self->_scope->stop.get_token());
       }
