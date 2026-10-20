@@ -10,8 +10,11 @@ module;
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <forge/log/macros.hpp>
 
 module forge.net.p2p.resource_manager;
+
+import forge.log.logger;
 
 #include "details/resource_manager_state.hxx"
 
@@ -318,7 +321,13 @@ resource_manager::stream_reservation::bind_service(std::string_view value) noexc
 
 std::optional<resource_manager::memory_reservation>
 resource_manager::stream_reservation::reserve_memory(std::uint64_t bytes, memory_priority priority) noexcept {
-   if (!active() || !owner_->reserve_memory(ledger_, bytes, priority)) {
+   if (!active()) {
+      wlog("forge.net.p2p.resources", "P2P memory reservation rejected",
+           ("event", "p2p.memory_reservation_failed")("reason", "inactive_reservation")("scope", "reservation")(
+               "requested_bytes", bytes)("priority", static_cast<unsigned>(priority)));
+      return std::nullopt;
+   }
+   if (!owner_->reserve_memory(ledger_, bytes, priority)) {
       return std::nullopt;
    }
    return memory_reservation{owner_, ledger_, bytes};
