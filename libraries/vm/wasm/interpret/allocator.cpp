@@ -1,6 +1,7 @@
 module;
 
 #include <cstddef>
+#include <cstring>
 #include <atomic>
 #include <memory>
 #include <condition_variable>
