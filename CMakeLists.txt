@@ -960,6 +960,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store
+      forge_plugins_swarm_node
       forge_plugins
    )
    if(TARGET forge_auth_appauth)
@@ -1144,6 +1145,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       plugins_net_http_server
       plugins_log_otlp
       plugins_db_store
+      plugins_swarm_node
       plugins
    )
    if(TARGET forge_auth_appauth)

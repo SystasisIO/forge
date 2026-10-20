@@ -2,6 +2,7 @@ add_library(forge_swarm_storage STATIC
    catalog.cpp
    catalog_impl.cpp
    catalog_checkpoint.cpp
+   catalog_store_access.cpp
    file_store.cpp
    file_store_impl.cpp
    file_store_impl_pieces.cpp

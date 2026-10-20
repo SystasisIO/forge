@@ -14,7 +14,21 @@ partitions. Policy, shared quota and product capability interfaces are standalon
 `forge.swarm.runtime.admission`, `.quota` and `.capabilities` modules.
 
 Supply a caller-owned `task::scheduler`, a bounded CPU `compute::executor`, an
-explicit `admission` policy and (for discovery/connect/advertising) `capabilities`.
+explicit `admission` policy and (for discovery/advertising) `capabilities`.
+Connection acquisition belongs to passive, owned `capabilities::route` objects:
+lookup and explicitly supplied download routes use the same contract. A route's
+`key()` is a bounded diagnostic key, never an authenticated identity. Its
+repeatable `async_connect(stop, deadline) const` must retain backend context in
+the returned awaitable even if the route facade is destroyed. The runtime retains
+the route list through retry rounds and the completion of all children.
+Explicit routes work without a discovery capability. Adapters retain the complete
+bounded address set rather than encoding it into a string or a second peer cache.
+
+This is an intentional Preview C++ source break: replace `vector<string>` routes
+and `capabilities::async_connect(string, ...)` with owned route factories and
+`vector<unique_ptr<capabilities::route>>`. There is no compatibility overload;
+API wire and persisted state are unchanged.
+
 Supply `shared_ptr<core::store>` to `async_share`/`async_download`. The store owns
 disk/verification execution. Runtime does not own, stop or close that store,
 the shared scheduler, compute pools, or product persistence. Handles cancel on
@@ -136,7 +150,7 @@ Local writer creation/write/non-integrity commit failures are terminal after
 rollback and child drain. Discarded partial writes do not reset retries forever.
 `idle_timeout` refreshes only for useful progress, not duplicates/control input;
 owned CPU/disk/gate backpressure pauses this idle clock. Grant expiry and the
-optional final `async_download(..., providers, total_deadline)` argument remain
+optional final `async_download(..., routes, total_deadline)` argument remain
 fixed and are never extended by progress/backpressure/reconnect. No implicit
 absolute 30-second API call deadline is installed. A total deadline also cancels
 a pending scheduler worker through an owned, joined notification waiter.

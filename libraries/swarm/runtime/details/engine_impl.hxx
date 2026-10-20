@@ -9,7 +9,7 @@ struct engine::impl : std::enable_shared_from_this<impl> {
    std::shared_ptr<detail::operation_state> find(core::swarm_id, const std::string&);
    static boost::asio::awaitable<std::shared_ptr<detail::operation_state>> create(
       std::shared_ptr<impl>, core::descriptor, std::shared_ptr<core::store>, std::string,
-      bool downloading, std::vector<std::string>, std::optional<std::chrono::steady_clock::time_point>);
+      bool downloading, std::vector<std::unique_ptr<capabilities::route>>, std::optional<std::chrono::steady_clock::time_point>);
    static boost::asio::awaitable<void> close(std::shared_ptr<impl>);
    static std::uint64_t initial_seed(std::optional<std::uint64_t>);
    static std::uint64_t mix_seed(std::uint64_t) noexcept;

@@ -10,6 +10,7 @@ module;
 #include <iterator>
 #include <list>
 #include <memory>
+#include <stop_token>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -265,7 +266,8 @@ forge::api::p2p::publication protocol_registry::publish(forge::api::p2p::api_bin
              if (const auto owner = weak.lock()) {
                 co_await owner->async_close_generation(weak_slot.lock(), api);
              } else if (api) { co_await async_close_api_publication_generation(api); }
-          }, [weak_api] { const auto api = weak_api.lock(); return api && api_publication_generation_active(api); });
+          }, [weak_api] { const auto api = weak_api.lock(); return api && api_publication_generation_active(api); },
+          api->stop_token());
       set_api_publication_generation_retirement(api, [weak](const auto* retired) {
          if (const auto owner = weak.lock()) { owner->retire_generation(retired); }
       });

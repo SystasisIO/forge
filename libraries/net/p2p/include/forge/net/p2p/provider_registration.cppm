@@ -32,6 +32,8 @@ class provider_registration {
    [[nodiscard]] bool active() const noexcept;
    [[nodiscard]] const protocol_id& profile() const;
    [[nodiscard]] const dht::key& key() const;
+   // Stop renewal without dropping the async_withdraw() ownership fence.
+   void request_stop() noexcept;
    boost::asio::awaitable<void> async_withdraw();
 
  private:

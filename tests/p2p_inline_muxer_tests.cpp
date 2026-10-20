@@ -282,7 +282,12 @@ void check_ordinary_observed_source(bool quic, bool private_profile, std::string
    BOOST_TEST(document.observed_endpoint->transport.host == "127.0.0.1");
    BOOST_TEST(document.observed_endpoint->transport.port == source.transport.port);
    BOOST_TEST(document.observed_endpoint->is_direct_quic() == quic);
-   BOOST_TEST(client.local_endpoint()->transport.port == source.transport.port);
+   // The control view may prefer an asynchronously acquired relay circuit.
+   // The original direct listener, not the first advertised address, is stable.
+   BOOST_TEST(std::ranges::any_of(client.local_endpoints(), [&](const auto& endpoint) {
+      return !endpoint.relayed && endpoint.transport.port == source.transport.port &&
+         endpoint.is_direct_quic() == quic;
+   }));
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, server.async_stop());
    BOOST_TEST(client.diagnostics().resources.system.file_descriptors == 0U);

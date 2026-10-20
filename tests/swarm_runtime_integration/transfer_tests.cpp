@@ -11,6 +11,7 @@
 #include <utility>
 #include <variant>
 #include "../swarm_storage/support.hpp"
+#include "../swarm_runtime/route_fixture.hxx"
 
 import forge.swarm.runtime.engine;
 import forge.api.core.binding;
@@ -111,16 +112,23 @@ class network final : public swarm::capabilities {
  public:
    network(forge::asio::task::scheduler& scheduler, std::shared_ptr<peer> seed)
        : scheduler{scheduler}, seed{std::move(seed)} {}
-   boost::asio::awaitable<std::vector<std::string>> async_lookup(
+   boost::asio::awaitable<std::vector<std::unique_ptr<route>>> async_lookup(
       forge::swarm::core::swarm_id, std::string, std::size_t limit, std::stop_token,
       std::chrono::steady_clock::time_point) override {
       ++lookups;
-      co_return limit ? std::vector<std::string>{"fixture-seed"} : std::vector<std::string>{};
+      auto result = std::vector<std::unique_ptr<route>>{};
+      if (limit) result.push_back(make_route());
+      co_return result;
    }
-   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(
-      std::string route, std::stop_token, std::chrono::steady_clock::time_point) override {
-      BOOST_CHECK_EQUAL(route, "fixture-seed");
-      ++connections;
+   std::unique_ptr<route> make_route() const {
+      return std::make_unique<forge::tests::swarm::route>("fixture-seed",
+         [seed = seed, tasks = &scheduler, count = connections](std::stop_token, std::chrono::steady_clock::time_point) {
+            return connect(*tasks, seed, count);
+         });
+   }
+   static boost::asio::awaitable<std::unique_ptr<connection>> connect(forge::asio::task::scheduler& scheduler,
+      std::shared_ptr<peer> seed, std::shared_ptr<std::atomic_uint> connections) {
+      ++*connections;
       auto value = std::make_unique<tcp_link>(co_await boost::asio::this_coro::executor, scheduler, seed);
       auto failure = std::exception_ptr{};
       try { co_await value->open(); }
@@ -138,7 +146,7 @@ class network final : public swarm::capabilities {
       co_return nullptr;
    }
    std::atomic_uint lookups{0};
-   std::atomic_uint connections{0};
+   std::shared_ptr<std::atomic_uint> connections = std::make_shared<std::atomic_uint>(0);
  private:
    forge::asio::task::scheduler& scheduler;
    std::shared_ptr<peer> seed;
@@ -376,7 +384,7 @@ void transfer(bool funded, bool insufficient = false, std::chrono::milliseconds 
    };
    forge::asio::blocking::run(runtime, body());
    BOOST_CHECK_GT(routes->lookups.load(), 0U);
-   BOOST_CHECK_GT(routes->connections.load(), 0U);
+   BOOST_CHECK_GT(routes->connections->load(), 0U);
    BOOST_CHECK_EQUAL(grant->inspect().held, 0U);
    BOOST_CHECK(swarm_test::read_file(source.root / "result") == bytes);
 }
@@ -404,7 +412,8 @@ void denied_metadata() {
       auto failure = std::exception_ptr{};
       try {
          share = co_await serving->async_share(manifest, store, "protected");
-         connection = co_await routes.async_connect("fixture-seed", {},
+         auto route = routes.make_route();
+         connection = co_await route->async_connect({},
             std::chrono::steady_clock::now() + 5s);
          auto forged = caller{forge::api::auth::caller_source::tls_certificate,
                               core::sha256::hash(std::string{"spoofed-client"})};

@@ -226,7 +226,7 @@ registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
 | [db/mdbx](libraries/db/mdbx/README.md) | `forge_db_mdbx` | Vendored libmdbx implementation of the shared DB driver contract. | `forge_asio`, `forge_db_core`, `forge_exceptions`; libmdbx privately. |
 | [rocksdb](libraries/rocksdb/README.md) | `forge_rocksdb` | Optional RocksDB TransactionDB wrapper. | RocksDB privately, `forge_exceptions`, `forge_schema`. |
 | [db/rocksdb](libraries/db/rocksdb/README.md) | `forge_db_rocksdb` | RocksDB implementation of the shared DB driver contract. | `forge_db_core`, `forge_rocksdb`. |
-| [plugins](plugins/README.md) | `forge_plugins`, `forge_plugins_*_*` | Official infrastructure plugins: Chain signer, crypto secrets, P2P node (including PubSub, diagnostics and events), optional API resolver, HTTP server, logging and named DB Store. | `forge_app`, `forge_api_core`, focused plugin targets. |
+| [plugins](plugins/README.md) | `forge_plugins`, `forge_plugins_*_*` | Official infrastructure plugins: Chain signer, crypto secrets, P2P node (including PubSub, diagnostics and events), optional API resolver and Swarm node, HTTP server, logging and named DB Store. | `forge_app`, `forge_api_core`, focused plugin targets. |
 | [tui](libraries/tui/README.md) | `forge_tui` | Terminal UI value models, render helpers, runner. | Notcurses core privately and optionally. |
 
 `find_package(Forge CONFIG REQUIRED)` is intentionally lightweight and discovers

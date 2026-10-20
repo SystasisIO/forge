@@ -246,13 +246,14 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
    self->changed.notify();
    if (failure) std::rethrow_exception(failure);
 }
-boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_state> self, std::vector<std::string> routes) {
+boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_state> self,
+   std::vector<std::unique_ptr<capabilities::route>> routes) {
    self->check();
    if (co_await publish_if_complete(self)) co_return;
-   if (!self->providers) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm download needs connection capability");
-   }
    if (routes.empty()) {
+      if (!self->providers) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm download needs lookup capability or explicit routes");
+      }
       auto scope = std::make_shared<call_scope>(self, "lookup:" + std::to_string(self->number));
       scope->bind({}); scope->start();
       std::exception_ptr failure;
@@ -268,7 +269,7 @@ boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_stat
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm provider lookup empty or exceeds bound");
    }
    for (const auto& route : routes) {
-      if (route.empty() || route.size() > 1024) {
+      if (!route || route->key().empty() || route->key().size() > 1024) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Swarm provider route exceeds bound");
       }
    }
@@ -293,7 +294,7 @@ boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_stat
          for (const auto& route : routes) {
             ++*remaining;
             try {
-               boost::asio::co_spawn(executor, peer_session::connect(self, route),
+               boost::asio::co_spawn(executor, peer_session::connect(self, *route),
                   [remaining, wake](std::exception_ptr) { --*remaining; wake->notify(); });
             } catch (...) { --*remaining; throw; }
          }

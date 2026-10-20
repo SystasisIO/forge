@@ -6,6 +6,7 @@ module;
 
 #include <functional>
 #include <memory>
+#include <stop_token>
 #include <utility>
 
 module forge.api.p2p.publication;
@@ -41,6 +42,10 @@ bool publication::active() const noexcept {
    return detail::publication_active(state);
 }
 
+std::stop_token publication::stop_token() const noexcept {
+   return detail::publication_stop_token(state_);
+}
+
 void publication::close() noexcept {
    const auto state = state_;
    detail::close_publication(state);
@@ -59,13 +64,13 @@ publication detail::publication_access::make(
    boost::asio::any_io_executor owner_executor,
    std::function<void()> close,
    std::function<boost::asio::awaitable<void>()> drain,
-   std::function<bool()> active) {
+   std::function<bool()> active, std::stop_token native) {
    if (!owner_executor) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
                             "P2P publication owner executor is unavailable");
    }
    return publication{make_publication_state(
-      std::move(owner_executor), std::move(close), std::move(drain), std::move(active))};
+      std::move(owner_executor), std::move(close), std::move(drain), std::move(active), native)};
 }
 
 } // namespace forge::api::p2p

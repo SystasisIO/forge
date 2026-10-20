@@ -584,6 +584,25 @@ the former PubSub source and upgraded the main node API to 3.0 for owned raw
 protocols. Plugin 8.0 consolidates those consumers as described below; the old
 source contracts are not a supported composition path.
 
+### Scoped Consumer Opens
+
+`remote_options::address_hints` carries the complete transient AddrInfo of a
+discovered peer into native acquisition, including relay carrier roots and
+DNSADDR. No durable peer-store write or DHT membership follows from a hint.
+Known independent addresses keep priority at the bounded root limit. Native
+P2P owns fallback, gater/resource admission, identity checks, cancellation and
+one absolute setup deadline; consumers must not reproduce its dial loop.
+
+`require_authenticated_peer` rejects a stream lacking native TLS/Noise identity
+evidence before API transport conversion. Swarm enables it; metadata and route
+keys are not authority. Every opened session is checked against the requested
+target peer, including explicit insecure memory test mode. The setup timeout
+is separate from the API transport's stream lifetime deadline.
+
+`provider_registration::request_stop()` stops renewal without discarding the
+handle; `async_withdraw()` remains the retryable cleanup barrier. API publication
+`stop_token()` likewise reports retired admission, not completed session drain.
+
 ### Sparse Resource Limits
 
 `resources` maps the existing native scopes: `system`, `transient`, `peer`,

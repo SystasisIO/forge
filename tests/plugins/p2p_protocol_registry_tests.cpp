@@ -15,6 +15,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -43,6 +44,28 @@ using fixture = np::test::protocol_registry_fixture;
 using point = fixture::point;
 using forge::net::p2p::protocol_id;
 using namespace std::chrono_literals;
+}
+
+BOOST_AUTO_TEST_CASE(p2p_publication_replacement_signals_idle_owner_without_removing_replacement) {
+   fixture f;
+   const auto name = protocol_id{"/registry/idle-replacement/1"};
+   f.owner->attach(f.operations);
+   auto old = f.publish(name);
+   auto stopped = std::atomic_uint{0};
+   auto callback = std::stop_callback{old.stop_token(), [&]() noexcept {
+      ++stopped;
+      old.close();
+   }};
+   auto next = f.publish(name);
+   BOOST_CHECK_EQUAL(stopped.load(), 1U);
+   BOOST_CHECK(!old.active());
+   BOOST_CHECK(next.active());
+   BOOST_CHECK(!next.stop_token().stop_requested());
+   BOOST_CHECK(f.contains(name));
+   f.run(old.async_close());
+   BOOST_CHECK(f.contains(name));
+   f.run(next.async_close());
+   BOOST_CHECK(!f.contains(name));
 }
 
 // These are the production registry and slot, with only their fallible native

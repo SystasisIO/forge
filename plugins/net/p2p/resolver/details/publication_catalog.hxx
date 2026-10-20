@@ -5,11 +5,14 @@
 
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <stop_token>
 #include <vector>
 
 namespace forge::plugins::net::p2p::resolver::detail {
@@ -42,6 +45,7 @@ class publication_catalog final : public std::enable_shared_from_this<publicatio
       [[nodiscard]] const std::string& protocol() const noexcept;
       [[nodiscard]] const std::vector<entry>& entries() const noexcept;
       [[nodiscard]] bool active() const noexcept;
+      [[nodiscard]] std::stop_token stop_token() const noexcept;
       [[nodiscard]] bool seal(std::shared_ptr<forge::api::p2p::publication>& child) noexcept;
       void close() noexcept;
       boost::asio::awaitable<void> async_close();
@@ -51,6 +55,9 @@ class publication_catalog final : public std::enable_shared_from_this<publicatio
       std::vector<entry> entries_;
       mutable std::mutex mutex_;
       std::shared_ptr<forge::api::p2p::publication> child_;
+      std::stop_source stop_;
+      std::function<void()> child_stop_handler_;
+      std::optional<std::stop_callback<std::function<void()>>> child_stop_;
       bool active_ = true;
    };
 

@@ -20,6 +20,7 @@ module;
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
@@ -28,6 +29,7 @@ module;
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -37,11 +39,14 @@ module;
 #include <boost/scope/scope_exit.hpp>
 
 #include "libp2p_identity_fixture.hxx"
+#include "../fixtures/local_dns_server.hxx"
 
 module forge.net.p2p.node;
 
 import forge.asio.blocking;
+import forge.asio.gate;
 import forge.asio.notification;
+import forge.multiformats.varint;
 import forge.asio.runtime;
 import forge.crypto.asymmetric;
 import forge.exceptions;
@@ -57,6 +62,7 @@ import forge.net.p2p.relay;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
+import forge.net.dns.types;
 import forge.net.yamux.exceptions;
 import forge.net.yamux.session;
 import forge.net.tcp.connection;
@@ -72,6 +78,7 @@ import forge.net.transport.stream;
 #include "../../libraries/net/p2p/details/relay_transport.hxx"
 #include "../../libraries/net/p2p/details/resource_stream.hxx"
 #include "../../libraries/net/p2p/details/stream_upgrade.hxx"
+#include "session_admission_test_access.hxx"
 
 namespace {
 namespace p2p = forge::net::p2p;
@@ -840,6 +847,199 @@ BOOST_AUTO_TEST_CASE(path_dcutr_on_authenticated_direct_connection_is_rejected_w
    forge::asio::blocking::run(runtime, server.async_stop());
 }
 
+BOOST_AUTO_TEST_CASE(operation_circuit_hints_reach_unknown_relay_and_target_with_all_carrier_roots) {
+   for (const auto use_dnsaddr : {false, true}) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto relay = p2p::node{runtime, collision_options("hint-relay", true)};
+   auto target = p2p::node{runtime, collision_options("hint-relay-target")};
+   auto source_options = collision_options("hint-relay-source");
+   source_options.direct_dial.max_concurrent_attempts = 1;
+   auto record = std::promise<std::string>{};
+   const auto record_value = record.get_future().share();
+   auto questions = std::make_shared<std::atomic_uint>(0);
+   namespace dns_fixture = forge::tests::dns;
+   auto dns = dns_fixture::local_dns_server{[record_value, questions](const std::uint8_t* data, std::size_t size)
+      -> std::optional<dns_fixture::bytes> {
+      const auto question = dns_fixture::parse_question(data, size);
+      if (!question) { return std::nullopt; }
+      if (question->name != "_dnsaddr.relay-hints.test" || question->type != 16) {
+         return dns_fixture::make_failure_response(data, *question, 3);
+      }
+      ++*questions;
+      auto answers = std::vector<dns_fixture::response_answer>{};
+      {
+         const auto text = "dnsaddr=" + record_value.get();
+         if (text.size() > 255U) { throw std::runtime_error{"oversized hint fixture TXT"}; }
+         auto value = dns_fixture::bytes{static_cast<std::uint8_t>(text.size())};
+         value.insert(value.end(), text.begin(), text.end());
+         answers.push_back({.type = 16, .value = std::move(value)});
+      }
+      return dns_fixture::make_response(data, *question, answers);
+   }};
+   if (use_dnsaddr) { source_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns.port()}}; }
+   auto source = p2p::node{runtime, std::move(source_options)};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      forge::asio::blocking::run(runtime, source.async_stop());
+      forge::asio::blocking::run(runtime, target.async_stop());
+      forge::asio::blocking::run(runtime, relay.async_stop());
+   }};
+   forge::asio::blocking::run(runtime, relay.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+   forge::asio::blocking::run(runtime, target.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+   target.peers().learn_endpoint(relay.local_peer(), relay.local_endpoints().front(),
+      p2p::capability_set{.bits = p2p::capabilities::relay | p2p::capabilities::relay_reservation});
+   static_cast<void>(forge::asio::blocking::run(runtime, target.async_reserve_relay(relay.local_peer())));
+   BOOST_CHECK(!source.peers().find(relay.local_peer()));
+   BOOST_CHECK(!source.peers().find(target.local_peer()));
+   auto reserved = boost::asio::ip::tcp::acceptor{runtime.context()};
+   reserved.open(boost::asio::ip::tcp::v4());
+   auto refused = relay.local_endpoints().front();
+   auto found = false;
+   for (auto port = std::uint16_t{10240}; port < 10340 && port < refused.transport.port; ++port) {
+      auto error = boost::system::error_code{};
+      reserved.bind({boost::asio::ip::address_v4::loopback(), port}, error);
+      if (!error) { refused.transport.port = port; found = true; break; }
+   }
+   BOOST_REQUIRE(found);
+   reserved.close();
+   auto bad_direct = refused; bad_direct.peer = target.local_peer();
+   auto circuit = relay.local_endpoints().front();
+   circuit.peer = relay.local_peer(); circuit.relayed = p2p::endpoint::circuit{target.local_peer()};
+   record.set_value(relay.local_endpoints().front().to_string());
+   refused.relayed = p2p::endpoint::circuit{target.local_peer()};
+   const auto protocol = p2p::protocol_id{"/forge/test/hint-circuit/1"};
+   target.register_protocol_handler(protocol, [](p2p::node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+      const auto bytes = co_await incoming.stream.async_read_frame();
+      co_await incoming.stream.async_write_frame(bytes);
+      co_await incoming.stream.async_close();
+   });
+   auto stream = forge::asio::blocking::run(runtime, source.async_open_protocol_stream(target.local_peer(), protocol,
+      {.timeout = 3s, .max_direct_endpoints = 2, .allow_hole_punch = false,
+         .address_hints = {bad_direct.to_multiaddr(), refused.to_multiaddr(), use_dnsaddr ?
+            forge::multiformats::multiaddr::parse("/dnsaddr/relay-hints.test/p2p/" + relay.local_peer().to_string() +
+               "/p2p-circuit/p2p/" + target.local_peer().to_string()) : circuit.to_multiaddr()}}));
+   BOOST_CHECK_EQUAL(questions->load() > 0U, use_dnsaddr);
+   require_authenticated_circuit_facts(source.diagnostics(), target.local_peer(), relay.local_peer());
+   const auto payload = std::vector<std::uint8_t>{1, 2, 3};
+   forge::asio::blocking::run(runtime, stream.async_write_frame(payload));
+   BOOST_CHECK(forge::asio::blocking::run(runtime, stream.async_read_frame()) == payload);
+   forge::asio::blocking::run(runtime, stream.async_close());
+   BOOST_CHECK_GE(source.metrics().direct_failures, 2U);
+   for (const auto& peer : {relay.local_peer(), target.local_peer()}) {
+      if (const auto row = source.peers().find(peer)) {
+         for (const auto& endpoint : row->endpoints) {
+            BOOST_CHECK(!endpoint.sources.learned);
+            BOOST_CHECK_EQUAL(endpoint.successes, 0U);
+            BOOST_CHECK_EQUAL(endpoint.failures, 0U);
+         }
+      }
+   }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(operation_circuit_hints_deadline_and_cancel_join_stalled_hop_without_stopping_carrier) {
+   for (const auto stage : {0, 1, 2}) {
+   for (const auto cancel : {false, true}) {
+   BOOST_TEST_CONTEXT("stage=" << stage << " cancel=" << cancel) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+      auto relay = p2p::node{runtime, collision_options("hint-stalled-relay", true)};
+      const auto target_options = collision_options("hint-stalled-target");
+      auto target = p2p::node{runtime, target_options};
+      auto identity = std::make_shared<p2p::libp2p_identity_material>(p2p::make_libp2p_identity_material(target_options));
+      auto source = p2p::node{runtime, collision_options("hint-stalled-source")};
+      auto state = std::make_shared<ping_peer_state>();
+      auto entered = state->received.get_future();
+      auto terminal = state->terminal.get_future();
+      relay.register_protocol_handler(p2p::builtins::relay_hop,
+         [state, stage, identity, target_options](p2p::node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+            auto session = std::shared_ptr<forge::net::yamux::session>{};
+            auto signaled = false;
+            try {
+               auto buffered_hop = std::vector<std::uint8_t>{};
+               static_cast<void>(co_await p2p::async_read_length_delimited(incoming.stream, buffered_hop, 4096));
+               if (stage != 0) {
+                  co_await incoming.stream.async_write(p2p::relay::codec::encode_hop({
+                     .kind = p2p::relay::hop_message::message_kind::status, .status = p2p::relay::status::ok}));
+                  if (stage == 1) {
+                     auto selected = co_await p2p::protocol_negotiation::async_accept(std::move(incoming.stream),
+                        {p2p::protocol_id{"/noise"}});
+                     incoming.stream = std::move(selected.stream);
+                     // Wait until the initiator has actually entered Noise.
+                     static_cast<void>(co_await incoming.stream.async_read());
+                  } else {
+                     auto upgraded = co_await p2p::upgrade_relay_inbound_session(std::move(incoming.stream),
+                        target_options, *identity, incoming.session.remote_peer, {});
+                     session = std::move(upgraded.session);
+                     for (;;) {
+                        auto protocol_stream = p2p::stream{co_await session->async_accept_stream()};
+                        auto buffered = std::vector<std::uint8_t>{};
+                        const auto header_frame = co_await p2p::async_read_length_delimited(protocol_stream, buffered, 4096);
+                        const auto header = p2p::protocol_negotiation::decode_message(
+                           std::span<const std::uint8_t>{header_frame}.subspan(forge::multiformats::varint_decode(header_frame).size));
+                        if (header.kind != p2p::protocol_negotiation::message_kind::header) {
+                           throw std::runtime_error{"missing circuit multistream header"};
+                        }
+                        co_await protocol_stream.async_write(p2p::protocol_negotiation::encode_frame(
+                           p2p::protocol_negotiation::encode_message(header)));
+                        const auto offer_frame = co_await p2p::async_read_length_delimited(protocol_stream, buffered, 4096);
+                        const auto offer = p2p::protocol_negotiation::decode_message(
+                           std::span<const std::uint8_t>{offer_frame}.subspan(forge::multiformats::varint_decode(offer_frame).size));
+                        if (offer.protocol == p2p::builtins::identify) {
+                           co_await protocol_stream.async_write(p2p::protocol_negotiation::encode_frame(
+                              p2p::protocol_negotiation::encode_message({
+                                 .kind = p2p::protocol_negotiation::message_kind::not_available})));
+                           co_await protocol_stream.async_close();
+                           continue;
+                        }
+                        if (offer.protocol != p2p::builtins::ping) {
+                           throw std::runtime_error{"unexpected circuit protocol"};
+                        }
+                        incoming.stream = std::move(protocol_stream);
+                        break; // Authenticated circuit, but no protocol acknowledgement.
+                     }
+                  }
+               }
+               state->received.set_value();
+               signaled = true;
+               while (!(co_await incoming.stream.async_read()).empty()) {}
+            } catch (...) {
+               if (!signaled) state->received.set_exception(std::current_exception());
+            }
+            try { co_await incoming.stream.async_close(); } catch (...) {}
+            if (session) { try { co_await session->async_close(); } catch (...) {} }
+            state->terminal.set_value();
+         });
+      forge::asio::blocking::run(runtime, relay.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      auto circuit = relay.local_endpoints().front();
+      circuit.peer = relay.local_peer(); circuit.relayed = p2p::endpoint::circuit{target.local_peer()};
+      auto signal = boost::asio::cancellation_signal{};
+      auto executor = boost::asio::make_strand(runtime.context());
+      auto opened = boost::asio::co_spawn(executor, source.async_open_protocol_stream(target.local_peer(), p2p::builtins::ping,
+         {.timeout = cancel ? 3s : 1s, .allow_hole_punch = false, .address_hints = {circuit.to_multiaddr()}}),
+         boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+      auto cleanup = boost::scope::scope_exit{[&] {
+         forge::asio::blocking::run(runtime, source.async_stop());
+         if (opened.valid()) { opened.wait(); }
+         forge::asio::blocking::run(runtime, target.async_stop());
+         forge::asio::blocking::run(runtime, relay.async_stop());
+      }};
+      BOOST_REQUIRE(entered.wait_for(2s) == std::future_status::ready);
+      entered.get();
+      if (cancel) boost::asio::post(executor, [&] { signal.emit(boost::asio::cancellation_type::all); });
+      BOOST_REQUIRE(opened.wait_for(2s) == std::future_status::ready);
+      try { static_cast<void>(opened.get()); BOOST_FAIL("stalled hinted HOP unexpectedly opened"); }
+      catch (const forge::exceptions::base& error) {
+         BOOST_CHECK(p2p::exceptions::code_of(error) == (cancel ? p2p::exceptions::code::canceled : p2p::exceptions::code::timeout));
+      }
+      BOOST_REQUIRE(terminal.wait_for(1s) == std::future_status::ready);
+      // Cancel only the admitted HOP stream, never its authenticated shared carrier.
+      BOOST_CHECK_NO_THROW(static_cast<void>(forge::asio::blocking::run(runtime, source.async_ping(relay.local_peer()))));
+      BOOST_CHECK_EQUAL(source.diagnostics().resources.active_dials, 0U);
+      BOOST_CHECK(!source.peers().find(target.local_peer()));
+   }
+   }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(path_explicit_owner_cancel_keeps_authenticated_relay_and_existing_stream_usable) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    auto relay_options = path_session_options("path-cancel-relay");
@@ -965,6 +1165,64 @@ BOOST_AUTO_TEST_CASE(path_explicit_owner_cancel_keeps_authenticated_relay_and_ex
    forge::asio::blocking::run(runtime, source.async_stop());
    forge::asio::blocking::run(runtime, target.async_stop());
    forge::asio::blocking::run(runtime, relay.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(operation_circuit_admission_cancels_and_drains_before_the_occupied_gate_is_released) {
+   for (const auto timeout : {false, true}) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+      auto relay = p2p::node{runtime, collision_options("hint-gate-relay", true)};
+      auto target = p2p::node{runtime, collision_options("hint-gate-target")};
+      auto source = p2p::node{runtime, collision_options("hint-gate-source")};
+      forge::asio::blocking::run(runtime, relay.async_listen(p2p::parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto carrier = relay.local_endpoints().front();
+      target.peers().learn_endpoint(relay.local_peer(), carrier,
+         p2p::capability_set{.bits = p2p::capabilities::relay | p2p::capabilities::relay_reservation});
+      static_cast<void>(forge::asio::blocking::run(runtime, target.async_reserve_relay(relay.local_peer())));
+      // Only the carrier is preconnected; the target still needs a fresh,
+      // authenticated HOP/Noise circuit and its own admission.
+      static_cast<void>(forge::asio::blocking::run(runtime, source.async_connect(carrier)));
+      auto held = forge::asio::blocking::run(runtime, p2p::detail::hold_session_admission_for_test(source));
+      auto signal = boost::asio::cancellation_signal{};
+      auto executor = boost::asio::make_strand(runtime.context());
+      auto circuit = carrier;
+      circuit.peer = relay.local_peer();
+      circuit.relayed = p2p::endpoint::circuit{target.local_peer()};
+      auto pending = boost::asio::co_spawn(executor,
+         source.async_open_protocol_stream(target.local_peer(), p2p::builtins::ping,
+            {.timeout = timeout ? 1s : 4s, .allow_hole_punch = false, .address_hints = {circuit.to_multiaddr()}}),
+         boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+      auto cleanup = boost::scope::scope_exit{[&] {
+         held.release();
+         source.request_stop();
+         forge::asio::blocking::run(runtime, source.async_stop());
+         if (pending.valid()) { pending.wait(); }
+         forge::asio::blocking::run(runtime, target.async_stop());
+         forge::asio::blocking::run(runtime, relay.async_stop());
+      }};
+      const auto authenticated = [&] {
+         const auto snapshot = target.diagnostics();
+         return std::ranges::any_of(snapshot.sessions, [&](const auto& session) {
+            return session.remote_peer == source.local_peer() && session.path == p2p::path::kind::relay;
+         });
+      };
+      const auto bound = std::chrono::steady_clock::now() + 2s;
+      while (!authenticated() && std::chrono::steady_clock::now() < bound) { std::this_thread::sleep_for(1ms); }
+      BOOST_REQUIRE(authenticated());
+      BOOST_REQUIRE(pending.wait_for(0ms) != std::future_status::ready);
+      if (!timeout) { boost::asio::post(executor, [&] { signal.emit(boost::asio::cancellation_type::all); }); }
+      BOOST_REQUIRE(pending.wait_for(2s) == std::future_status::ready);
+      BOOST_CHECK_EXCEPTION(static_cast<void>(pending.get()), forge::exceptions::base, [timeout](const auto& error) {
+         return p2p::exceptions::code_of(error) ==
+            (timeout ? p2p::exceptions::code::timeout : p2p::exceptions::code::canceled);
+      });
+      const auto snapshot = source.diagnostics();
+      BOOST_CHECK(std::ranges::none_of(snapshot.sessions, [&](const auto& session) {
+         return session.remote_peer == target.local_peer();
+      }));
+      BOOST_CHECK_EQUAL(snapshot.resources.system.outbound_connections, 1U); // Shared carrier only.
+      BOOST_CHECK_NO_THROW(static_cast<void>(forge::asio::blocking::run(runtime, source.async_ping(relay.local_peer()))));
+      BOOST_CHECK(held.active());
+   }
 }
 
 BOOST_AUTO_TEST_CASE(path_ping_collects_split_native_reply_before_comparing_all_32_bytes) {

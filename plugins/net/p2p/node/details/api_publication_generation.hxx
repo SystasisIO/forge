@@ -8,6 +8,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 
 namespace forge::plugins::net::p2p::node::detail {
 
@@ -20,6 +21,7 @@ class api_publication_generation final : public std::enable_shared_from_this<api
    api_publication_generation& operator=(const api_publication_generation&) = delete;
 
    [[nodiscard]] bool active() const noexcept;
+   [[nodiscard]] std::stop_token stop_token() const noexcept;
    void set_retirement_handler(std::function<void(const api_publication_generation*)> handler);
    boost::asio::awaitable<void> accept(forge::net::p2p::node::incoming_protocol_stream stream);
    void request_close() noexcept;
@@ -40,6 +42,7 @@ class api_publication_generation final : public std::enable_shared_from_this<api
    std::list<std::shared_ptr<session_entry>> closing_sessions_;
    std::shared_ptr<forge::asio::notification> drained_;
    std::function<void(const api_publication_generation*)> retirement_;
+   std::stop_source stop_;
    std::size_t active_count_ = 0;
    bool admission_open_ = true;
    bool cancellation_complete_ = false;

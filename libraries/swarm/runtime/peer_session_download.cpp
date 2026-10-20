@@ -37,21 +37,23 @@ import forge.asio.notification;
 
 namespace forge::swarm::runtime::detail {
 
-boost::asio::awaitable<void> peer_session::connect(std::shared_ptr<operation_state> owner, std::string route) {
+boost::asio::awaitable<void> peer_session::connect(std::shared_ptr<operation_state> owner, const capabilities::route& route) {
    auto self = std::make_shared<peer_session>(owner, owner->next_peer());
    self->_scope = std::make_shared<call_scope>(owner,
       "connection:" + std::to_string(owner->number) + ":" + std::to_string(self->_number));
    self->_scope->bind({});
-   return connect_owned(std::move(self), std::move(route));
+   auto pending = route.async_connect(self->_scope->stop.get_token(),
+      std::chrono::steady_clock::now() + owner->config.callback_timeout);
+   return connect_owned(std::move(self), std::move(pending));
 }
-boost::asio::awaitable<void> peer_session::connect_owned(std::shared_ptr<peer_session> self, std::string route) {
+boost::asio::awaitable<void> peer_session::connect_owned(std::shared_ptr<peer_session> self,
+   boost::asio::awaitable<std::unique_ptr<capabilities::connection>> pending) {
    const auto owner = self->_owner;
    self->_scope->start();
    std::exception_ptr failure;
    bool terminal_waited = false;
    try {
-      self->_connection = co_await owner->providers->async_connect(std::move(route), self->_scope->stop.get_token(),
-         std::chrono::steady_clock::now() + owner->config.callback_timeout);
+      self->_connection = co_await std::move(pending);
       self->_scope->check();
       if (!self->_connection) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Swarm connection capability returned empty hold");

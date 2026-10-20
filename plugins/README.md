@@ -69,6 +69,7 @@ target_link_libraries(app PRIVATE
 | [`forge::plugins::net::http::server`](net/http/server/README.md) | `forge_plugins_net_http_server` | `plugins.net.http.server` | Runs one HTTP server, composes TLS from scoped Secrets material and accepts typed HTTP API and middleware contributions. |
 | [`forge::plugins::net::p2p::node`](net/p2p/node/README.md) | `forge_plugins_net_p2p_node` | `plugins.net.p2p.node` | Owns one P2P node with focused connectivity, DHT, PubSub, diagnostics and host-event APIs. |
 | [`forge::plugins::net::p2p::resolver`](net/p2p/resolver/README.md) | `forge_plugins_net_p2p_resolver` | `plugins.net.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
+| [`forge::plugins::swarm::node`](swarm/node/README.md) | `forge_plugins_swarm_node` | `plugins.swarm.node` | Preview thin Swarm runtime adapter: authenticated P2P discovery and API calls, product-owned file stores/admission, optional named ObjectDB catalog. |
 | [`forge::plugins::chain::signer`](chain/signer/README.md) | `forge_plugins_chain_signer` | `plugins.chain.signer` | Composes named transaction and finality providers behind typed Chain signer APIs and exact caller/action policy. |
 | [`forge::plugins::crypto::wallet`](crypto/wallet/README.md) | `forge_plugins_crypto_wallet` | `plugins.crypto.wallet` | Owns bounded encrypted wallet providers and authorized local management. |
 | [`forge::plugins::crypto::secrets`](crypto/secrets/README.md) | `forge_plugins_crypto_secrets` | `plugins.crypto.secrets` | Provides bounded secret retrieval, derivation and symmetric encryption operations. |
@@ -164,10 +165,12 @@ transport mutation APIs. Their public APIs are typed contribution surfaces:
 ## Tests
 
 - `test_forge_plugins`
+- `test_forge_swarm_plugin` and its focused MDBX/RocksDB catalog gates
 - Focused package tests such as `test_forge_package_plugins_net_http_server`,
   `test_forge_package_plugins_chain_signer`,
   `test_forge_package_plugins_crypto_signer_removed`,
   `test_forge_package_plugins_crypto_secrets`,
   `test_forge_package_plugins_log_otlp`,
   `test_forge_package_plugins_net_p2p_node` and
-  `test_forge_package_plugins_db_store`.
+  `test_forge_package_plugins_db_store` and
+  `test_forge_package_plugins_swarm_node_component`.

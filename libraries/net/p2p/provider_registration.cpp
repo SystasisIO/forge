@@ -44,6 +44,10 @@ bool provider_registration::active() const noexcept {
    return impl_ && impl_->active();
 }
 
+void provider_registration::request_stop() noexcept {
+   if (impl_) { impl_->request_stop(); }
+}
+
 const protocol_id& provider_registration::profile() const {
    if (!impl_) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "P2P provider registration is empty");
