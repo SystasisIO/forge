@@ -1,6 +1,7 @@
 module;
 
 #include "details/beast_message.hxx"
+#include "details/complete_parser.hxx"
 
 #include <forge/exceptions/macros.hpp>
 
@@ -166,17 +167,6 @@ void check_parser_error(const boost::system::error_code& error) {
 }
 
 template <bool IsRequest>
-class complete_parser final : public boost::beast::http::parser<IsRequest, boost::beast::http::string_body> {
- private:
-   void on_trailer_field_impl(boost::beast::http::field, boost::beast::string_view, boost::beast::string_view,
-                              boost::system::error_code& error) override {
-      // Beast may intentionally discard undeclared or unapproved trailers.
-      // Reject the parsed event itself, before that normalization can hide it.
-      error = boost::beast::http::error::bad_field;
-   }
-};
-
-template <bool IsRequest>
 boost::beast::http::message<IsRequest, boost::beast::http::string_body>
 parse_message(std::span<const std::uint8_t> bytes, const wire_limits& limits, bool skip_body = false) {
    validate_limits(limits);
@@ -184,7 +174,7 @@ parse_message(std::span<const std::uint8_t> bytes, const wire_limits& limits, bo
       FORGE_THROW_EXCEPTION(exceptions::payload_too_large, "HTTP wire message exceeds its limit");
    }
    const auto layout = inspect_head(as_text(bytes), limits, IsRequest);
-   auto parser = complete_parser<IsRequest>{};
+   auto parser = detail::complete_parser<IsRequest>{};
    parser.header_limit(static_cast<std::uint32_t>(limits.max_header_bytes));
    parser.body_limit(limits.max_body_bytes);
    parser.eager(true);
