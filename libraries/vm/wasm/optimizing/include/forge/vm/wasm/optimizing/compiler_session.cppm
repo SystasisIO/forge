@@ -17,6 +17,8 @@ export import forge.asio.runtime;
 export import forge.asio.task;
 export import forge.vm.wasm.optimizing.compiler_protocol;
 
+import forge.asio.child_signal_registration;
+
 export namespace forge::vm::wasm::optimizing {
 
 struct session_options {

@@ -67,6 +67,15 @@ TCP is a byte-stream transport. Use `connection.stream.async_write(...)` and
 `connection.stream.async_read_frame()` when the caller needs FORGE length-prefixed
 message boundaries over the TCP stream.
 
+`connection.stream.async_close_write()` sends TCP FIN after the caller has
+finished its writes. It is idempotent and preserves the read side: the peer can
+read EOF and still send a response. Serialize write-side closure with writes
+and terminal close. Further writes fail with `tcp::exceptions::closed`.
+An orderly EOF from a generic TCP stream throws
+`transport::exceptions::end_of_stream`; connection reset and broken pipe remain
+failures and never become EOF. The typed `tcp::connection` facade retains its
+existing `tcp::exceptions::closed` read behavior.
+
 ### Upgrade Surface
 
 Use `tcp::connection` when another layer needs the native socket before TCP is

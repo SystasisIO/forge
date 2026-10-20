@@ -61,6 +61,17 @@ standard input or an owner-only regular file. Callers pass only a password-file
 path or the decision to consume stdin through argv; the password itself is
 never a command argument or an ordinary config option.
 
+`password_request.stop_token` optionally enables cooperative cancellation while
+waiting for terminal/stdin/file input. A dedicated wake descriptor interrupts
+the existing input wait; no runtime dependency or polling worker is introduced.
+Cancellation raises `exceptions::password_cancelled` and unwinds the same terminal
+echo guard as success, EOF and input errors. Callers must join their blocking
+task before destroying its terminal or input descriptors. An omitted token
+preserves the existing synchronous behavior and error identities.
+Terminal entry and restoration discard pending input and apply attributes
+immediately; they do not wait for the caller to drain prompt output. Restoration
+retains the complete original terminal attributes and leaves output pending.
+
 Decrypt validates the complete container shape before running scrypt or AES:
 the format has a 16-byte salt, a 12-byte GCM nonce, a 16-byte GCM tag and an
 exact ciphertext length. Scrypt `N` must be a power of two and all KDF values

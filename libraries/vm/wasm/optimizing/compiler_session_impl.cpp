@@ -126,7 +126,7 @@ compiler_session::impl::impl(asio::runtime& runtime_value, asio::compute::execut
 }
 
 compiler_session::impl::~impl() {
-   if (!quiescent || shutdown_active || signal_owner)
+   if (!quiescent || shutdown_active || signal_owner.registered())
       std::terminate();
    close_cache(); // only after all tracked scheduler/compute/child drains
    clear_ready();

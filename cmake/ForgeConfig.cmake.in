@@ -33,6 +33,11 @@ set(
    db_ids
    compression
    swarm_core
+   swarm_db
+   swarm_storage
+   swarm_protocol
+   swarm_conversion
+   swarm_api
    chain_core
    chain_savanna_values
    chain_protocol
@@ -87,6 +92,7 @@ set(
    crypto_asymmetric_values
    crypto_asymmetric
    crypto_signer
+   crypto_jose
    crypto_keystore
    crypto_wallet
    crypto_pki
@@ -99,6 +105,7 @@ set(
    asio
    cli
    net_transport
+   net_tlsnotary
    net_tcp
    net_dns
    net_tls
@@ -106,6 +113,8 @@ set(
    net_yamux
    auth_oauth2
    auth_credential
+   auth_attestation
+   auth_api
    auth_liboauth2
    auth_appauth
    auth_oidc_agent
@@ -128,6 +137,7 @@ set(
    plugins_net_p2p_node
    plugins_net_p2p_resolver
    plugins_net_http_server
+   plugins_net_tlsnotary_session
    plugins_log_otlp
    plugins_db_store
    plugins
@@ -181,6 +191,28 @@ macro(_forge_add_component component)
          _forge_add_component(exceptions)
          _forge_add_component(raw)
          _forge_add_component(crypto_digest)
+      elseif("${component}" STREQUAL "swarm_db")
+         _forge_add_component(swarm_core)
+         _forge_add_component(db_object)
+      elseif("${component}" STREQUAL "swarm_storage")
+         _forge_add_component(swarm_core)
+         _forge_add_component(swarm_db)
+         _forge_add_component(db_object)
+         _forge_add_component(db_core)
+         _forge_add_component(asio)
+      elseif("${component}" STREQUAL "swarm_protocol")
+         _forge_add_component(swarm_core)
+         _forge_add_component(raw)
+         _forge_add_component(reflect)
+         _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "swarm_conversion")
+         _forge_add_component(core)
+         _forge_add_component(swarm_db)
+         _forge_add_component(swarm_protocol)
+      elseif("${component}" STREQUAL "swarm_api")
+         _forge_add_component(swarm_protocol)
+         _forge_add_component(api_core)
+         _forge_add_component(api_auth)
       elseif("${component}" STREQUAL "chain_core")
          _forge_add_component(exceptions)
          _forge_add_component(raw)
@@ -532,6 +564,10 @@ macro(_forge_add_component component)
          _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "net_transport")
          _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "net_tlsnotary")
+         _forge_add_component(net_transport)
+         _forge_add_component(asio)
+         _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "net_tcp")
          _forge_add_component(net_transport)
       elseif("${component}" STREQUAL "net_dns")
@@ -546,6 +582,18 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "auth_credential")
          _forge_add_component(exceptions)
          _forge_add_component(raw)
+      elseif("${component}" STREQUAL "auth_attestation")
+         _forge_add_component(raw)
+         _forge_add_component(schema)
+         _forge_add_component(variant)
+      elseif("${component}" STREQUAL "auth_api")
+         _forge_add_component(auth_attestation)
+         _forge_add_component(api_auth)
+         _forge_add_component(api_core)
+      elseif("${component}" STREQUAL "crypto_jose")
+         _forge_add_component(crypto_asymmetric)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(codec_json)
       elseif("${component}" STREQUAL "auth_liboauth2")
          _forge_add_component(auth_oauth2)
          _forge_add_component(asio)
@@ -717,6 +765,12 @@ macro(_forge_add_component component)
          _forge_add_component(api_transport)
          _forge_add_component(schema)
          _forge_add_component(net_p2p)
+      elseif("${component}" STREQUAL "plugins_net_tlsnotary_session")
+         _forge_add_component(net_tlsnotary)
+         _forge_add_component(app)
+         _forge_add_component(api_core)
+         _forge_add_component(config_core)
+         _forge_add_component(schema)
       elseif("${component}" STREQUAL "plugins_net_http_server")
          _forge_add_component(auth_http)
          _forge_add_component(app)
@@ -760,6 +814,9 @@ macro(_forge_add_component component)
          _forge_add_component(plugins_net_http_server)
          _forge_add_component(plugins_log_otlp)
          _forge_add_component(plugins_db_store)
+         if("plugins_net_tlsnotary_session" IN_LIST _FORGE_ALL_COMPONENTS)
+            _forge_add_component(plugins_net_tlsnotary_session)
+         endif()
       endif()
    endif()
 endmacro()
@@ -835,6 +892,12 @@ if("cli" IN_LIST _FORGE_COMPONENTS)
 endif()
 if("compression" IN_LIST _FORGE_COMPONENTS)
    list(APPEND _FORGE_BOOST_MODULES iostreams)
+endif()
+if("schema" IN_LIST _FORGE_COMPONENTS)
+   list(APPEND _FORGE_BOOST_MODULES regex)
+endif()
+if("net_tlsnotary" IN_LIST _FORGE_COMPONENTS)
+   list(APPEND _FORGE_BOOST_MODULES process)
 endif()
 if(_FORGE_BOOST_MODULES)
    list(REMOVE_DUPLICATES _FORGE_BOOST_MODULES)
@@ -963,11 +1026,41 @@ endif()
 if("net_s3" IN_LIST _FORGE_COMPONENTS)
    _forge_require_package(AWSSDK 1.11.900 EXACT CONFIG COMPONENTS s3)
 endif()
+if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS OR "crypto_jose" IN_LIST _FORGE_COMPONENTS)
+   # Resolve the co-installed dependency even when a consumer supplies only
+   # Forge_DIR. Without either local package, retain external discovery.
+   if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose/cjoseConfig.cmake")
+      _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
+         PATHS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose" NO_DEFAULT_PATH)
+   elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cjose/cjoseConfig.cmake")
+      _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
+         PATHS "${CMAKE_CURRENT_LIST_DIR}/../cjose" NO_DEFAULT_PATH)
+   endif()
+endif()
+if("crypto_jose" IN_LIST _FORGE_COMPONENTS)
+   _forge_require_package(CJOSE)
+endif()
 if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
    _forge_require_package(OAuth2Dependencies)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ForgeTargets.cmake")
+
+# A native dependency from another export set must not impose a package-wide
+# missing-target guard on unrequested components. Restore each original edge
+# only after its component-scoped backend qualification has succeeded.
+if("crypto_jose" IN_LIST _FORGE_COMPONENTS)
+   get_target_property(_forge_jose_links Forge::forge_crypto_jose INTERFACE_LINK_LIBRARIES)
+   if(NOT "$<LINK_ONLY:cjose::cjose_static>" IN_LIST _forge_jose_links)
+      target_link_libraries(Forge::forge_crypto_jose INTERFACE "$<LINK_ONLY:cjose::cjose_static>")
+   endif()
+endif()
+if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
+   get_target_property(_forge_oauth2_links Forge::oauth2_internal INTERFACE_LINK_LIBRARIES)
+   if(NOT "cjose::cjose_static" IN_LIST _forge_oauth2_links)
+      target_link_libraries(Forge::oauth2_internal INTERFACE cjose::cjose_static)
+   endif()
+endif()
 
 foreach(_forge_component IN LISTS _FORGE_REQUESTED_COMPONENTS)
    if("${_forge_component}" STREQUAL "all")

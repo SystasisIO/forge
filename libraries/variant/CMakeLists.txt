@@ -2,6 +2,7 @@ add_library(
    forge_variant STATIC
    chrono.cpp
    format.cpp
+   schema.cpp
    value.cpp
    value_object.cpp
 )

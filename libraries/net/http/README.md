@@ -11,6 +11,23 @@ still owns HTTP mechanics; the plugin owns app lifecycle/config composition.
 
 ## When To Use
 
+`write_multipart_stream(parts, options)` emits the same multipart/form-data
+framing as the buffered `write_multipart_form`, with lazy body readers. It
+bounds each part, the complete wire body (including headers and boundaries),
+metadata count/header bytes and output chunks (at most 64 KiB). Each source
+must also produce bounded chunks; the writer never materializes a whole part.
+Cancellation propagates to its sources and further reads raise the typed
+Asio cancellation error; source failures preserve their typed exception.
+
+`body_reader::from_callback` adapts an independently owned body producer, for
+example a materialized `file_response` body, preserving exact bytes_read and
+source errors. It retains the callback through each awaited call. The optional
+nonthrowing cancel callback must wake an active producer when it can block;
+the caller still joins that operation. Use the original reader when forwarding
+an HTTP request body so its request ownership/100-continue marker is preserved.
+Readers are single-consumer streams. Already opened file responses retain
+their descriptors even if the original pathname is removed before draining.
+
 - Build local or service HTTP APIs over Boost.Asio.
 - Share routing and middleware with WebSocket upgrade handling.
 - Use a queued per-connection HTTP client for serialized requests.

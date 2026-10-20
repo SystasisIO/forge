@@ -1,0 +1,13 @@
+{
+  "coordinate": "com.nimbusds:nimbus-jose-jwt:10.5",
+  "url": "https://repo.maven.apache.org/maven2/com/nimbusds/nimbus-jose-jwt/10.5/nimbus-jose-jwt-10.5.jar",
+  "sha256": "104ed6c348d35f68ab16d85550ed59239bcb7846bc2bd885ef3851a0ab2e73cf",
+  "pom_url": "https://repo.maven.apache.org/maven2/com/nimbusds/nimbus-jose-jwt/10.5/nimbus-jose-jwt-10.5.pom",
+  "pom_sha256": "c1f57f6715c2d3f043c9cea7ba2d4263b6d4e5f98576c3fdfc97d7f388fa7d40",
+  "runtime_jars": ["nimbus-jose-jwt-10.5.jar"],
+  "embedded": {
+    "com.google.code.gson:gson": "2.13.1",
+    "com.github.stephenc.jcip:jcip-annotations": "1.0-1"
+  },
+  "optional_dependencies": "Not used: Tink and Bouncy Castle. ES256 uses the JDK EC provider. No Maven resolution during execution."
+}

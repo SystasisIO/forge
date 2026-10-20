@@ -1576,7 +1576,7 @@ def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: lis
 
 
 def check_net_plugin_families(root: Path, errors: list[str]) -> None:
-   leaves = ("http/server", "p2p/node", "p2p/resolver")
+   leaves = ("http/server", "p2p/node", "p2p/resolver", "tlsnotary/session")
    for retired in ("http", "p2p", "net/p2p/diagnostics", "net/p2p/pubsub"):
       if (root / "plugins" / retired).exists():
          errors.append(f"plugins/{retired}: retired network plugin family")
@@ -1590,7 +1590,7 @@ def check_net_plugin_families(root: Path, errors: list[str]) -> None:
       interface = package / "include/forge/plugins/net" / leaf / "plugin.cppm"
       if not interface.is_file() or f"export module {identity}.plugin;" not in interface.read_text():
          errors.append(f"{package.relative_to(root)}: network plugin module does not match its path")
-   for family in ("net", "net/http", "net/p2p"):
+   for family in ("net", "net/http", "net/p2p", "net/tlsnotary"):
       cmake = root / "plugins" / family / "CMakeLists.txt"
       if not cmake.is_file() or re.sub(r"add_subdirectory\([a-z][a-z0-9_]*\)\s*", "", cmake.read_text()).strip():
          errors.append(f"plugins/{family}: grouping may only add leaf subdirectories")
@@ -2487,6 +2487,7 @@ def check_crypto_family(root: Path, files: list[Path], errors: list[str]) -> Non
       "asymmetric",
       "bls",
       "bn256",
+      "jose",
       "core",
       "digest",
       "keystore",

@@ -1,0 +1,127 @@
+name: Attestation F1 Native
+run-name: Attestation F1 Native / ${{ github.ref_name }} / ${{ github.sha }}
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - "libraries/auth/attestation/**"
+      - "libraries/auth/api/**"
+      - "libraries/crypto/jose/**"
+      - "libraries/schema/**"
+      - "libraries/variant/**"
+      - "libraries/codec/json/**"
+      - "tests/attestation*/**"
+      - ".github/workflows/attestation.yml"
+      - ".github/scripts/attestation.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attestation-refs/heads/${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  ATTESTATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  CTEST_PARALLEL_LEVEL: "1"
+
+jobs:
+  sanitizers:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ATTESTATION_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned dependencies
+        run: bash .github/scripts/attestation.sh dependencies
+      - name: ASan UBSan and bounded mutation corpus
+        run: bash .github/scripts/attestation.sh sanitizers
+      - name: Collect bounded evidence and clean generated trees
+        if: always()
+        run: bash .github/scripts/attestation.sh evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attestation-sanitizers-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ATTESTATION_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned dependencies
+        run: bash .github/scripts/attestation.sh dependencies
+      - name: Compile and qualify focused contracts
+        id: focused
+        run: bash .github/scripts/attestation.sh build
+      - name: Python and Java bidirectional interoperability
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
+        run: bash .github/scripts/attestation.sh interop
+      - name: Bounded executor measurements and worker failure
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
+        run: bash .github/scripts/attestation.sh benchmark
+      - name: Collect early qualification evidence without cleaning the active build
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/attestation.sh checkpoint
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: attestation-early-${{ matrix.os }}-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Compile native regressions
+        id: boundary
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
+        run: bash .github/scripts/attestation.sh boundary
+      - name: JWT, schema and regression tests
+        if: ${{ !cancelled() && steps.boundary.outcome == 'success' }}
+        run: bash .github/scripts/attestation.sh test
+      - name: Installed consumers and dependency isolation
+        id: packages
+        if: ${{ !cancelled() && steps.boundary.outcome == 'success' }}
+        run: bash .github/scripts/attestation.sh packages
+      - name: Collect bounded evidence and clean generated trees
+        if: always()
+        run: bash .github/scripts/attestation.sh evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attestation-${{ matrix.os }}-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14

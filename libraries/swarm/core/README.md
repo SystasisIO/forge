@@ -19,11 +19,198 @@ padding are different.
 | `forge.swarm.core.descriptor` | File entries, descriptor version, independent limits, validation and exact bounded encoding/decoding |
 | `forge.swarm.core.merkle` | SHA-256 block/piece trees, streaming file hasher and piece proofs |
 | `forge.swarm.core.identity` | `swarm_id` and validated identity calculation |
+| `forge.swarm.core.checkpoint` | Bounded versioned resume values and checksummed Raw encoding |
+| `forge.swarm.core.store` | Filesystem-neutral asynchronous store/checkpoint contracts, writer ownership and leases |
+| `forge.swarm.core.transfer` | Peer availability, piece/block picker, bounded requests and explicit verification transitions |
+| `forge.swarm.core.peer_observation` | Connection IDs, explicit chrono time and cumulative observation values |
+| `forge.swarm.core.choker` | Bounded serving slots, optimistic exploration and seed rotation |
 | `forge.swarm.core.exceptions` | Typed errors over existing Forge exception machinery |
 
 There is no `forge.swarm` or `forge.swarm.core` facade module. Values have no
 pimpl or hidden runtime resources. All indices in Merkle APIs are file-local;
 there is no ambiguous global piece index.
+
+## Storage Contracts
+
+`store` names Boost.Asio awaitables but acquires no Forge Asio dependency and
+does not execute I/O. `store::writer` owns one unfinished piece until commit,
+discard or destruction. Blocks may arrive in any order at aligned offsets;
+unverified progress never establishes availability. `store::lease` is a
+move-only hold which a concrete store drains before closing its resources.
+Closing is explicit; destroying a value never implicitly deletes product files.
+
+`checkpoint_store` is the single selected durable metadata authority. A
+successful `async_save()` must atomically persist the whole checkpoint and
+report failures. The file implementation's sidecar is used only when no
+external adapter is supplied. Swarm DB models and the Swarm Storage catalog
+adapter provide the externally owned Object Store integration.
+An external adapter binds its content/locator and atomically rejects stale or
+nonmonotonic checkpoint generations; a successful return is not a queued write.
+
+Checkpoint v1 is canonical Raw `pair<resume_state, sha256>`. The digest covers
+the canonical Raw state (not the digest itself). It detects accidental metadata
+corruption, not hostile modification: content must still be verified after
+reopen. The state contains uint32 version, content identity, uint64 generation,
+published flag, little-bit-first verified bitmap and ordered unfinished records
+with exact block bitmaps. Bits beyond the declared geometry must be zero;
+verified and unfinished entries cannot overlap. At most 64 unfinished pieces
+and 1 MiB encoded metadata are accepted. A published checkpoint is complete.
+Unknown versions, noncanonical counts, wrong identity/checksum/geometry and
+excess allocation are typed `invalid_checkpoint` errors. The decoder uses
+bounded Forge Raw rather than a separate codec.
+
+This restart-cache layout is **Preview** independently of the immutable
+descriptor v1 format. A future incompatible cache revision requires an explicit
+version/reset path; there is no silent legacy decoder.
+
+## Deterministic Transfer
+
+Use `transfer` for single-owner decisions driven by a runtime, not as a network
+engine. It owns no payload, store, thread, timer or executor. A caller serializes
+its calls, retains returned request records, maps each opaque `peer_id` to one
+connection, and applies cancellation records to that connection. IDs are never
+reused within an instance. Request IDs and verification generations are scoped
+to that instance: do not deliver an old instance's callbacks to a new instance.
+The constructor's explicit seed provides reproducible diversity, not entropy
+or a security capability. Different clients should supply different seeds.
+
+```cpp
+#include <array>
+#include <chrono>
+import forge.swarm.core.transfer;
+
+namespace core = forge::swarm::core;
+
+void choose(const core::descriptor& descriptor) {
+   core::transfer state{descriptor, {}, 41U};
+   // Build an exact little-bit-first descriptor-sized bitmap from peer state.
+   const auto pieces = core::validate_descriptor(descriptor).total_pieces;
+   auto bitmap = std::vector<std::uint8_t>((pieces + 7U) / 8U, 0U);
+   if (pieces != 0U) bitmap[0] = 1U;
+   const auto peer = state.add_peer(bitmap);
+   const auto now = core::transfer_time{std::chrono::milliseconds{1000}};
+   static_cast<void>(state.set_choked(peer, false, now));
+   const auto requests = state.pick(peer, now, 8U);
+   // The external runtime now sends requests, retains payload in its writer,
+   // and calls receive(peer, request.id, exact_length, explicit_arrival_time).
+   // receive_result.ready identifies a complete UNVERIFIED piece.
+   // After actual hash verification, call finish(token, verification_passed).
+}
+```
+
+`selection::rarest_first` orders by descending explicit priority, then ascending
+peer availability, partial-piece preference at equal rarity, and a specified
+SplitMix64 seed rank (ordinal breaks remaining ties). Priority zero filters
+future picks. Sequential selection uses descriptor file/piece order within each
+priority. Unlike libtorrent's weighted priority/rarity buckets, explicit Forge
+priority always wins over rarity, including endgame. Under count/byte pressure
+(at least three quarters of either unfinished limit), existing partial pieces
+win over new pieces within the same priority, even in sequential mode. A pick
+uses a maintained ordered index with precomputed seed ranks, lazily filtered
+by the requesting peer's bitmap. Only the at-most-64 partial-piece candidates
+are sorted per batch and merged with that index. `receive` and `cancel` never
+rebuild global order. Verified pieces are removed; discard re-admits them.
+Availability updates scan bitmap bytes and reindex only XOR-changed pieces:
+O(bitmap bytes + changed pieces * log P). Identical bitmaps are no-ops with no
+allocation; sequential order does not depend on nonzero availability counts.
+Existing index nodes are rekeyed without allocation. Newly available nodes are
+prepared before any counts change, preserving failure atomicity. Priority
+changes similarly rekey one node, and policy changes reorder existing nodes
+without allocating. Initial/dense availability admission can cost O(P log P);
+it is not hidden in each pick. Sparse peer filtering can still scan O(P) index
+entries in the worst case, but there is no per-pick full candidate sort. Global
+endgame coverage uses an explicitly maintained wanted count and bounded partial
+metadata, not a descriptor-wide scan. These mechanisms do not establish network
+runtime throughput; initial inventory and steady-state picking are separate
+measurement surfaces.
+
+Request count and bytes have independent global and per-peer bounds. Partial
+pieces reserve their full actual length before their first request and retain
+that reservation through receive-before-verification. Thus completed but
+unverified pieces cannot escape the working-set bound. Payload remains entirely
+external; the runtime must honor these reservations with its own writer memory
+and disk quotas. Hard config ceilings: 4096 peers, 65536 requests, 1 GiB request
+bytes, 64 unfinished pieces and 1 GiB unfinished bytes; per-peer caps cannot
+exceed global caps. Peer bitmaps use at most 32 KiB each (128 MiB at the peer
+ceiling); partial metadata has at most 64 * 1024 block records. The maintained
+index has at most 262144 nodes and one precomputed rank per descriptor piece;
+an availability update may temporarily stage that many new nodes. Per-pick
+candidate views contain at most 64 partial indices, not all descriptor pieces.
+Node allocation size and per-node overhead depend on the STL/container ABI;
+these bounds do not imply an exact index byte total.
+These are ceilings, not defaults or an overall process-memory budget:
+object/container overhead, descriptor,
+returned snapshots and caller-retained records require additional memory.
+
+Every request terminates once by receive, cancel, timeout, discard, choke,
+disconnect or stop. Endgame requires every wanted missing block to be already
+requested and a bounded tail (at most `endgame_blocks`); it adds at most one
+busy-block duplicate per `pick`, never to the same peer, subject to the same
+count/byte path plus replica/global-duplicate caps. Priority precedes replica
+count and seeded diversity. The first retained block is a provisional winner:
+`receive` cancels its siblings but does not mark availability. A failed aggregate
+piece check discards that attempt and permits retry. Only `finish(token,true)`
+marks a fully received piece verified. A duplicated or stale result is ignored;
+discard invalidates generations and retracts even previously verified local
+availability. Failed mixed-source or unknown-resume-provenance pieces increment
+only unattributed integrity failures; one peer is blamed only when all blocks
+are known to come from that peer. No ban, payment or product policy is implied.
+
+New peers start remotely choked; `set_choked` controls downloading FROM them,
+not the local serving slots selected by `choker`. Changing availability or
+priority affects future picks, not existing owned requests. `cancel`, `discard`,
+`stop`, choke/disconnect results and `expire` make cancellation explicit. The
+runtime calls `expire(now)` to release elapsed requests proactively; no hidden
+timer exists. An arrival exactly at its deadline times out even if `expire`
+has not run. Arrival/cancel order otherwise determines the winner. Accepted time
+must be nonnegative and monotonic (equal times allow deterministic event races).
+Rejected input and failed allocation do not advance time or leak issued work;
+failed batches may burn IDs but roll back all their active requests/reservations.
+Counters saturate rather than overflow. Deadline overflow is a typed error.
+
+`progress()` reuses checkpoint bitmaps and geometry but claims no durability,
+publication or generation advancement. Constructor resume input must come from
+trusted storage after revalidation, never directly from a remote peer. It has
+no known contributor provenance. `stop()` rejects future work and verification
+callbacks, releases requests and empty reservations, but preserves received
+block evidence and its partial reservations for a subsequent checkpoint.
+The runtime still owns write draining, verification, data sync, durable
+checkpoint sequencing and publication; a Core bit is not proof of any of them.
+
+## Serving Slots
+
+`choker{config, seed}.select(candidates, now, seeding)` takes a complete inventory
+of unique nonzero connection IDs and returns the complete `unchoked`/`choked`
+sets, not a delta. Interested peers alone compete; absent peers are immediately
+pruned. Callers own actual choke messages, serving and upload accounting.
+Each candidate supplies cumulative `peer_observation` and successfully served
+payload bytes; counters must not regress on the same live connection.
+
+The caller schedules selection rounds with strictly increasing nonnegative
+times. There is no implicit round timer or fixed regular-round interval.
+Useful throughput is the difference in verified bytes since the preceding
+round; all candidates share that round duration, so comparing byte deltas
+compares rates without overflow-prone multiplication. Latency uses mean response
+milliseconds from round deltas. Integrity and timeout deltas are tie inputs,
+not admission gates. A seed instead ranks current unchoked upload throughput,
+deprioritizes peers only after both served-byte quota and minimum unchoke time
+are met, then favors peers waiting longest. Download reciprocity is not required
+for serving or authorization. This is not the donor's anti-leech/economic mode.
+
+Total `slots` includes the optional single optimistic slot. Its selected peer
+is retained until `optimistic_interval` unless no longer eligible or promoted
+to a regular slot; rotation prefers unexplored then least-recently explored
+peers, with explicit seeded ties. Defaults are 30 seconds optimistic rotation,
+60 seconds minimum seed rotation and 1 MiB seed quota. Regular selections occur
+on every caller round. Zero slots choke everyone. State and temporary round
+views are bounded by 4096 candidates, independently of Transfer's limits.
+Failed selection leaves prior samples, serving state and time unchanged.
+
+Simulation coverage lives in `tests/swarm_core/transfer_tests.cpp`: seeded
+selection, pressure, priorities, ownership, event orderings, endgame, retries,
+retained unverified bounds, checkpoint evidence, malformed input and long-run
+peer churn. Separate allocation and donor oracles are acceptance gates; source
+implementation and these tests do not establish a working network runtime.
 
 ## Frozen V1 Raw Layout
 

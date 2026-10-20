@@ -25,6 +25,7 @@ import forge.config.core.document;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.migration;
+import forge.core.utf8;
 import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
@@ -38,6 +39,7 @@ import forge.variant.chrono;
 import forge.variant.multiprecision;
 import forge.variant.format;
 import forge.variant.described;
+import forge.variant.schema;
 
 namespace forge::codec::json {
 namespace {
@@ -46,7 +48,7 @@ using codec_value = glz::generic_json<glz::num_mode::u64>;
 
 constexpr glz::opts json_read_options{
     .format = glz::JSON,
-    .null_terminated = true,
+    .null_terminated = false,
     .comments = false,
     .error_on_unknown_keys = false,
 };
@@ -155,21 +157,63 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 }
 
 [[nodiscard]] bool validate_unique_object_members(const glz::lazy_json_view<json_lazy_options>& input,
-                                                  std::string_view path, std::size_t max_depth, std::size_t depth,
+                                                  std::string_view path, const read_options& options,
+                                                  std::size_t depth, std::size_t& nodes,
                                                   std::vector<schema::diagnostic>& diagnostics) {
+   if (++nodes > options.max_nodes) {
+      diagnostics.push_back(make_error(std::string{path}, "json.nodes", "JSON input exceeds value node limit"));
+      return false;
+   }
+   const auto strict = options.described_records == described_record_policy::exact;
+   const auto string_valid = [&](const std::string& text, std::string_view at) {
+      if (text.size() > options.max_string_bytes) {
+         diagnostics.push_back(make_error(std::string{at}, "json.string", "JSON string exceeds byte limit"));
+         return false;
+      }
+      if (strict && (!forge::is_utf8(text) || (options.reject_nul && text.find('\0') != std::string::npos))) {
+         diagnostics.push_back(make_error(std::string{at}, "json.string", "JSON string contains invalid UTF-8 or NUL"));
+         return false;
+      }
+      return true;
+   };
+   if (input.has_error()) {
+      diagnostics.push_back(make_error(std::string{path}, "json.parse", "invalid JSON value"));
+      return false;
+   }
+   if ((input.is_object() || input.is_array()) && depth > options.max_depth) {
+      auto at = std::string{path};
+      for (const auto& entry : input) {
+         at = input.is_object() ? object_path(path, decode_object_key(entry.key())) : array_path(path, 0);
+         break;
+      }
+      diagnostics.push_back(make_error(std::move(at), "json.depth", "JSON input exceeds container depth limit"));
+      return false;
+   }
+   if (input.is_string()) {
+      auto decoded = std::string{};
+      if (input.read_into(decoded)) {
+         diagnostics.push_back(make_error(std::string{path}, "json.parse", "invalid JSON string"));
+         return false;
+      }
+      return string_valid(decoded, path);
+   }
    if (input.is_object()) {
       auto members = std::set<std::string>{};
+      auto count = std::size_t{};
       for (const auto& entry : input) {
-         auto key = decode_object_key(entry.key());
-         const auto entry_path = object_path(path, key);
-         if (!members.insert(key).second) {
-            diagnostics.push_back(make_error(entry_path, "json.duplicate", "duplicate JSON member"));
-         }
-         if (depth >= max_depth) {
-            diagnostics.push_back(make_error(entry_path, "json.depth", "JSON input exceeds configured maximum depth"));
+         if (++count > options.max_container_size) {
+            diagnostics.push_back(make_error(std::string{path}, "json.members", "JSON object exceeds member limit"));
             return false;
          }
-         if (!validate_unique_object_members(entry, entry_path, max_depth, depth + 1U, diagnostics)) {
+         auto key = decode_object_key(entry.key());
+         if (!string_valid(key, path)) return false;
+         const auto entry_path = object_path(path, key);
+         if (strict && !members.insert(key).second) {
+            diagnostics.push_back(make_error(entry_path, "json.duplicate", "duplicate JSON member"));
+            return false;
+         }
+         if (!validate_unique_object_members(entry, entry_path, options,
+               depth + (entry.is_object() || entry.is_array() ? 1U : 0U), nodes, diagnostics)) {
             return false;
          }
       }
@@ -179,14 +223,52 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
       auto index = std::size_t{0};
       for (const auto& entry : input) {
          const auto entry_path = array_path(path, index);
-         if (depth >= max_depth) {
-            diagnostics.push_back(make_error(entry_path, "json.depth", "JSON input exceeds configured maximum depth"));
+         if (index >= options.max_container_size) {
+            diagnostics.push_back(make_error(entry_path, "json.elements", "JSON array exceeds element limit"));
             return false;
          }
-         if (!validate_unique_object_members(entry, entry_path, max_depth, depth + 1U, diagnostics)) {
+         if (!validate_unique_object_members(entry, entry_path, options,
+               depth + (entry.is_object() || entry.is_array() ? 1U : 0U), nodes, diagnostics)) {
             return false;
          }
          ++index;
+      }
+   }
+   return true;
+}
+
+[[nodiscard]] bool preserve_lexical_number_kinds(const glz::lazy_json_view<json_lazy_options>& input,
+                                                codec_value& output, std::string_view path,
+                                                std::vector<schema::diagnostic>& diagnostics) {
+   if (input.is_number()) {
+      // Glaze's integer reader accepts positive exponents. Keep their lexical
+      // floating kind, but leave all numeric parsing/conversion to Glaze.
+      if (input.raw_json().find_first_of(".eE") != std::string_view::npos) {
+         auto value = double{};
+         if (input.read_into(value)) {
+            diagnostics.push_back(make_error(std::string{path}, "json.parse", "failed to decode floating JSON number"));
+            return false;
+         }
+         output = value;
+      }
+   } else if (input.is_array()) {
+      auto& array = std::get<codec_value::array_t>(output.data);
+      auto index = std::size_t{};
+      for (const auto& entry : input) {
+         if (!preserve_lexical_number_kinds(entry, array.at(index), array_path(path, index), diagnostics)) return false;
+         ++index;
+      }
+   } else if (input.is_object()) {
+      auto& object = std::get<codec_value::object_t>(output.data);
+      for (const auto& entry : input) {
+         const auto key = decode_object_key(entry.key());
+         const auto found = object.find(key);
+         const auto entry_path = object_path(path, key);
+         if (found == object.end()) {
+            diagnostics.push_back(make_error(entry_path, "json.parse", "JSON backend object does not match source"));
+            return false;
+         }
+         if (!preserve_lexical_number_kinds(entry, found->second, entry_path, diagnostics)) return false;
       }
    }
    return true;
@@ -367,6 +449,24 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 [[nodiscard]] read_result<codec_value> read_codec_value(std::string_view input, const read_options& options) {
    auto result = read_result<codec_value>{};
+   if (input.size() > options.max_bytes) {
+      result.diagnostics.push_back(make_error(options.source_name, "json.bytes", "JSON input exceeds byte limit"));
+      return result;
+   }
+   if (options.described_records == described_record_policy::exact &&
+       (!forge::is_utf8(std::string{input}) || input.find('\0') != std::string_view::npos)) {
+      result.diagnostics.push_back(make_error(options.source_name, "json.string", "JSON input contains invalid UTF-8 or NUL"));
+      return result;
+   }
+   // Glaze's lazy view traverses bounded containers without constructing a DOM.
+   // Full syntax/trailing validation remains exclusively Glaze's responsibility.
+   auto lazy = glz::lazy_json<json_lazy_options>(input);
+   if (!lazy) {
+      result.diagnostics.push_back(make_error(options.source_name, "json.parse", "failed to inspect JSON input"));
+      return result;
+   }
+   auto nodes = std::size_t{};
+   if (!validate_unique_object_members(lazy->root(), {}, options, 1, nodes, result.diagnostics)) return result;
    auto parsed = codec_value{};
    const auto error = options.described_records == described_record_policy::exact
                          ? glz::read<json_complete_read_options>(parsed, input)
@@ -375,29 +475,32 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
       result.diagnostics.push_back(make_error(options.source_name, "json.parse", glz::format_error(error, input)));
       return result;
    }
-   if (options.described_records == described_record_policy::exact) {
-      auto lazy = glz::lazy_json<json_lazy_options>(input);
-      if (!lazy) {
-         result.diagnostics.push_back(make_error(options.source_name, "json.parse", "failed to inspect JSON input"));
-         return result;
-      }
-      static_cast<void>(validate_unique_object_members(lazy->root(), {}, options.max_depth, 0U, result.diagnostics));
-      if (!result.ok()) {
-         return result;
-      }
-   }
+   if (options.described_records == described_record_policy::exact &&
+       !preserve_lexical_number_kinds(lazy->root(), parsed, {}, result.diagnostics)) return result;
    result.value = std::move(parsed);
    return result;
 }
 
 [[nodiscard]] std::string read_file_text(const std::filesystem::path& path,
-                                         std::vector<schema::diagnostic>& diagnostics, std::string_view code) {
+                                         std::vector<schema::diagnostic>& diagnostics, std::string_view code,
+                                         std::size_t max_bytes) {
    auto input = std::ifstream{path, std::ios::binary};
    if (!input) {
       diagnostics.push_back(make_error(path.string(), std::string{code}, "failed to open file"));
       return {};
    }
-   return std::string{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+   auto text = std::string{};
+   char block[4096];
+   while (input) {
+      input.read(block, sizeof(block));
+      const auto count = static_cast<std::size_t>(input.gcount());
+      if (count > max_bytes - text.size()) {
+         diagnostics.push_back(make_error(path.string(), "json.bytes", "JSON file exceeds byte limit"));
+         return {};
+      }
+      text.append(block, count);
+   }
+   return text;
 }
 
 [[nodiscard]] bool write_file_text(const std::filesystem::path& path, std::string_view text,
@@ -478,6 +581,17 @@ read_result<variant> read_value(std::string_view input, read_options options) {
       result.diagnostics.push_back(
           make_error(options.source_name, "json.depth", "JSON input exceeds configured maximum depth"));
    }
+   return result;
+}
+
+read_result<variant> read(std::string_view input, const schema::artifact& rules, read_options options) {
+   options.described_records = described_record_policy::exact;
+   auto result = read_value(input, options);
+   if (!result.ok()) return result;
+   // Wire bounds were checked before DOM allocation; the artifact's own bounded
+   // structural validator additionally checks kinds, required fields and rules.
+   auto diagnostics = variant_schema::validate(rules, result.value);
+   result.diagnostics.insert(result.diagnostics.end(), diagnostics.begin(), diagnostics.end());
    return result;
 }
 
@@ -571,7 +685,7 @@ write_result write_document(const config::core::document& input, write_options o
 
 read_result<variant> load_value(const std::filesystem::path& path, read_options options) {
    auto diagnostics = std::vector<schema::diagnostic>{};
-   const auto text = read_file_text(path, diagnostics, "json.io");
+   const auto text = read_file_text(path, diagnostics, "json.io", options.max_bytes);
    if (!diagnostics.empty()) {
       return read_result<variant>{.diagnostics = std::move(diagnostics)};
    }
@@ -594,7 +708,7 @@ write_result save_value(const std::filesystem::path& path, const variant& input,
 
 read_result<config::core::document> load_document(const std::filesystem::path& path, read_options options) {
    auto diagnostics = std::vector<schema::diagnostic>{};
-   const auto text = read_file_text(path, diagnostics, "json.io");
+   const auto text = read_file_text(path, diagnostics, "json.io", options.max_bytes);
    if (!diagnostics.empty()) {
       return read_result<config::core::document>{.diagnostics = std::move(diagnostics)};
    }

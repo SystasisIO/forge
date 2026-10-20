@@ -1,4 +1,4 @@
-add_library(forge_swarm_core STATIC descriptor.cpp merkle.cpp identity.cpp)
+add_library(forge_swarm_core STATIC descriptor.cpp merkle.cpp identity.cpp checkpoint.cpp store.cpp transfer.cpp choker.cpp)
 forge_target_modules_at(forge_swarm_core swarm/core)
 
 target_include_directories(forge_swarm_core PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})

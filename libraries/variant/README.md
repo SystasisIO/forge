@@ -129,6 +129,14 @@ conversion, `static_variant`, blob compatibility and dynamic bitsets.
 
 Import `forge.variant.schema` when a format codec must preserve canonical
 `forge_schema` field names inside an otherwise schema-less described value.
+The same module owns `schema::value_adapter<variant_object>`: object-only exact
+decode, lossless nested scalar/object/array/null encode, finite numbers, and
+bounded depth/nodes/strings/containers. Import it before declaring native rules
+with dynamic object fields. No `schema -> variant` import is introduced.
+`variant_schema::to_input(variant,limits)` and `from_input(input_value,limits)`
+expose the existing structural conversion; codecs must reuse it, not duplicate
+the conversion switch. `variant_schema::validate(artifact,variant,limits)` uses
+the same data-only schema validator, with no product C++ type.
 `forge::variant_schema::encode` recursively applies schema field mappings, and
 `forge::variant_schema::materialize` converts those nested mappings back before
 ordinary `from_variant` decoding. JSON and YAML share this mechanism so their

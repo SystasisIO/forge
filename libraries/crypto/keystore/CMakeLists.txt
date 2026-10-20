@@ -4,6 +4,7 @@ add_library(
    persistence.cpp
    unique_descriptor.cpp
    password.cpp
+   password_wait.cpp
    ownership.cpp
    ownership_impl.cpp
    store.cpp

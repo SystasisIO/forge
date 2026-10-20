@@ -1,6 +1,7 @@
 module;
 
 #include <cstdint>
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -85,6 +86,26 @@ struct multipart_writer_result {
    std::string body;
 };
 
+struct multipart_stream_part {
+   std::string name;
+   std::optional<std::string> filename;
+   std::string content_type;
+   body_reader body;
+};
+
+struct multipart_stream_options {
+   std::uint64_t max_part_bytes = 64ULL * 1024 * 1024;
+   std::uint64_t max_total_bytes = 128ULL * 1024 * 1024;
+   std::size_t chunk_bytes = 64 * 1024;
+   std::size_t max_parts = 128;
+   std::size_t max_part_header_bytes = 4096;
+};
+
+struct multipart_stream_result {
+   std::string content_type;
+   body_reader body;
+};
+
 class upload_reader {
  public:
    explicit upload_reader(body_reader body, upload_options options = {});
@@ -100,5 +121,7 @@ class upload_reader {
 [[nodiscard]] std::optional<std::string> multipart_boundary(std::string_view content_type);
 [[nodiscard]] std::optional<std::string> sanitize_upload_filename(std::string_view filename);
 [[nodiscard]] multipart_writer_result write_multipart_form(std::vector<multipart_writer_part> parts);
+[[nodiscard]] multipart_stream_result write_multipart_stream(std::vector<multipart_stream_part> parts,
+                                                             multipart_stream_options options = {});
 
 } // namespace forge::net::http

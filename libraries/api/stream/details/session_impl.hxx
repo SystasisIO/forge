@@ -51,6 +51,8 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
       std::string method;
       forge::api::core::codec_id codec;
       std::optional<tombstone_flow> inbound;
+      bool draining = false;
+      bool crossed_terminal_pending = false;
    };
 
    struct call_state {
@@ -71,10 +73,12 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
       boost::asio::cancellation_signal handler_cancel;
       std::optional<flow_state> inbound;
       std::optional<flow_state> outbound;
+      std::optional<tombstone_flow> canceled_inbound;
       std::deque<queued_frame> write_queue;
       std::optional<forge::api::core::frame> terminal;
       std::exception_ptr error;
       bool request_written = false;
+      bool crossed_terminal_pending = false;
       bool terminal_enqueued = false;
       bool terminal_written = false;
       bool handler_running = false;
@@ -116,6 +120,8 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    void handle_stream_window(const std::shared_ptr<call_state>& call, const forge::api::core::frame& value);
    void handle_terminal(const std::shared_ptr<call_state>& call, forge::api::core::frame value);
    void handle_cancel(const std::shared_ptr<call_state>& call);
+   bool handle_crossed_frame(std::optional<tombstone_flow>& inbound, bool& terminal_pending,
+                             const forge::api::core::frame& value);
    void handle_tombstone_frame(tombstone_state& tombstone, const forge::api::core::frame& value);
 
    boost::asio::awaitable<void> writer_loop();
@@ -161,8 +167,10 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    boost::asio::awaitable<void> wait_for_outbound_pump(const std::shared_ptr<call_state>& call);
    void start_deadline(const std::shared_ptr<call_state>& call, std::chrono::milliseconds value);
    boost::asio::awaitable<void> wait_deadline(std::shared_ptr<call_state> call);
+   void fail_outbound(const std::shared_ptr<call_state>& call, const std::exception_ptr& error) noexcept;
    void cancel_call(const std::shared_ptr<call_state>& call, std::exception_ptr error, bool notify_peer);
    void discard_inbound(const std::shared_ptr<call_state>& call) noexcept;
+   void retire_failed_terminal_writes(const std::exception_ptr& error);
    void finish_call(const std::shared_ptr<call_state>& call);
    void remember_tombstone(const std::shared_ptr<call_state>& call);
    void complete_tombstone(std::uint64_t id);
@@ -177,6 +185,7 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    boost::asio::awaitable<void> async_close_on_strand();
    void spawn_task(boost::asio::awaitable<void> operation, boost::asio::cancellation_slot cancellation = {});
    boost::asio::awaitable<void> wait_for_tasks();
+   void fail_calls(const std::exception_ptr& error) noexcept;
    void fail_session(std::exception_ptr error) noexcept;
    void stop_transport() noexcept;
    [[nodiscard]] bool writer_idle() const noexcept;

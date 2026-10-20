@@ -120,12 +120,6 @@ struct compiler_session::impl {
    void finish_initialize(const std::shared_ptr<job>&, std::exception_ptr);
    void acquire_signal_owner();
    void release_signal_owner();
-#if defined(__APPLE__)
-   static std::mutex signal_mutex;
-   static std::size_t signal_registrations;
-   static std::optional<struct sigaction> signal_disposition;
-   static bool same_signal_disposition(const struct sigaction&) noexcept;
-#endif
    std::optional<artifact> ready(const crypto::digest::sha256&, const compile_configuration&) const;
    enqueue_result enqueue(const crypto::digest::sha256&, compile_request&&, asio::task::priority);
    void request_stop();
@@ -192,7 +186,7 @@ struct compiler_session::impl {
    // A cold native Asio registration, never a child waiter/reaper. SAME-owned
    // Darwin sessions share Asio's process signal registration, each on its
    // injected runtime. Checked clear must succeed before this owner is retired.
-   std::unique_ptr<boost::asio::signal_set> signal_owner;
+   asio::child_signal_registration signal_owner;
 };
 
 } // namespace forge::vm::wasm::optimizing

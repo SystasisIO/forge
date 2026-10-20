@@ -244,7 +244,7 @@ template <auto Method, typename Request, typename Response> route_call make_rout
                                       "HTTP API stream method kind does not match the route descriptor");
              }
              auto fixed = forge::api::core::detail::unpack_fixed_arguments<Method>(value.body);
-             auto request_options = forge::net::http::request_options{};
+             auto request_options = default_request_options(route);
              auto http_request = forge::net::http::request{};
              if constexpr (is_positional_http_method_v<Method, Request>) {
                 auto request_parts = make_client_request(

@@ -1,1 +1,8 @@
 add_subdirectory(core)
+add_subdirectory(db)
+add_subdirectory(storage)
+add_subdirectory(protocol)
+add_subdirectory(conversion)
+if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
+   add_subdirectory(api)
+endif()

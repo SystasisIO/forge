@@ -34,6 +34,8 @@ struct stream_limits {
 
 class body_reader {
  public:
+   using callback_type = std::function<boost::asio::awaitable<std::optional<body_chunk>>()>;
+
    class source {
     public:
       virtual ~source() = default;
@@ -48,6 +50,8 @@ class body_reader {
 
    body_reader() = default;
    explicit body_reader(std::shared_ptr<source> source_value) : source_(std::move(source_value)) {}
+
+   [[nodiscard]] static body_reader from_callback(callback_type callback, std::function<void()> cancel = {});
 
    [[nodiscard]] bool valid() const noexcept {
       return static_cast<bool>(source_);

@@ -20,7 +20,9 @@
 #include <vector>
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -36,6 +38,7 @@
 import forge.api.core.binding;
 import forge.api.core.connection;
 import forge.api.core.duplex_stream;
+import forge.api.core.error_projection;
 import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.api.core.stream_reader;
@@ -170,6 +173,10 @@ class live_impl final : public live_api {
    }
 
    boost::asio::awaitable<void> exchange(forge::api::core::duplex_stream<item, item> stream) override {
+      exchange_calls.fetch_add(1, std::memory_order_release);
+      if (fail_exchange.load(std::memory_order_acquire)) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "declared exchange failure");
+      }
       while (auto value = co_await stream.async_read()) {
          co_await stream.async_write(item{.value = value->value * 2});
          if (return_exchange_after_first.load(std::memory_order_acquire)) {
@@ -193,6 +200,7 @@ class live_impl final : public live_api {
    std::atomic_bool upload_started{false};
    std::atomic_bool hold_upload_reads{false};
    std::atomic_bool fail_upload{false};
+   std::atomic_bool fail_exchange{false};
    std::atomic_bool return_upload_after_first{false};
    std::atomic_bool hold_upload_completion{false};
    std::atomic_bool upload_ready_to_complete{false};
@@ -202,6 +210,7 @@ class live_impl final : public live_api {
    std::atomic_uint32_t produced{0};
    std::atomic_uint32_t download_calls{0};
    std::atomic_uint32_t upload_completions{0};
+   std::atomic_uint32_t exchange_calls{0};
 };
 
 class fake_stream final : public forge::net::transport::detail::stream_concept {
@@ -521,12 +530,13 @@ template <typename Error>
 }
 
 [[nodiscard]] std::size_t count_written_frames(const std::shared_ptr<fake_stream>& stream,
-                                               forge::api::core::frame_kind kind, const std::string& method) {
+                                               forge::api::core::frame_kind kind, const std::string& method,
+                                               std::optional<std::uint64_t> id = std::nullopt) {
    auto count = std::size_t{0};
    const auto size = stream->write_count();
    for (auto index = std::size_t{0}; index < size; ++index) {
       const auto frame = unpack_api_frame(stream->written(index));
-      if (frame.kind == kind && frame.method == method) {
+      if (frame.kind == kind && frame.method == method && (!id || frame.id.value == *id)) {
          ++count;
       }
    }
@@ -534,7 +544,8 @@ template <typename Error>
 }
 
 [[nodiscard]] std::shared_ptr<service_state> start_service(boost::asio::any_io_executor executor,
-                                                           boost::asio::awaitable<void> operation) {
+                                                           boost::asio::awaitable<void> operation,
+                                                           boost::asio::cancellation_slot cancellation = {}) {
    auto state = std::make_shared<service_state>(executor);
    boost::asio::co_spawn(
        executor,
@@ -547,7 +558,7 @@ template <typename Error>
           state->done = true;
           state->wake.cancel();
        },
-       boost::asio::detached);
+       boost::asio::bind_cancellation_slot(cancellation, boost::asio::detached));
    return state;
 }
 
@@ -706,9 +717,462 @@ boost::asio::awaitable<void> consume_until_closed(const std::shared_ptr<exchange
    }
 }
 
+enum class crossed_fault {
+   none,
+   items,
+   bytes,
+   duplicate_end,
+   duplicate_terminal,
+   identity,
+   after_terminal,
+   peer_cancel
+};
+
+boost::asio::awaitable<void> exercise_crossed_cancellation(bool active, forge::api::core::frame_kind terminal_kind,
+                                                           crossed_fault fault = crossed_fault::none) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto model = std::make_shared<fake_stream>();
+   model->push(pack_api_frame(hello_frame()));
+   auto live =
+       forge::api::stream::session{make_stream(model), forge::api::stream::options{
+                                                           .max_inflight = 2,
+                                                           .max_item_size = 4,
+                                                           .initial_window_items = fault == crossed_fault::bytes   ? 3U
+                                                                                   : fault == crossed_fault::items ? 1U
+                                                                                                                   : 2U,
+                                                           .initial_window_bytes = 8,
+                                                           .max_buffered_bytes = 16,
+                                                           .disconnect_grace = std::chrono::milliseconds{20},
+                                                           .max_tombstones = 2,
+                                                       }};
+   const auto api = live_api::describe();
+   const auto* download = forge::api::core::find_method(api, "download");
+   const auto* echo = forge::api::core::find_method(api, "echo");
+   BOOST_REQUIRE(download != nullptr && echo != nullptr);
+   auto frame = [](forge::api::core::frame_kind kind, std::uint64_t id, std::string method, bytes payload = {}) {
+      return forge::api::core::frame{.kind = kind,
+                                     .id = {.value = id},
+                                     .api = live_api::ref(),
+                                     .method = std::move(method),
+                                     .codec = {.value = "forge.raw"},
+                                     .payload = std::move(payload)};
+   };
+   auto output = forge::api::core::detail::make_local_stream_pair(executor, 4, 1, 4);
+   auto cancel = boost::asio::cancellation_signal{};
+   auto original_result = false;
+   auto victim_work = [&]() -> boost::asio::awaitable<void> {
+      try {
+         static_cast<void>(co_await live.async_stream_call(
+             frame(forge::api::core::frame_kind::request, 1, "download", forge::raw::pack(std::uint32_t{2})),
+             forge::api::core::method_kind::server_stream, nullptr, output.writer,
+             forge::api::stream::call_options{
+                 .id = {.value = 1}, .deadline = active ? std::chrono::milliseconds{0} : std::chrono::milliseconds{20}},
+             *download));
+      } catch (const forge::api::core::exceptions::cancelled&) {
+         BOOST_TEST(active);
+         original_result = active;
+      } catch (const forge::api::core::exceptions::deadline_exceeded&) {
+         BOOST_TEST(!active);
+         original_result = !active;
+      }
+   };
+   auto victim = start_service(executor, victim_work(), cancel.slot());
+   co_await wait_until(
+       [model] {
+          return count_written_frames(model, forge::api::core::frame_kind::stream_window, "download", 1) == 1U;
+       },
+       std::chrono::milliseconds{250});
+   auto neighbor_work = [&]() -> boost::asio::awaitable<void> {
+      const auto result = co_await live.async_call(
+          frame(forge::api::core::frame_kind::request, 2, "echo", forge::raw::pack(item{.value = 77})), {}, *echo);
+      BOOST_TEST(forge::raw::unpack_exact<item>(result.payload).value == 77U);
+   };
+   auto neighbor = start_service(executor, neighbor_work());
+   co_await wait_until(
+       [model] {
+          return count_written_frames(model, forge::api::core::frame_kind::request, "echo", 2) == 1U &&
+                 !model->write_active();
+       },
+       std::chrono::milliseconds{250});
+   if (active) {
+      model->pause_write_completion_after_delivery();
+      cancel.emit(boost::asio::cancellation_type::all);
+   }
+   co_await wait_until(
+       [model, active] {
+          return count_written_frames(model, forge::api::core::frame_kind::cancel, "download", 1) == 1U &&
+                 (active ? model->delivered_completion_pending() : !model->write_active());
+       },
+       std::chrono::milliseconds{250});
+   const auto item_frame =
+       frame(forge::api::core::frame_kind::stream_item, 1, "download", forge::raw::pack(item{.value = 5}));
+   const auto end =
+       frame(forge::api::core::frame_kind::stream_end, 1, "download",
+             forge::raw::pack(forge::api::core::stream_end{.direction = forge::api::core::stream_direction::output}));
+   const auto terminal = frame(terminal_kind, 1, fault == crossed_fault::identity ? "echo" : "download",
+                               terminal_kind == forge::api::core::frame_kind::error
+                                   ? forge::raw::pack(forge::api::core::make_core_error_payload(
+                                         forge::api::core::exceptions::code::invocation_denied, "delayed peer error"))
+                                   : bytes{});
+   const auto reads = model->read_count();
+   model->push(pack_api_frame(item_frame));
+   co_await wait_until([model, reads] { return model->read_count() > reads; }, std::chrono::milliseconds{250});
+   co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   BOOST_TEST(live.valid());
+   const auto early_terminal =
+       active && (fault == crossed_fault::none || fault == crossed_fault::duplicate_terminal ||
+                  fault == crossed_fault::after_terminal || fault == crossed_fault::peer_cancel);
+   if (early_terminal) {
+      const auto before = model->read_count();
+      if (fault == crossed_fault::peer_cancel) {
+         model->push(pack_api_frame(frame(forge::api::core::frame_kind::cancel, 1, "download")));
+         model->push(pack_api_frame(frame(forge::api::core::frame_kind::cancel, 1, "download")));
+      } else {
+         model->push(pack_api_frame(item_frame));
+         model->push(pack_api_frame(end));
+         model->push(pack_api_frame(terminal));
+      }
+      co_await wait_until(
+          [model, before, fault] {
+             return model->read_count() >= before + (fault == crossed_fault::peer_cancel ? 2U : 3U);
+          },
+          std::chrono::milliseconds{250});
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      BOOST_TEST(live.valid());
+   }
+   if (active)
+      model->complete_delivered_write();
+   co_await wait_service(victim);
+   BOOST_TEST(original_result);
+   // Move from the active-done path to history with the first late item already
+   // counted. The second item must spend the same, not a reset, credit snapshot.
+   co_await wait_until([model] { return !model->write_active(); }, std::chrono::milliseconds{250});
+   co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   if (!early_terminal)
+      model->push(pack_api_frame(item_frame));
+   if (fault == crossed_fault::bytes)
+      model->push(pack_api_frame(frame(forge::api::core::frame_kind::stream_item, 1, "download", bytes{0U})));
+   if (fault != crossed_fault::items && fault != crossed_fault::bytes) {
+      if (!early_terminal)
+         model->push(pack_api_frame(end));
+      if (fault == crossed_fault::duplicate_end)
+         model->push(pack_api_frame(end));
+      if (fault == crossed_fault::peer_cancel && !early_terminal) {
+         model->push(pack_api_frame(frame(forge::api::core::frame_kind::cancel, 1, "download")));
+         model->push(pack_api_frame(frame(forge::api::core::frame_kind::cancel, 1, "download")));
+      }
+      if (!early_terminal || fault == crossed_fault::peer_cancel)
+         model->push(pack_api_frame(terminal));
+      if (fault == crossed_fault::duplicate_terminal)
+         model->push(pack_api_frame(terminal));
+      if (fault == crossed_fault::after_terminal)
+         model->push(pack_api_frame(item_frame));
+   }
+   if (fault == crossed_fault::none) {
+      model->push(pack_api_frame(
+          frame(forge::api::core::frame_kind::response, 2, "echo", forge::raw::pack(item{.value = 77}))));
+      co_await wait_service(neighbor);
+      BOOST_TEST(live.valid());
+      BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::stream_window, "download", 1) == 1U);
+      auto no_delivery = false;
+      try {
+         static_cast<void>(co_await output.reader->async_read());
+      } catch (const forge::api::core::exceptions::cancelled&) {
+         no_delivery = active;
+      } catch (const forge::api::core::exceptions::deadline_exceeded&) {
+         no_delivery = !active;
+      }
+      BOOST_TEST(no_delivery);
+   } else {
+      auto rejected = false;
+      try {
+         co_await wait_service(neighbor);
+      } catch (const forge::api::core::exceptions::resource_exhausted&) {
+         rejected = fault == crossed_fault::items || fault == crossed_fault::bytes;
+      } catch (const forge::api::core::exceptions::protocol_error&) {
+         rejected = fault != crossed_fault::items && fault != crossed_fault::bytes;
+      }
+      BOOST_TEST(rejected);
+      BOOST_TEST(!live.valid());
+   }
+   co_await live.async_close();
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(transport_api_tests)
+
+BOOST_AUTO_TEST_CASE(credited_items_and_one_crossed_terminal_preserve_cancel_deadline_and_neighbor) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      for (const auto active : {true, false}) {
+         co_await exercise_crossed_cancellation(active, forge::api::core::frame_kind::error);
+         co_await exercise_crossed_cancellation(active, forge::api::core::frame_kind::response);
+      }
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(crossed_cancel_history_rejects_excess_duplicate_mismatched_and_post_terminal_frames) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      for (const auto fault :
+           {crossed_fault::items, crossed_fault::bytes, crossed_fault::duplicate_end, crossed_fault::duplicate_terminal,
+            crossed_fault::identity, crossed_fault::after_terminal}) {
+         co_await exercise_crossed_cancellation(true, forge::api::core::frame_kind::error, fault);
+      }
+      co_await exercise_crossed_cancellation(true, forge::api::core::frame_kind::error, crossed_fault::peer_cancel);
+      co_await exercise_crossed_cancellation(false, forge::api::core::frame_kind::error, crossed_fault::peer_cancel);
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(received_typed_error_survives_immediate_eof_and_cleanup_cancel_write_failure) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      for (const auto fail_write : {false, true}) {
+         auto model = std::make_shared<fake_stream>();
+         model->push(pack_api_frame(hello_frame()));
+         auto connection = forge::api::transport::connection{make_stream(model)};
+         auto remote = co_await connection.get_remote_api<live_api>();
+         auto call = co_await remote.async_open<&live_api::exchange>();
+         co_await wait_until(
+             [model] {
+                return count_written_frames(model, forge::api::core::frame_kind::stream_window, "exchange", 1) == 1U &&
+                       !model->write_active();
+             },
+             std::chrono::milliseconds{250});
+         if (fail_write)
+            model->pause_write_completion_after_delivery();
+         else
+            model->before_next_read_return([model] { model->cancel(); });
+         model->push(pack_api_frame(forge::api::core::frame{
+             .kind = forge::api::core::frame_kind::error,
+             .id = {.value = 1},
+             .api = live_api::ref(),
+             .method = "exchange",
+             .codec = {.value = "forge.raw"},
+             .payload = forge::raw::pack(forge::api::core::make_core_error_payload(
+                 forge::api::core::exceptions::code::invocation_denied, "peer admission denied")),
+         }));
+         if (fail_write) {
+            co_await wait_until(
+                [model] {
+                   return model->delivered_completion_pending() &&
+                          count_written_frames(model, forge::api::core::frame_kind::cancel, "exchange", 1) == 1U;
+                },
+                std::chrono::milliseconds{250});
+            model->complete_delivered_write(true);
+         }
+         auto typed = false;
+         auto finish_work = [&]() -> boost::asio::awaitable<void> {
+            try {
+               co_await call.async_finish();
+            } catch (const forge::api::core::exceptions::invocation_denied& error) {
+               BOOST_TEST(error.message() == "peer admission denied");
+               typed = true;
+            }
+         };
+         auto finished = start_service(executor, finish_work());
+         // No call deadline: cleanup must complete rather than eventually
+         // replacing the received error with a synthetic timeout.
+         co_await wait_until([finished] { return finished->done; }, std::chrono::milliseconds{250});
+         co_await wait_service(finished);
+         BOOST_TEST(typed);
+         BOOST_TEST(!connection.valid());
+         if (!fail_write)
+            BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::cancel, "exchange", 1) == 0U);
+         co_await connection.async_close();
+      }
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(closing_failed_inflight_input_write_preserves_received_error_and_drains_join) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto model = std::make_shared<fake_stream>();
+      model->push(pack_api_frame(hello_frame()));
+      auto implementation = std::make_shared<live_impl>();
+      auto registry = forge::api::core::registry{};
+      registry.install<live_api>(live_api::describe(), implementation);
+      auto live = std::make_shared<forge::api::stream::session>(
+          make_stream(model), forge::api::core::binding().serve(registry).build(),
+          forge::api::stream::options{.disconnect_grace = std::chrono::milliseconds{0},
+                                      .control_timeout = std::chrono::seconds{1}});
+      auto serving = start_service(executor, live->async_serve());
+      auto invoker = std::make_shared<forge::api::transport::client>(live, live_api::describe());
+      auto remote = forge::api::core::handle<live_api>{std::make_shared<forge::api::core::proxy<live_api>>(invoker)};
+      constexpr auto local_id = std::uint64_t{1} << 63U;
+      auto call = co_await remote.async_open<&live_api::exchange>();
+      auto neighbor = co_await remote.async_open<&live_api::download>(1U);
+      co_await wait_until(
+          [model, local_id] {
+             return count_written_frames(model, forge::api::core::frame_kind::stream_window, "exchange", local_id) ==
+                        1U &&
+                    count_written_frames(model, forge::api::core::frame_kind::stream_window, "download",
+                                         local_id + 1U) == 1U &&
+                    !model->write_active();
+          },
+          std::chrono::milliseconds{250});
+      model->pause_write_completion_after_delivery();
+      model->push(pack_api_frame(forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::stream_window,
+          .id = {.value = local_id},
+          .api = live_api::ref(),
+          .method = "exchange",
+          .codec = {.value = "forge.raw"},
+          .payload = forge::raw::pack(forge::api::core::stream_window{
+              .direction = forge::api::core::stream_direction::input, .max_items = 1, .max_bytes = 4}),
+      }));
+      co_await call.async_write(item{.value = 7});
+      co_await wait_until([model] { return model->delivered_completion_pending(); }, std::chrono::milliseconds{250});
+      // The same full-duplex session also owns a queued server response and a
+      // locally canceled neighbor. None can be retired by merely dropping all
+      // control frames or by handling the received-error call in isolation.
+      model->push(pack_api_frame(forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::request,
+          .id = {.value = 1},
+          .api = live_api::ref(),
+          .method = "echo",
+          .codec = {.value = "forge.raw"},
+          .payload = forge::raw::pack(item{.value = 17}),
+      }));
+      co_await wait_until([implementation] { return implementation->echo_calls.load(std::memory_order_acquire) == 1U; },
+                          std::chrono::milliseconds{250});
+      neighbor.cancel();
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::response, "echo", 1) == 0U);
+      BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::cancel, "download", local_id + 1U) == 0U);
+      model->push(pack_api_frame(forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::error,
+          .id = {.value = local_id},
+          .api = live_api::ref(),
+          .method = "exchange",
+          .codec = {.value = "forge.raw"},
+          .payload = forge::raw::pack(forge::api::core::make_core_error_payload(
+              forge::api::core::exceptions::code::invocation_denied, "denied before shutdown")),
+      }));
+      auto stopped = false;
+      try {
+         static_cast<void>(co_await call.async_read());
+      } catch (const forge::api::core::exceptions::cancelled&) {
+         stopped = true;
+      }
+      BOOST_TEST(stopped);
+      auto typed = false;
+      auto finish_work = [&]() -> boost::asio::awaitable<void> {
+         try {
+            co_await call.async_finish();
+         } catch (const forge::api::core::exceptions::invocation_denied& error) {
+            BOOST_TEST(error.message() == "denied before shutdown");
+            typed = true;
+         }
+      };
+      auto finished = start_service(executor, finish_work());
+      auto neighbor_cancelled = false;
+      auto neighbor_work = [&]() -> boost::asio::awaitable<void> {
+         try {
+            co_await neighbor.async_finish();
+         } catch (const forge::api::core::exceptions::cancelled&) {
+            neighbor_cancelled = true;
+         }
+      };
+      auto neighbor_finished = start_service(executor, neighbor_work());
+      auto closing = start_service(executor, live->async_close());
+      // On one worker these turns enter async_close's strand and its writer
+      // drain while the held write still owns its in-flight accounting.
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      BOOST_TEST(!closing->done);
+      model->complete_delivered_write(true);
+      co_await wait_until(
+          [finished, neighbor_finished, closing, serving] {
+             return finished->done && neighbor_finished->done && closing->done && serving->done;
+          },
+          std::chrono::milliseconds{250});
+      co_await wait_service(finished);
+      co_await wait_service(neighbor_finished);
+      co_await wait_service(closing);
+      co_await wait_service(serving);
+      BOOST_TEST(typed);
+      BOOST_TEST(neighbor_cancelled);
+      BOOST_TEST(!live->valid());
+      BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::response, "echo", 1) == 0U);
+      BOOST_TEST(!model->close_during_write());
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(server_deadline_discards_old_credited_input_without_pinning_cancel_history) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto model = std::make_shared<fake_stream>();
+      auto implementation = std::make_shared<live_impl>();
+      auto registry = forge::api::core::registry{};
+      registry.install<live_api>(live_api::describe(), implementation);
+      auto live =
+          forge::api::stream::session{make_stream(model), forge::api::core::binding().serve(registry).build(),
+                                      forge::api::stream::options{.max_inflight = 2,
+                                                                  .deadline = std::chrono::milliseconds{20},
+                                                                  .max_item_size = 4,
+                                                                  .initial_window_items = 2,
+                                                                  .initial_window_bytes = 8,
+                                                                  .max_buffered_bytes = 16,
+                                                                  .disconnect_grace = std::chrono::milliseconds{20},
+                                                                  .max_tombstones = 1}};
+      auto service = start_service(executor, live.async_serve());
+      auto frame = [](forge::api::core::frame_kind kind, std::uint64_t id, std::string method, bytes payload = {}) {
+         return forge::api::core::frame{.kind = kind,
+                                        .id = {.value = id},
+                                        .api = live_api::ref(),
+                                        .method = std::move(method),
+                                        .codec = {.value = "forge.raw"},
+                                        .payload = std::move(payload)};
+      };
+      model->push(pack_api_frame(hello_frame()));
+      for (auto id = std::uint64_t{1}; id <= 4U; ++id) {
+         model->push(pack_api_frame(frame(forge::api::core::frame_kind::request, id, "upload")));
+         co_await wait_until(
+             [model, id] {
+                return count_written_frames(model, forge::api::core::frame_kind::cancel, "upload", id) == 1U &&
+                       !model->write_active();
+             },
+             std::chrono::milliseconds{250});
+         co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      }
+      model->push(pack_api_frame(
+          frame(forge::api::core::frame_kind::stream_item, 4, "upload", forge::raw::pack(item{.value = 9}))));
+      model->push(pack_api_frame(frame(
+          forge::api::core::frame_kind::stream_end, 4, "upload",
+          forge::raw::pack(forge::api::core::stream_end{.direction = forge::api::core::stream_direction::input}))));
+      model->push(
+          pack_api_frame(frame(forge::api::core::frame_kind::request, 5, "echo", forge::raw::pack(item{.value = 31}))));
+      co_await wait_until(
+          [model] { return count_written_frames(model, forge::api::core::frame_kind::response, "echo", 5) == 1U; },
+          std::chrono::milliseconds{250});
+      BOOST_TEST(implementation->upload_completions.load(std::memory_order_acquire) == 0U);
+      BOOST_TEST(live.valid());
+      // Canceled calls do not pin ingress drains: normal bounded history has
+      // evicted call 1, even though no peer reply was required for its cancel.
+      model->push(pack_api_frame(
+          frame(forge::api::core::frame_kind::stream_item, 1, "upload", forge::raw::pack(item{.value = 1}))));
+      co_await wait_until([service] { return service->done; }, std::chrono::milliseconds{250});
+      auto rejected = false;
+      try {
+         co_await wait_service(service);
+      } catch (const forge::api::core::exceptions::protocol_error&) {
+         rejected = true;
+      }
+      BOOST_TEST(rejected);
+      co_await live.async_close();
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
 
 BOOST_AUTO_TEST_CASE(session_cancelled_during_hello_does_not_enqueue_request) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
@@ -1489,6 +1953,284 @@ BOOST_AUTO_TEST_CASE(streaming_terminal_errors_and_early_success_preserve_sessio
       BOOST_TEST((co_await remote->echo(item{.value = 17})).value == 17U);
       co_await connection.async_close();
       co_await wait_service(service);
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(repeated_early_duplex_errors_retire_ingress_drains_and_preserve_live_neighbor) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto client_model = std::make_shared<fake_stream>();
+      auto server_model = std::make_shared<fake_stream>();
+      auto [client_stream, server_stream] = make_stream_pair(client_model, server_model);
+      auto implementation = std::make_shared<live_impl>();
+      implementation->fail_exchange.store(true, std::memory_order_release);
+      auto registry = forge::api::core::registry{};
+      registry.install<live_api>(live_api::describe(), implementation);
+      const auto options = forge::api::transport::options{
+          .max_inflight = 2,
+          .max_item_size = sizeof(std::uint32_t),
+          .initial_window_items = 1,
+          .initial_window_bytes = sizeof(std::uint32_t),
+          .max_buffered_bytes = 16,
+          .disconnect_grace = std::chrono::milliseconds{20},
+          .max_tombstones = 1,
+      };
+      auto service = start_service(
+          executor, forge::api::transport::serve_stream(std::move(server_stream),
+                                                        forge::api::core::binding().serve(registry).build(), options));
+      auto connection = forge::api::transport::connection{std::move(client_stream), options};
+      auto remote = co_await connection.get_remote_api<live_api>();
+      auto neighbor = co_await remote.async_open<&live_api::upload>();
+      co_await wait_until([implementation] { return implementation->upload_started.load(std::memory_order_acquire); },
+                          std::chrono::milliseconds{250});
+
+      for (auto index = 0U; index < 10U; ++index) {
+         auto failed = co_await remote.async_open<&live_api::exchange>();
+         // Leave input open: the remote error must retire it without help from
+         // the call wrapper's destructor or an explicit client half-close.
+         try {
+            BOOST_CHECK(!(co_await failed.async_read()));
+         } catch (const forge::api::core::exceptions::cancelled&) {
+         }
+         auto typed = false;
+         try {
+            co_await failed.async_finish();
+         } catch (const forge::api::core::exceptions::protocol_error& error) {
+            BOOST_TEST(error.message() == "declared exchange failure");
+            typed = true;
+         }
+         BOOST_TEST(typed);
+         BOOST_TEST((co_await remote->echo(item{.value = index})).value == index);
+      }
+      BOOST_TEST(implementation->exchange_calls.load(std::memory_order_acquire) == 10U);
+      BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::cancel, "exchange") == 10U);
+      co_await neighbor.async_write(item{.value = 19});
+      co_await neighbor.async_close();
+      BOOST_TEST((co_await neighbor.async_finish()).value == 19U);
+      co_await connection.async_close();
+      co_await wait_service(service);
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(remote_error_discards_queued_input_before_cancel_and_releases_byte_capacity) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto model = std::make_shared<fake_stream>();
+      model->push(pack_api_frame(hello_frame()));
+      auto live = forge::api::stream::session{make_stream(model), forge::api::stream::options{
+                                                                      .max_item_size = sizeof(std::uint32_t),
+                                                                      .initial_window_items = 2,
+                                                                      .initial_window_bytes = 8,
+                                                                      .max_buffered_bytes = 8,
+                                                                      .disconnect_grace = std::chrono::milliseconds{20},
+                                                                  }};
+      const auto api = live_api::describe();
+      const auto* method = forge::api::core::find_method(api, "exchange");
+      BOOST_REQUIRE(method != nullptr);
+      auto checked = 0U;
+      auto descriptor = *method;
+      descriptor.input_decoder = [decode = descriptor.input_decoder, &checked](const bytes& value,
+                                                                               forge::raw::unpack_limits limits) {
+         decode(value, limits);
+         ++checked;
+      };
+      const auto error = forge::api::core::make_core_error_payload(forge::api::core::exceptions::code::protocol_error,
+                                                                   "early duplex failure");
+      for (auto id = std::uint64_t{1}; id <= 3U; ++id) {
+         checked = 0U;
+         auto input = forge::api::core::detail::make_local_stream_pair(executor, 4, 8, 32);
+         auto output = forge::api::core::detail::make_local_stream_pair(executor, 4, 1, 4);
+         auto terminal = std::optional<forge::api::core::frame>{};
+         auto work = [&]() -> boost::asio::awaitable<void> {
+            terminal = co_await live.async_stream_call(
+                forge::api::core::frame{
+                    .kind = forge::api::core::frame_kind::request,
+                    .api = live_api::ref(),
+                    .method = "exchange",
+                    .codec = {.value = "forge.raw"},
+                },
+                forge::api::core::method_kind::bidirectional_stream, input.reader, output.writer,
+                forge::api::stream::call_options{.id = {.value = id}}, descriptor);
+         };
+         auto call = start_service(executor, work());
+         co_await wait_until(
+             [model, id] {
+                return count_written_frames(model, forge::api::core::frame_kind::stream_window, "exchange", id) == 1U &&
+                       !model->write_active();
+             },
+             std::chrono::milliseconds{250});
+         model->pause_write_completion_after_delivery();
+         model->push(pack_api_frame(forge::api::core::frame{
+             .kind = forge::api::core::frame_kind::stream_window,
+             .id = {.value = id},
+             .api = live_api::ref(),
+             .method = "exchange",
+             .codec = {.value = "forge.raw"},
+             .payload = forge::raw::pack(forge::api::core::stream_window{
+                 .direction = forge::api::core::stream_direction::input, .max_items = 8, .max_bytes = 32}),
+         }));
+         const auto queued_end = id == 3U;
+         for (auto value = 1U; value <= (queued_end ? 2U : 4U); ++value)
+            co_await input.writer->async_write(forge::raw::pack(item{.value = value}));
+         if (queued_end)
+            input.writer->close();
+         // One item is in flight, one occupies the remaining four-byte budget,
+         // and the third has reached the capacity wait. Repeat on the same
+         // session to detect capacity retained by the preceding failed call.
+         // The final ordering instead leaves an unsent end behind queued data.
+         co_await wait_until([&] { return model->delivered_completion_pending() && checked == (queued_end ? 2U : 3U); },
+                             std::chrono::milliseconds{250});
+         model->push(pack_api_frame(forge::api::core::frame{
+             .kind = forge::api::core::frame_kind::error,
+             .id = {.value = id},
+             .api = live_api::ref(),
+             .method = "exchange",
+             .codec = {.value = "forge.raw"},
+             .payload = forge::raw::pack(error),
+         }));
+         auto stopped = false;
+         try {
+            static_cast<void>(co_await output.reader->async_read());
+         } catch (const forge::api::core::exceptions::cancelled&) {
+            stopped = true;
+         }
+         BOOST_TEST(stopped);
+         BOOST_TEST(!call->done);
+         model->complete_delivered_write();
+         co_await wait_service(call);
+         BOOST_REQUIRE(terminal);
+         BOOST_CHECK(terminal->kind == forge::api::core::frame_kind::error);
+         const auto restored = forge::raw::unpack_exact<forge::api::core::error_payload>(terminal->payload);
+         BOOST_CHECK(restored == error);
+         BOOST_CHECK_THROW(forge::api::core::raise_remote_error(restored, method),
+                           forge::api::core::exceptions::protocol_error);
+         BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::stream_item, "exchange", id) == 1U);
+         BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::cancel, "exchange", id) == 1U);
+         BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::stream_end, "exchange", id) == 0U);
+         BOOST_TEST(live.valid());
+      }
+      co_await live.async_close();
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(rebalanced_credit_cannot_overtake_a_reserved_request_during_neighbor_cancellation) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto model = std::make_shared<fake_stream>();
+      model->push(pack_api_frame(hello_frame()));
+      auto live = forge::api::stream::session{make_stream(model), forge::api::stream::options{
+                                                                      .max_item_size = sizeof(std::uint32_t),
+                                                                      .initial_window_items = 1,
+                                                                      .initial_window_bytes = sizeof(std::uint32_t),
+                                                                      .max_buffered_bytes = 16,
+                                                                      .disconnect_grace = std::chrono::milliseconds{20},
+                                                                  }};
+      const auto api = live_api::describe();
+      const auto* method = forge::api::core::find_method(api, "download");
+      BOOST_REQUIRE(method != nullptr);
+      auto first_output = forge::api::core::detail::make_local_stream_pair(executor, 4, 1, 4);
+      const auto request = forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::request,
+          .api = live_api::ref(),
+          .method = "download",
+          .codec = {.value = "forge.raw"},
+          .payload = forge::raw::pack(std::uint32_t{1}),
+      };
+      auto first_cancelled = false;
+      auto first_work = [&]() -> boost::asio::awaitable<void> {
+         try {
+            static_cast<void>(co_await live.async_stream_call(
+                request, forge::api::core::method_kind::server_stream, nullptr, first_output.writer,
+                forge::api::stream::call_options{.id = {.value = 1}}, *method));
+         } catch (const forge::api::core::exceptions::cancelled&) {
+            first_cancelled = true;
+         }
+      };
+      auto first = start_service(executor, first_work());
+      co_await wait_until(
+          [model] {
+             return count_written_frames(model, forge::api::core::frame_kind::stream_window, "download", 1) == 1U;
+          },
+          std::chrono::milliseconds{250});
+      const auto inbound_item = forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::stream_item,
+          .id = {.value = 1},
+          .api = live_api::ref(),
+          .method = "download",
+          .codec = {.value = "forge.raw"},
+          .payload = forge::raw::pack(item{.value = 7}),
+      };
+      model->push(pack_api_frame(inbound_item));
+      co_await wait_until([model] { return model->read_count() >= 2U; }, std::chrono::milliseconds{250});
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+
+      auto second_output = forge::api::core::detail::make_local_stream_pair(executor, 4, 1, 4);
+      auto second_method = *method;
+      auto rebalanced = false;
+      second_method.request_decoder = [decode = second_method.request_decoder, endpoint = first_output.reader,
+                                       &rebalanced](const bytes& value, forge::raw::unpack_limits limits) {
+         decode(value, limits);
+         // Synchronous on the session strand, after call 2 is reserved but
+         // before its request is enqueued. Dropping call 1's buffered item
+         // triggers the existing consumption observer and credit rebalance.
+         endpoint->fail(std::make_exception_ptr(forge::api::core::exceptions::cancelled{"neighbor canceled"}));
+         rebalanced = true;
+      };
+      auto second_work = [&]() -> boost::asio::awaitable<void> {
+         const auto result = co_await live.async_stream_call(
+             request, forge::api::core::method_kind::server_stream, nullptr, second_output.writer,
+             forge::api::stream::call_options{.id = {.value = 2}}, second_method);
+         BOOST_CHECK(result.kind == forge::api::core::frame_kind::response);
+      };
+      auto second = start_service(executor, second_work());
+      co_await wait_until(
+          [model] {
+             return count_written_frames(model, forge::api::core::frame_kind::stream_window, "download", 2) == 1U;
+          },
+          std::chrono::milliseconds{250});
+      BOOST_TEST(rebalanced);
+      auto request_seen = false;
+      for (auto index = std::size_t{0}; index < model->write_count(); ++index) {
+         const auto frame = unpack_api_frame(model->written(index));
+         if (frame.id.value != 2U)
+            continue;
+         if (frame.kind == forge::api::core::frame_kind::request)
+            request_seen = true;
+         if (frame.kind == forge::api::core::frame_kind::stream_window)
+            BOOST_TEST(request_seen);
+      }
+      BOOST_TEST(request_seen);
+
+      // This item is within call 1's replenished credit. Its failed local
+      // delivery completes cancellation without forging an unknown call.
+      model->push(pack_api_frame(inbound_item));
+      model->push(pack_api_frame(forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::stream_end,
+          .id = {.value = 2},
+          .api = live_api::ref(),
+          .method = "download",
+          .codec = {.value = "forge.raw"},
+          .payload =
+              forge::raw::pack(forge::api::core::stream_end{.direction = forge::api::core::stream_direction::output}),
+      }));
+      model->push(pack_api_frame(forge::api::core::frame{
+          .kind = forge::api::core::frame_kind::response,
+          .id = {.value = 2},
+          .api = live_api::ref(),
+          .method = "download",
+          .codec = {.value = "forge.raw"},
+      }));
+      co_await wait_service(first);
+      co_await wait_service(second);
+      BOOST_TEST(first_cancelled);
+      BOOST_TEST(live.valid());
+      co_await live.async_close();
    };
    forge::asio::blocking::run(runtime, scenario());
 }

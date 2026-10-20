@@ -277,13 +277,32 @@ BOOST_AUTO_TEST_CASE(http_decoding_rejects_lossy_coercions_and_incomplete_values
    BOOST_CHECK(!decode_case<std::int8_t>("128", true).ok);
    BOOST_CHECK(!decode_case<std::int8_t>("7.5", true).ok);
    BOOST_CHECK(!decode_case<std::int8_t>("null", true).ok);
-   BOOST_CHECK_EQUAL(decode_case<std::int8_t>("7e0", false).canonical_json, "7");
+   BOOST_CHECK(!decode_case<std::int8_t>("7e0", false).ok);
+   BOOST_CHECK(!decode_case<std::int8_t>("7e0", true).ok);
    BOOST_CHECK(!decode_case<indexed_choice>("[false,7]", true).ok);
    BOOST_CHECK(!decode_case<indexed_choice>("[-0.5,7]", true).ok);
-   BOOST_CHECK_EQUAL(decode_case<indexed_choice>("[0e0,7]", false).canonical_json, "[0,7]");
+   BOOST_CHECK(!decode_case<indexed_choice>("[0e0,7]", false).ok);
+   BOOST_CHECK(!decode_case<indexed_choice>("[0e0,7]", true).ok);
    BOOST_CHECK(!decode_case<object_choice>("[0,{}]", true).ok);
    BOOST_CHECK(!decode_case<record>(R"({"count":7,"extra":0})", true).ok);
    BOOST_CHECK(!decode_case<schema_record>(R"({"count":"7"})", true).ok);
+}
+
+BOOST_AUTO_TEST_CASE(permissive_codec_keeps_exponent_normalization_outside_exact_http_profile) {
+   const auto integer = forge::codec::json::read<std::int8_t>("7e0");
+   BOOST_REQUIRE(integer.ok());
+   BOOST_CHECK_EQUAL(integer.value, 7);
+   const auto integer_json = forge::codec::json::write_value(forge::variant{integer.value});
+   BOOST_REQUIRE(integer_json.ok());
+   BOOST_CHECK_EQUAL(integer_json.text, "7");
+
+   const auto indexed = forge::codec::json::read<indexed_choice>("[0e0,7]");
+   BOOST_REQUIRE(indexed.ok());
+   BOOST_REQUIRE_EQUAL(indexed.value.index(), 0U);
+   BOOST_CHECK_EQUAL(std::get<0>(indexed.value), 7);
+   const auto indexed_json = forge::codec::json::write(indexed.value);
+   BOOST_REQUIRE(indexed_json.ok());
+   BOOST_CHECK_EQUAL(indexed_json.text, "[0,7]");
 }
 
 #ifdef __APPLE__

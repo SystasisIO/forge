@@ -9,9 +9,11 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -30,6 +32,9 @@ module;
 module forge.net.http.upload;
 
 import forge.net.http.exceptions;
+
+#include "details/multipart_framing.hxx"
+#include "details/multipart_stream_source.hxx"
 
 namespace forge::net::http {
 
@@ -106,11 +111,27 @@ std::string lower_copy(std::string_view value) {
    return output;
 }
 
-std::string unquote(std::string value) {
-   if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-      value.erase(value.begin());
-      value.pop_back();
+std::string unquote(std::string value)
+{
+   if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+   {
+      auto output = std::size_t{};
+      for (auto index = std::size_t{1}; index + 1 < value.size(); ++index)
+      {
+         if (value[index] == '\\')
+         {
+            if (++index + 1 >= value.size())
+            {
+               FORGE_THROW_EXCEPTION(exceptions::bad_request, "Multipart parameter has an incomplete quoted pair");
+            }
+         }
+
+         value[output++] = value[index];
+      }
+
+      value.resize(output);
    }
+
    return value;
 }
 
@@ -702,30 +723,6 @@ std::optional<std::string> sanitize_upload_filename(std::string_view filename) {
    return output;
 }
 
-bool valid_multipart_header_value(std::string_view value) noexcept {
-   return std::ranges::none_of(value, [](char character) {
-      return static_cast<unsigned char>(character) < 0x20U || character == 0x7FU;
-   });
-}
-
-std::string quote_multipart_parameter(std::string_view value) {
-   if (!valid_multipart_header_value(value)) {
-      FORGE_THROW_EXCEPTION(exceptions::bad_request, "multipart parameter contains unsafe characters");
-   }
-
-   auto output = std::string{};
-   output.reserve(value.size());
-   for (const auto character : value) {
-      if (character == '"' || character == '\\') {
-         output.push_back('\\');
-         output.push_back(character);
-      } else {
-         output.push_back(character);
-      }
-   }
-   return output;
-}
-
 bool multipart_body_contains_boundary(const std::vector<multipart_writer_part>& parts, std::string_view boundary) {
    for (const auto& part : parts) {
       if (part.body.find(boundary) != std::string::npos) {
@@ -736,14 +733,8 @@ bool multipart_body_contains_boundary(const std::vector<multipart_writer_part>& 
 }
 
 std::string generate_multipart_boundary(const std::vector<multipart_writer_part>& parts) {
-   static auto next = std::atomic<std::uint64_t>{0};
    for (;;) {
-      const auto value = next.fetch_add(1U, std::memory_order_relaxed) + 1U;
-      auto boundary = std::string{"forge-http-"};
-      boundary += std::to_string(
-         static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
-      boundary += '-';
-      boundary += std::to_string(value);
+      auto boundary = multipart_framing::boundary();
       if (!multipart_body_contains_boundary(parts, boundary)) {
          return boundary;
       }
@@ -755,26 +746,7 @@ multipart_writer_result write_multipart_form(std::vector<multipart_writer_part> 
    auto body = std::string{};
 
    for (const auto& part : parts) {
-      body += "--";
-      body += boundary;
-      body += "\r\nContent-Disposition: form-data; name=\"";
-      body += quote_multipart_parameter(part.name);
-      body += "\"";
-      if (part.filename.has_value()) {
-         body += "; filename=\"";
-         body += quote_multipart_parameter(*part.filename);
-         body += "\"";
-      }
-      body += "\r\n";
-      if (!part.content_type.empty()) {
-         if (!valid_multipart_header_value(part.content_type)) {
-            FORGE_THROW_EXCEPTION(exceptions::bad_request, "multipart part content type contains unsafe characters");
-         }
-         body += "Content-Type: ";
-         body += part.content_type;
-         body += "\r\n";
-      }
-      body += "\r\n";
+      body += multipart_framing::header(boundary, part.name, part.filename, part.content_type);
       body += part.body;
       body += "\r\n";
    }
@@ -786,6 +758,14 @@ multipart_writer_result write_multipart_form(std::vector<multipart_writer_part> 
       .content_type = std::string{"multipart/form-data; boundary="} + boundary,
       .body = std::move(body),
    };
+}
+
+multipart_stream_result write_multipart_stream(std::vector<multipart_stream_part> parts,
+                                               multipart_stream_options options)
+{
+   auto boundary = multipart_framing::boundary();
+   auto source = std::make_shared<multipart_stream_source>(std::move(parts), boundary, options);
+   return {.content_type = "multipart/form-data; boundary=" + boundary, .body = body_reader{std::move(source)}};
 }
 
 } // namespace forge::net::http

@@ -41,7 +41,98 @@ diagnostics. It is not a full business validation framework.
 
 Target: `forge_schema`.
 
-Dependencies: `forge_exceptions`, `forge_reflect` and Boost.Describe headers.
+Dependencies: `forge_exceptions`, `forge_reflect` and Boost.Describe headers;
+private native backend `Boost::regex` (Boost 1.90).
+
+## Bounded Native Constraint Artifacts
+
+`forge.schema.input_value` owns the **existing** recursive structural input
+record extracted unchanged from `forge.schema.object`. There is one physical
+declaration. It remains the schema/config structural interchange, not a second
+JSON value runtime or codec. `object` re-exports it through `constraint`.
+This extraction lets data-only constraints depend on structural input without
+an `object -> constraint -> object` cycle. Existing schema callbacks consume
+this input already; replacing it with a visitor would change the established
+config/codec contract rather than eliminate a duplicate. Native Variant
+adaptation remains entirely in `forge.variant.schema`; Schema imports no
+Variant, JSON parser, product DTO, network or runtime.
+
+`forge.schema.constraint` defines `constraint`, `artifact` (version 1), and
+`constraint_limits`. `export_constraints<T>()` in `forge.schema.object` reads
+the existing `rules<T>` and Boost.Describe metadata, not a second field registry.
+New field refinements are `.length(min,max)`, `.ascii()`, `.pattern(text)`,
+`.constant(input_value)`, `.decimal_range(uint64_min,uint64_max)`, and
+`.shape(constraint)` for a concrete structural shape, notably dynamic objects.
+Existing `.range`, `.non_empty`, `.min_items`, `.max_items`, and `.each_non_empty`
+also export their constraints. A non-optional field is required in exact mode;
+optional fields may be absent or null. String lengths count Unicode scalars;
+with `.ascii()` they are also UTF-8 byte lengths. Parser-level byte limits
+remain separate. URI semantics and cross-field/business checks are not inferred.
+Typed field validation does not impose the artifact API's default global
+depth/node/string/container caps: parser/caller policy owns those budgets.
+Each field's explicit constraints and the regex engine budgets still apply.
+Ordinary `encode_object()` validates each typed record before encoding, so
+nested records/lists cannot bypass their own rules during JSON writing/saving.
+The separate diagnostic/redaction encoder does not acquire this validation.
+
+Supported artifact rules: exact JSON kinds; closed object properties/required
+names (or explicit `additional_properties`); homogeneous arrays/items; size
+bounds; strings/ASCII/anchored ASCII patterns; scalar constants/enums; exact
+signed/unsigned integer bounds; canonical decimal-string bounds through
+`UINT64_MAX`. Decimal export uses an equivalent digit-interval pattern, never
+double arithmetic or a digits-only approximation. Patterns use a documented
+anchored, escape-free, whitespace-free ASCII subset, compiled by Boost.Regex ECMAScript with
+`no_perl_ex`, `no_mod_m`, `no_mod_s` and the classic locale. Backslash escapes
+and POSIX character-class/collation extensions are not exportable. `.pattern()` selects
+the ASCII string profile; data-only pattern rules must set `ascii = true`.
+Patterns are at most 256 bytes. There is no pattern parser/safety analyzer or
+custom matching engine. Exported patterns use a strict end assertion so a final
+newline cannot evade a bound, and group alternatives under the start assertion.
+
+Regex execution is private to `constraint.cpp`. Native field rules and local
+artifacts use the same helper, with `BOOST_REGEX_MAX_STATE_COUNT=100000`,
+`BOOST_REGEX_MAX_BLOCKS=64`, `BOOST_REGEX_BLOCKSIZE=4096`. Boost 1.90's nonrecursive
+matcher has an initial block plus at most 64 additional backtracking blocks
+(260 KiB); this is a stack budget, not a claim about total allocator usage.
+Pattern compilation remains bounded by pattern bytes and Boost's own compile
+recursion/complexity checks. A zero-copy bidirectional view selects Boost's
+fixed state-count path: its random-access `N*S*S` heuristic is deliberately not
+used because it can exceed `MAX_STATE_COUNT`. A TU-local traits type isolates
+budget-sensitive template instantiations from unrelated Regex consumers.
+Backend complexity/stack/allocation failures throw typed `constraint_limit`;
+syntax/export-profile failures throw `unsupported_export`. No timeout substitutes
+for engine budgets. The adversarial `^(a+)+$` test must fail via this typed
+resource limit in CI, not via pre-rejection by a homemade analyzer.
+
+`json_schema(artifact)` is the single JSON Schema/OpenAPI 3.1 exporter.
+`export_artifact(artifact)` emits a data-only `{version,schema}` envelope;
+`load_artifact(input_value)` accepts only that local, reference-free subset.
+It checks version, closed keywords, kinds, bounds, depth, node, member and string
+limits before recursive loading. It does not fetch URIs, resolve `$ref`, execute
+code or parse arbitrary JSON Schema. JSON encoding/decoding is exclusively the
+existing native codec. `validate(artifact,input_value)` validates a dynamic
+document without importing its original C++ type. Default structural limits
+are depth 32, 4096 nodes, 16384 bytes/string and 256 entries/container.
+
+Export rejects aliases/dotted paths, arbitrary validators such as `unique_by`,
+floating/wide-integer rules and unsupported adapted types with
+`schema::exceptions::unsupported_export`. It must not silently drop a rule.
+`.shape()` intersects scalar/item bounds with the C++ type's constraints; it
+cannot widen integer ranges, enum domains, decimal bounds or nullability.
+Exact property-shape substitution is supported only for an open dynamic object.
+Intersecting a shape with an already typed object property contract is refused
+instead of replacing its fields or weakening their constraints.
+Authority, URI or other product semantic checks remain explicit and are not
+advertised as JSON Schema guarantees. These artifacts and the RTTI-based schema
+metadata are native only, not part of a guest contract library.
+
+JSON Schema describes parsed numbers; it cannot recover whether a parser
+normalized `1e0` to integer `1`. Consumers must retain strict JSON numeric kinds
+(for example strict integer validation in generated Pydantic models), in addition
+to the exported ranges. Native exact reads reject floating/exponent tokens.
+
+Qualification is covered by `tests/test_schema_attestation.cpp` and
+`tests/test_json_strict.cpp`; those files use the shared unit-test main.
 
 ## Examples
 

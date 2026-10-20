@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+ulimit -c 0
+
+readonly phase="${1:?usage: attestation.sh <dependencies|build|boundary|test|benchmark|interop|packages|sanitizers|checkpoint|evidence>}"
+case "$phase" in dependencies|build|boundary|test|benchmark|interop|packages|sanitizers|checkpoint|evidence) ;; *) exit 2 ;; esac
+readonly root="$(git rev-parse --show-toplevel)"
+readonly work="${RUNNER_TEMP:?}/forge-attestation"
+readonly build="$work/build"
+readonly deps="$work/deps"
+readonly glaze="$work/glaze"
+readonly python="${pythonLocation:?setup-python must provide Python 3.12}/bin/python3"
+"$python" -c 'import platform, sys; assert platform.python_implementation() == "CPython" and sys.version_info[:2] == (3, 12), "CPython 3.12 required"'
+mkdir -p "$work/evidence" "$work/raw"
+trap 'printf "%s\t%d\n" "$phase" "$?" >> "$work/evidence/phases.tsv"' EXIT
+
+if [[ "$phase" == evidence || "$phase" == checkpoint ]]; then
+   # Only build diagnostics, public schemas/models and test result metadata
+   # leave the runner. Runtime logs, credentials and private keys stay private.
+   "$python" - "$work" "$phase" <<'PY'
+import json
+import pathlib
+import re
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+
+work = pathlib.Path(sys.argv[1])
+cleanup = sys.argv[2] == 'evidence'
+summary = {'tests': [], 'status': 'NOT_RUN'}
+report = work / 'results.xml'
+if report.is_file():
+    try:
+        cases = ET.parse(report).getroot().findall('.//testcase')
+        for case in cases:
+            name = case.get('name', '')
+            if not re.fullmatch(r'test_forge_[a-z0-9_]+', name):
+                raise ValueError('unexpected case')
+            item = {'name': name, 'status': 'FAIL' if
+                case.find('failure') is not None else ('NOT_RUN' if
+                case.find('skipped') is not None else 'PASS')}
+            elapsed = case.get('time', '')
+            if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', elapsed):
+                item['elapsed_seconds'] = float(elapsed)
+            failure = case.find('failure')
+            if failure is not None:
+                detail = (failure.get('message', '') + '\n' + (failure.text or '')).lower()
+                item['failure_kind'] = next((kind for text, kind in (
+                    ('timeout', 'timeout'), ('segfault', 'segfault'),
+                    ('segmentation fault', 'segfault'), ('subprocess aborted', 'aborted'),
+                    ('test setup error', 'setup_error')) if text in detail), 'test_failure')
+            summary['tests'].append(item)
+        summary['status'] = 'PASS' if cases and all(
+            item['status'] == 'PASS' for item in summary['tests']) else 'FAIL'
+    except Exception:
+        summary['status'] = 'HARNESS_ERROR'
+(work / 'evidence' / 'tests.json').write_text(json.dumps(summary, indent=2) + '\n')
+# Preserve failure locations, never assertion operands or credential values.
+locations = []
+sanitizers = []
+progress = []
+sanitizer_kinds = {'heap-use-after-free', 'heap-buffer-overflow', 'stack-buffer-overflow',
+                   'stack-use-after-return', 'stack-use-after-scope', 'global-buffer-overflow',
+                   'use-after-poison', 'double-free', 'alloc-dealloc-mismatch', 'SEGV', 'unknown-crash'}
+test_log = work / 'raw' / 'tests.log'
+if test_log.is_file():
+    for line in test_log.read_text(errors='replace').splitlines():
+        line = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', line)
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm)|unknown location)\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_/]+)"', line)
+        if found:
+            locations.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm))\((\d+)\): Entering test case "([A-Za-z0-9_]+)"', line)
+        if found:
+            progress.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
+        found = re.search(r'ERROR: AddressSanitizer: ([A-Za-z0-9_-]+)', line)
+        if found:
+            sanitizers.append({'backend': 'ASan', 'kind': found[1] if found[1] in sanitizer_kinds else 'unknown'})
+        if 'ERROR: LeakSanitizer: detected memory leaks' in line:
+            sanitizers.append({'backend': 'LSan', 'kind': 'memory_leak'})
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm|c|h|hpp|hxx)):(\d+):\d+: runtime error:', line)
+        if found:
+            sanitizers.append({'backend': 'UBSan', 'source': found[1], 'line': int(found[2])})
+(work / 'evidence' / 'failure-locations.json').write_text(json.dumps(locations, indent=2) + '\n')
+(work / 'evidence' / 'sanitizers.json').write_text(json.dumps(sanitizers, indent=2) + '\n')
+(work / 'evidence' / 'test-progress.json').write_text(json.dumps(progress[-100:], indent=2) + '\n')
+print(json.dumps({'tests': summary, 'failure_locations': locations, 'sanitizers': sanitizers}))
+# Compile diagnostics contain no runtime values; cap retained output.
+compile_log = work / 'raw' / 'compile.log'
+if compile_log.is_file():
+    lines = compile_log.read_text(errors='replace').splitlines()
+    (work / 'evidence' / 'compile.txt').write_text('\n'.join(lines[-600:]) + '\n')
+for relative in ('document.schema.json', 'python/models.py', 'python/schema_evidence.json'):
+    source = work / 'interop' / relative
+    if source.is_file() and not source.is_symlink() and source.stat().st_size <= 1024 * 1024:
+        target = work / 'evidence' / 'public-schema' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+if cleanup:
+    for name in ('build', 'package-core-lightweight', 'package-consumer', 'package-oauth2',
+                 'package-missing-backend', 'package-external',
+                 'package-unpatched', 'forge-external', 'cjose-external', 'cjose-upstream-source',
+                 'cjose-upstream-build', 'cjose-upstream-prefix', 'cjose-upstream-control', 'interop',
+                 'jansson-build', 'jansson-source', 'python'):
+        path = work / name
+        if path.is_dir():
+            shutil.rmtree(path)
+PY
+   if [[ "$phase" == evidence ]]; then
+      df -Pk "$work" > "$work/evidence/disk-after.txt"
+   fi
+   exit 0
+fi
+
+[[ "${ATTESTATION_SHA:?}" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$ATTESTATION_SHA" ]]
+export CMAKE_TOOLCHAIN_FILE="$work/compile-pools.cmake"
+if [[ "$RUNNER_OS" == Linux ]]; then
+   export CC=/usr/bin/clang-22 CXX=/usr/bin/clang++-22
+   readonly brew_bin=/home/linuxbrew/.linuxbrew/bin/brew
+else
+   readonly brew_bin="$(command -v brew)"
+fi
+
+if [[ "$phase" == dependencies ]]; then
+   df -Pk "$work" > "$work/evidence/disk-before.txt"
+   if [[ "$RUNNER_OS" == Linux ]]; then
+      sudo apt-get update
+      sudo apt-get install -y clang-22 clang-tools-22 g++-15 pkg-config libcurl4-openssl-dev libpcre2-dev
+      if [[ ! -x "$brew_bin" ]]; then
+         curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$work/homebrew.sh"
+         NONINTERACTIVE=1 /bin/bash "$work/homebrew.sh"
+      fi
+   else
+      "$brew_bin" install llvm@22
+   fi
+   eval "$("$brew_bin" shellenv)"
+   brew install boost cmake gmp libngtcp2 ninja openssl@3
+   # Keep the requested -j4 budget with bounded compiler and linker memory.
+   printf '%s\n' 'set(CMAKE_JOB_POOLS "att_compile=2;att_link=1" CACHE STRING "CI RAM bound" FORCE)' \
+      'set(CMAKE_JOB_POOL_COMPILE att_compile CACHE STRING "CI RAM bound" FORCE)' \
+      'set(CMAKE_JOB_POOL_LINK att_link CACHE STRING "CI link bound" FORCE)' > "$CMAKE_TOOLCHAIN_FILE"
+   bash "$root/.github/scripts/install-glaze.sh" "$glaze"
+   git init --quiet "$work/jansson-source"
+   git -C "$work/jansson-source" remote add origin https://github.com/akheron/jansson.git
+   git -C "$work/jansson-source" fetch --quiet --depth=1 origin ed5cae4ed0621ef409510f94270c9f8f263736d0
+   git -C "$work/jansson-source" checkout --quiet --detach FETCH_HEAD
+   if [[ "$RUNNER_OS" != Linux ]]; then
+      export CC="$(brew --prefix llvm@22)/bin/clang" CXX="$(brew --prefix llvm@22)/bin/clang++"
+   fi
+   cmake -S "$work/jansson-source" -B "$work/jansson-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER="$CC" -DCMAKE_INSTALL_PREFIX="$deps" \
+      -DCMAKE_INSTALL_LIBDIR=lib -DJANSSON_BUILD_SHARED_LIBS=ON -DJANSSON_BUILD_DOCS=OFF -DJANSSON_EXAMPLES=OFF
+   cmake --build "$work/jansson-build" -j4
+   cmake --install "$work/jansson-build"
+   printf 'forge=%s\ncjose=%s\njansson=ed5cae4ed0621ef409510f94270c9f8f263736d0\n' \
+      "$ATTESTATION_SHA" "$(git -C vendor/cjose rev-parse HEAD)" > "$work/evidence/provenance.txt"
+   "$CC" --version >> "$work/evidence/provenance.txt"
+   brew list --versions boost openssl@3 cmake ninja >> "$work/evidence/provenance.txt"
+   "$python" -c 'import platform, sys; print("python=" + sys.executable); print("python_version=" + platform.python_version()); print("python_arch=" + platform.machine())' \
+      >> "$work/evidence/provenance.txt"
+   exit 0
+fi
+
+eval "$("$brew_bin" shellenv)"
+if [[ "$RUNNER_OS" != Linux ]]; then
+   export CC="$(brew --prefix llvm@22)/bin/clang" CXX="$(brew --prefix llvm@22)/bin/clang++"
+   export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+fi
+readonly prefixes="$deps;$glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)"
+export PKG_CONFIG_PATH="$deps/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
+options=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX"
+   -DCMAKE_PREFIX_PATH="$prefixes" -Dglaze_DIR="$glaze/share/glaze"
+   -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DCMAKE_INSTALL_LIBDIR=lib
+   -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF)
+if [[ "$RUNNER_OS" == Linux ]]; then
+   options+=(-DCMAKE_CXX_FLAGS=-stdlib=libstdc++)
+else
+   options+=(-DCMAKE_OSX_SYSROOT="$SDKROOT")
+fi
+
+case "$phase" in
+   build)
+      cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
+         -DFORGE_ENABLE_JOSE=ON -DFORGE_ENABLE_LIBOAUTH2=ON -DFORGE_ENABLE_OIDC_AGENT=OFF \
+         -DFORGE_ENABLE_MDBX=ON -DFORGE_ENABLE_ROCKSDB=OFF -DFORGE_ENABLE_TUI=OFF -DBUILD_TESTING=ON \
+         -DFORGE_OPENAPI_PARITY_PYTHON="$work/python/bin/python" \
+         -DFORGE_ENABLE_TOOLING=OFF
+      cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
+         test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
+         forge_attestation_interop forge_attestation_benchmark test_forge_openapi_wire_baseline \
+         -j4 2>&1 | tee "$work/raw/compile.log"
+      BOOST_TEST_LOG_LEVEL=test_suite ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
+         --output-junit "$work/results.xml" \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|openapi_wire_baseline)$' \
+         > "$work/raw/tests.log" 2>&1
+      # Reuse the existing Core consumer to reject eager backend discovery or
+      # cross-export guards before the installed-package checks.
+      cmake -S tests/package_core_lightweight -B "$work/package-core-lightweight" "${options[@]}" \
+         -DForge_DIR="$build" -DCMAKE_DISABLE_FIND_PACKAGE_CJOSE=ON -DCMAKE_DISABLE_FIND_PACKAGE_cjose=ON
+      cmake --build "$work/package-core-lightweight" -j4 >> "$work/raw/compile.log" 2>&1
+      "$work/package-core-lightweight/forge_package_core_lightweight"
+      printf 'PASS\n' > "$work/evidence/core-backend-isolation.txt"
+      ;;
+   boundary)
+      # Reuse the same build tree after the independent early qualification.
+      cmake --build "$build" --target \
+         test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
+         test_forge_config_core test_forge_codec_yaml test_forge_codec_xml \
+         test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
+         test_forge_openapi_wire_baseline test_forge_openapi_parity_fixture \
+         -j4 2>&1 | tee -a "$work/raw/compile.log"
+      ;;
+   test)
+      BOOST_TEST_LOG_LEVEL=test_suite ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
+         --output-junit "$work/results.xml" \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|openapi_python_parity|openapi_python_harness|structure|contract_sdk_cmake_runtime_policy)$' \
+         > "$work/raw/tests.log" 2>&1
+      ;;
+   benchmark)
+      "$python" - "$build/tests/forge_attestation_benchmark" "$work/evidence" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+executable, evidence = sys.argv[1], Path(sys.argv[2])
+normal = subprocess.run([executable, '--iterations', '256', '--workers', '2', '--inflight', '4'],
+                        capture_output=True, timeout=60, check=False)
+metrics = json.loads(normal.stdout)
+(evidence / 'benchmark.json').write_text(json.dumps(metrics, indent=2) + '\n')
+if normal.returncode != 0 or metrics.get('status') != 'MEASURED':
+    raise SystemExit('benchmark measurement failed')
+failure = subprocess.run([executable, '--iterations', '1', '--workers', '1', '--inflight', '1',
+                          '--fail-worker', '1'], capture_output=True, timeout=20, check=False)
+if failure.returncode != 1 or json.loads(failure.stdout) != {
+        'status': 'HARNESS_ERROR', 'reason': 'injected_worker_failure'}:
+    raise SystemExit('benchmark worker-failure regression failed')
+(evidence / 'benchmark-failure.json').write_text(json.dumps({
+    'status': 'PASS', 'exit_code': failure.returncode, 'timeout_seconds': 20,
+    'heartbeat_started_before_worker_failure': True}) + '\n')
+PY
+      ;;
+   sanitizers)
+      cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
+         -DFORGE_ENABLE_JOSE=ON -DFORGE_ENABLE_LIBOAUTH2=OFF -DFORGE_ENABLE_OIDC_AGENT=OFF \
+         -DFORGE_ENABLE_MDBX=OFF -DFORGE_ENABLE_ROCKSDB=OFF -DFORGE_ENABLE_TUI=OFF \
+         -DFORGE_ENABLE_TOOLING=OFF -DBUILD_TESTING=ON \
+         '-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -g1' \
+         '-DCMAKE_CXX_FLAGS=-stdlib=libstdc++ -fsanitize=address,undefined -fno-omit-frame-pointer -g1' \
+         '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined'
+      cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
+         test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy -j4 2>&1 | tee "$work/raw/compile.log"
+      ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 BOOST_TEST_LOG_LEVEL=test_suite \
+         ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
+         --output-junit "$work/results.xml" \
+         -R '^test_forge_(crypto_jose|auth_attestation|schema_attestation|json_strict|attestation_policy)$' \
+         > "$work/raw/tests.log" 2>&1
+      ;;
+   interop)
+      "$python" -m venv "$work/python"
+      "$work/python/bin/python" -m pip --version >> "$work/evidence/provenance.txt"
+      "$work/python/bin/python" -m pip install --disable-pip-version-check -r tests/attestation_interop/requirements.txt
+      "$work/python/bin/python" -m pip check
+      "$work/python/bin/python" tests/attestation_interop/run.py \
+         --driver "$build/tests/forge_attestation_interop" --work "$work/interop" \
+         --evidence "$work/evidence/interop.json"
+      ;;
+   packages)
+      cmake --build "$build" --target test_forge_package_install -j4 >> "$work/raw/compile.log" 2>&1
+      cmake -S tests/package_attestation -B "$work/package-consumer" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake"
+      cmake --build "$work/package-consumer" -j4 >> "$work/raw/compile.log" 2>&1
+      ctest --test-dir "$work/package-consumer" --no-tests=error -j1 \
+         --output-junit "$work/evidence/packages.xml"
+      cmake -S tests/package_auth_liboauth2_component -B "$work/package-oauth2" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" -DFORGE_TEST_ATTESTATION_LOOKUPS=ON
+      cmake --build "$work/package-oauth2" -j4 >> "$work/raw/compile.log" 2>&1
+      "$work/package-oauth2/forge_package_auth_liboauth2_component"
+      printf 'PASS\n' > "$work/evidence/oauth2-backend-link.txt"
+      cmake -S tests/package_attestation_missing_backend -B "$work/package-missing-backend" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake"
+      printf 'PASS\n' > "$work/evidence/missing-backend.txt"
+      # Relocate Forge without its sibling backend. Resolve a separately
+      # installed qualified CJOSE through ordinary dependency discovery.
+      cmake --install "$build" --prefix "$work/forge-external" --component dev >> "$work/raw/compile.log" 2>&1
+      cmake -E rm -rf "$work/forge-external/lib/cmake/cjose"
+      cmake --install "$build/vendor/cjose" --prefix "$work/cjose-external" --component dev >> "$work/raw/compile.log" 2>&1
+      cmake -S tests/package_attestation -B "$work/package-external" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" \
+         -DForge_DIR="$work/forge-external/lib/cmake/Forge" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-external;$prefixes" \
+         -DFORGE_ATTESTATION_EXPECTED_CJOSE_LIBDIR="$work/cjose-external/lib"
+      cmake --build "$work/package-external" -j4 >> "$work/raw/compile.log" 2>&1
+      ctest --test-dir "$work/package-external" --no-tests=error -j1 \
+         --output-junit "$work/evidence/packages-external.xml"
+      printf 'PASS\n' > "$work/evidence/external-backend.txt"
+      # Reuse the F0 immutable upstream and feature-detection control, never
+      # a patched-library stub, to prove rejection of a real unpatched backend.
+      read -r upstream_url upstream_sha < <("$python" -c \
+         'import json,re,sys; p=json.load(open(sys.argv[1])); assert p["upstream_url"] == "https://github.com/OpenIDC/cjose.git" and re.fullmatch("[0-9a-f]{40}", p["upstream_sha"]); print(p["upstream_url"], p["upstream_sha"])' \
+         tests/cjose_qualification/pins.json)
+      git init --quiet "$work/cjose-upstream-source"
+      git -C "$work/cjose-upstream-source" remote add origin "$upstream_url"
+      git -C "$work/cjose-upstream-source" fetch --quiet --depth=1 origin "$upstream_sha"
+      git -C "$work/cjose-upstream-source" checkout --quiet --detach FETCH_HEAD
+      [[ "$(git -C "$work/cjose-upstream-source" rev-parse HEAD)" == "$upstream_sha" ]]
+      cmake -S "$work/cjose-upstream-source" -B "$work/cjose-upstream-build" "${options[@]}" \
+         -DCMAKE_INSTALL_PREFIX="$work/cjose-upstream-prefix" \
+         -DCJOSE_BUILD_SHARED=OFF -DCJOSE_BUILD_STATIC=ON -DCJOSE_BUILD_TESTS=OFF
+      cmake --build "$work/cjose-upstream-build" -j4 >> "$work/raw/compile.log" 2>&1
+      cmake --install "$work/cjose-upstream-build" >> "$work/raw/compile.log" 2>&1
+      cmake -S tests/cjose_qualification/feature_detection -B "$work/cjose-upstream-control" "${options[@]}" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-upstream-prefix;$prefixes" \
+         -DFORGE_CMAKE_MODULES="$root/cmake" -DEXPECT_EXTENSION=OFF
+      cmake -S tests/package_attestation_missing_backend -B "$work/package-unpatched" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" \
+         -DForge_DIR="$work/forge-external/lib/cmake/Forge" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-upstream-prefix;$prefixes" \
+         -DFORGE_ATTESTATION_MISSING_JANSSON=OFF
+      printf 'PASS\n' > "$work/evidence/unpatched-backend-rejected.txt"
+      ;;
+esac

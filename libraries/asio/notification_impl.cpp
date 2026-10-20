@@ -14,6 +14,7 @@ module;
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -21,6 +22,7 @@ module;
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/system_error.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 module forge.asio.notification;
 
@@ -86,16 +88,21 @@ notification::impl::async_wait_until_impl(epoch_type observed_epoch,
    if (const auto current = subscribe(observed_epoch, pending)) {
       co_return *current;
    }
-
-   auto wait_error = boost::system::error_code{};
-   try {
-      wait_error = stop ? co_await pending->wait_until(deadline, *stop)
-                        : co_await pending->wait_until_cancellable(deadline);
-   } catch (...) {
-      unsubscribe(pending);
-      throw;
+   const auto subscription = boost::scope::scope_exit{[this, pending] { unsubscribe(pending); }};
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   auto slot = cancellation.slot();
+   if (slot.is_connected()) {
+      slot.assign([weak = std::weak_ptr{pending}](boost::asio::cancellation_type_t type) noexcept {
+         if (type != boost::asio::cancellation_type::none) {
+            if (auto waiter = weak.lock()) { waiter->wake(); }
+         }
+      });
    }
-   unsubscribe(pending);
+   const auto clear_slot = boost::scope::scope_exit{[&slot] { if (slot.is_connected()) { slot.clear(); } }};
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none) { pending->wake(); }
+
+   const auto wait_error = stop ? co_await pending->wait_until(deadline, *stop)
+                                : co_await pending->wait_until(deadline);
 
    // Terminal delivery already completed. This dispatch only restores the
    // caller executor before exposing the epoch or wait error to the caller.

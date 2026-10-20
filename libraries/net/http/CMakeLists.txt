@@ -21,6 +21,10 @@ add_library(
    target.cpp
    range.cpp
    upload.cpp
+   multipart_framing.cpp
+   multipart_stream_source.cpp
+   body.cpp
+   callback_body_source.cpp
    route_context.cpp
    middleware.cpp
    connection.cpp

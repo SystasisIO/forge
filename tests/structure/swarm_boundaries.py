@@ -1,4 +1,4 @@
-"""Swarm's deterministic core must remain independent of its future runtime."""
+"""Enforce ownership boundaries between Swarm values, adapters and runtime."""
 
 from __future__ import annotations
 
@@ -22,16 +22,60 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       name = source.relative_to(root)
       if re.search(r"\bnamespace\s+forge::swarm\s*\{", text):
          errors.append(f"{name}: symbols must belong to a Swarm leaf namespace")
+      leaf = source.relative_to(family).parts[0]
+      forbidden = {
+         "protocol": r"swarm\.(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
+         "api": r"swarm\.(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
+         "conversion": r"swarm\.(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+      }
+      if leaf in forbidden:
+         if re.search(r"\bimport\s+forge\.(?:" + forbidden[leaf] + r")(?:[.;])", text):
+            errors.append(f"{name}: {leaf} imports an unrelated runtime or reverse dependency")
+         if re.search(r"\bstd::(?:async|thread|jthread)\b|\bboost::asio::(?:thread_pool|io_context)\b", text):
+            errors.append(f"{name}: {leaf} creates a private worker runtime")
+      if leaf == "conversion" and re.search(r"template\s*<\s*(?:class|typename)\b[^>]+>\s*class\s+conversion", text):
+         errors.append(f"{name}: conversion must specialize the Core primary template")
+      if "storage" in source.relative_to(family).parts:
+         if re.search(r"\bimport\s+forge\.(?:chain|api|app|net|plugins|execution|vm|rocksdb|db\.(?:blob|rocksdb|mdbx))(?:[.;])", text):
+            errors.append(f"{name}: file storage imports an unrelated runtime or payload backend")
+         if re.search(r"\bstd::(?:async|thread|jthread)\b|\bboost::asio::thread_pool\b", text):
+            errors.append(f"{name}: file storage creates a private worker runtime")
       if "core" not in source.relative_to(family).parts:
+         if "db" in source.relative_to(family).parts and re.search(
+            r"\bimport\s+forge\.(?:swarm\.(?:storage|runtime|protocol|api|conversion)|chain|net|api|app|plugins|rocksdb|db\.(?:blob|rocksdb|mdbx))(?:[.;])", text):
+            errors.append(f"{name}: indexed metadata imports a runtime or concrete backend")
          continue
-      if re.search(r"\bimport\s+forge\.(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
+      if re.search(r"\bimport\s+forge\.(?:swarm\.(?:db|storage|runtime|protocol|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
          errors.append(f"{name}: deterministic Swarm core imports an upper layer")
+      # Lexical tripwires complement review; they do not resolve arbitrary C++ aliases.
+      if re.search(r"\bstd::(?:async|thread|jthread|random_device)\b|\bboost::asio::(?:thread_pool|io_context|io_service|steady_timer|system_timer)\b", text):
+         errors.append(f"{name}: deterministic Swarm core owns runtime execution or hidden randomness")
+      if re.search(r"\b[A-Za-z_]\w*::now\s*\(", text):
+         errors.append(f"{name}: deterministic Swarm core must receive time explicitly")
 
    cmake = family / "core/CMakeLists.txt"
    if not cmake.is_file():
       errors.append("libraries/swarm/core: target definition is missing")
-   elif re.search(r"\bforge_(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:_|\b)", cmake.read_text()):
+   elif re.search(r"\bforge_(?:swarm_(?:db|storage|runtime|protocol|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm)(?:_|\b)", cmake.read_text()):
       errors.append("libraries/swarm/core: target depends on an upper layer")
+
+   storage = family / "storage/CMakeLists.txt"
+   if storage.is_file() and re.search(r"\bforge_(?:chain|api|app|net|plugins|execution|vm|rocksdb|db_(?:blob|rocksdb|mdbx))(?:_|\b)", storage.read_text()):
+      errors.append("libraries/swarm/storage: target depends on an unrelated runtime or payload backend")
+
+   models = family / "db/CMakeLists.txt"
+   if models.is_file() and re.search(r"\bforge_(?:swarm_(?:storage|runtime|protocol|api|conversion)|chain|net|api|app|plugins|rocksdb|db_(?:blob|rocksdb|mdbx))(?:_|\b)", models.read_text()):
+      errors.append("libraries/swarm/db: models depend on a runtime or concrete backend")
+
+   forbidden_targets = {
+      "protocol": r"swarm_(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
+      "api": r"swarm_(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
+      "conversion": r"swarm_(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+   }
+   for leaf, forbidden in forbidden_targets.items():
+      cmake = family / leaf / "CMakeLists.txt"
+      if cmake.is_file() and re.search(r"\bforge_(?:" + forbidden + r")(?:_|\b)", cmake.read_text()):
+         errors.append(f"libraries/swarm/{leaf}: target has a reverse dependency")
 
    conversion = root / "libraries/core/include/forge/core/conversion.cppm"
    if not conversion.is_file():

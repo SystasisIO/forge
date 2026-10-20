@@ -102,5 +102,9 @@ The coordinator owns execution and final qualification.
 
 Public dependencies: `forge_auth_oauth2`, `forge_asio`.
 Private dependencies: `oauth2-internal`, `Boost::url`; the vendor owns private
-CJOSE/Jansson/libcurl/OpenSSL dependency closure. The current pin is CJOSE
-0.6.2.8; package/provenance verification belongs to the coordinator's F0 gate.
+CJOSE/Jansson/libcurl/OpenSSL dependency closure. The F0-B candidate uses the
+single vendored CJOSE 0.8.1 external-signing fork, not a system CJOSE selected
+by version alone. Its installed package must expose the extension API.
+The [qualification report](../../../docs/donors/cjose-external-signing-qualification.md)
+separates the original OAuth baseline from candidate CI results. This change
+does not enable additional token algorithms or introduce attestation APIs.

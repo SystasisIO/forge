@@ -1,0 +1,68 @@
+{
+  "scope": "F0-B-Q1-Q5-Q7-Q8a",
+  "ci_status": "PASS",
+  "review_date": "2026-10-15",
+  "independent_f0_b_reviews": ["CLEAN", "CLEAN"],
+  "independent_documentation_reviews": ["DOCS_CLEAN", "DOCS_CLEAN"],
+  "tested_forge_sha": "f106050daf876ce404abdf9ba1234db737ba2bec",
+  "baseline_forge_sha": "8975f234dabf2cbfb91d766bf32194f3d8832a5b",
+  "candidate_cjose_sha": "84da8b54feb4e46ea1ddae6930f821e1510471b7",
+  "upstream_cjose_sha": "6fdb5fe75a86acb9cd34ca2eb13d9e090a6df588",
+  "historical_cjose_sha": "e787ace6a203d483038a793fd58f958a2f9b48c1",
+  "backend_run": 38745474616,
+  "q7_run": 38745474876,
+  "backend": {
+    "ubuntu-24.04": {
+      "status": "PASS",
+      "summary_sha256": "43e4cf4c823d8d4a044bf37bd83866cca00c431777977b7c1efc740bf4af22a9",
+      "provenance_sha256": "5cbd46b0bcdd82e752e5967b74db56e0a7423ea3b841859b8d4aec715c536116",
+      "upstream_candidate_original_sanitized_counts": [122, 127, 122, 127],
+      "public_consumer_pass_counts": [74, 74, 74, 74],
+      "prepare_complete_allocation_failure_positions": [244, 30],
+      "fuzz_runs": 20000,
+      "fuzz_peak_rss_mb": 475,
+      "legacy_binary_abi": "PASS"
+    },
+    "macos-15": {
+      "status": "PASS",
+      "summary_sha256": "b6314f09bf663e629a49dc66c0a1fbd348dcbb6e90f7765e818156091237a550",
+      "provenance_sha256": "2474b3a0ed143c60dd8e60c7bff611e2517f2cda085bab82f11980828d2d8fba",
+      "upstream_candidate_original_sanitized_counts": [122, 127, 122, 127],
+      "public_consumer_pass_counts": [74, 74, 74, 74],
+      "prepare_complete_allocation_failure_positions": [188, 30],
+      "fuzz_runs": 20000,
+      "fuzz_peak_rss_mb": 488,
+      "legacy_binary_abi": "PASS",
+      "leak_sanitizer": "UNSUPPORTED"
+    }
+  },
+  "q7": {
+    "status": "PASS",
+    "report_sha256": "334d61594227b2be5a8f82a18e5c2d63ca3ea59c379cf4dc41140ed5d2880102",
+    "same_cases_in_both_lanes": true,
+    "pass_counts_per_lane": {
+      "test_forge_auth_liboauth2": 18,
+      "test_forge_auth_token_verifier": 8,
+      "test_forge_api_trusted_subject": 21,
+      "test_forge_auth_http": 7,
+      "test_forge_auth_liboauth2_patched_regression": 86
+    },
+    "baseline_installed_package": "PASS",
+    "candidate_installed_package": "PASS",
+    "candidate_build_tree_package": "PASS",
+    "candidate_build_tree_optional_dependency": "PASS",
+    "candidate_installed_optional_dependency": "PASS",
+    "linkage_both_lanes": "PASS",
+    "cleanup_both_lanes": "COMPLETE",
+    "candidate_removed_kib": 9826124,
+    "baseline_removed_kib": 9695036
+  },
+  "limitations": [
+    "macOS LeakSanitizer unsupported",
+    "Jansson and OpenSSL dependencies not sanitizer-instrumented",
+    "unmodified 0.8.1 intermediate OAuth lane NOT_RUN",
+    "cross-version persisted HS256 and dir-A256GCM matrix NOT_RUN",
+    "F1/F2 API, guest, async custody and network signer out of scope",
+    "No dev merge, downstream pin or production acceptance"
+  ]
+}

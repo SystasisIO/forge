@@ -2,6 +2,7 @@ module;
 
 #include <cstddef>
 #include <filesystem>
+#include <stop_token>
 #include <string>
 
 export module forge.crypto.keystore.password;
@@ -22,6 +23,7 @@ struct password_request {
    std::filesystem::path file;
    std::string prompt = "Password: ";
    std::size_t max_bytes = 4U * 1024U;
+   std::stop_token stop_token;
 };
 
 [[nodiscard]] core::secret_string read_password(password_request request = {});

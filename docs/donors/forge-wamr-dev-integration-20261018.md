@@ -111,10 +111,21 @@ product acceptance. Additional installed interpreter/execution physical maps
 remain **NOT_RUN**; older OFF evidence retains its earlier revision scope.
 Evidence: `wamr-ci-190-20261020-r10/public-current-a066-r1`.
 
-Current live dev `8afc1977` adds shared child-signal handling and optional
-TLSNotary support. A read-only merge simulation identifies conflicts in root
-CMake and the optimizing README; the feature branch is not rebased or merged.
-That new integration context is not qualified by `a066` or earlier CI merges.
+At that checkpoint, live dev `8afc1977` added shared child-signal handling and
+optional TLSNotary support; the read-only merge simulation was not integration
+acceptance. On 2026-10-20 the maintainer authorized merging only the experimental
+branch with live dev `c594539f5ea3ec5a73a11bb17dd465fe3f04fdd5`. The integration
+retains both WAMR and CJOSE gitlinks, independent optional compiler/JIT,
+TLSNotary and JOSE switches, the current leaf/package boundaries, and the shared
+`forge.asio.child_signal_registration` instead of a second VM signal registry.
+The optimizing README keeps the WAMR artifact and preparation contracts while
+incorporating the shared guard's checked acquire/release lifecycle.
+
+Fresh source, build-tree JIT/AOT, real child cancellation/drain and installed
+consumer checks belong to `wamr-ci-190-20261020-r11/base-refresh-r1`; they are
+pending at this source checkpoint. Neither `a066`, earlier CI merge trees nor
+the feature-head-only CI60 qualifies this new integration context. The PR stays
+draft and must not be merged into dev under this authorization.
 All mandatory product, Linux, bounded-profile, performance and final delivered
 provenance requirements remain open until their own evidence closes them.
 

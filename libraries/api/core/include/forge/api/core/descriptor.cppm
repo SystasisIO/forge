@@ -1,6 +1,7 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -1002,6 +1003,24 @@ template <typename Interface, bool EnableRaw> class method_builder {
       if (!method_->template has_response_trait<Trait>()) {
          method_->response_traits.emplace_back(typeid(Trait));
       }
+      return *this;
+   }
+
+   method_builder& input_decoder(std::function<void(const bytes&, forge::raw::unpack_limits)> decoder) {
+      if (!EnableRaw || method_->input_type == typeid(void) || !decoder) {
+         FORGE_THROW_EXCEPTION(exceptions::protocol_error,
+                               "input decoder requires a remote streaming input and a callable");
+      }
+      method_->input_decoder = std::move(decoder);
+      return *this;
+   }
+
+   method_builder& output_decoder(std::function<void(const bytes&, forge::raw::unpack_limits)> decoder) {
+      if (!EnableRaw || method_->output_type == typeid(void) || !decoder) {
+         FORGE_THROW_EXCEPTION(exceptions::protocol_error,
+                               "output decoder requires a remote streaming output and a callable");
+      }
+      method_->output_decoder = std::move(decoder);
       return *this;
    }
 

@@ -1,3 +1,4 @@
+include(ForgeCJOSE)
 find_package(OAuth2Dependencies REQUIRED)
 
 get_filename_component(_forge_oauth2_source "${CMAKE_CURRENT_LIST_DIR}/../vendor/liboauth2" ABSOLUTE)
@@ -58,8 +59,8 @@ target_link_libraries(oauth2-internal PUBLIC
    CURL::libcurl
    OpenSSL::SSL
    OpenSSL::Crypto
-   PkgConfig::FORGE_OAUTH2_JANSSON
-   PkgConfig::FORGE_OAUTH2_CJOSE
+   Jansson::Jansson
+   "$<BUILD_LOCAL_INTERFACE:cjose::cjose_static>"
    PkgConfig::FORGE_OAUTH2_PCRE2
    Threads::Threads
 )

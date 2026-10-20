@@ -247,11 +247,46 @@ is immediate and requires full canonical configuration equality. The same
 cache catalog charges selected, quarantined, opaque and temporary payloads.
 Unknown files are preserved; replacement reserves old plus new bytes.
 
-Keep the injected runtime/compute storage alive through successful explicit
-session shutdown. The embedding process must not compete for SIGCHLD/reaping.
-Shutdown cancels owned work and escalates only owned children; its deadline is
-not a bound on OS reap latency. `shutdown_incomplete` retains ownership for retry.
-Do not detach, destroy an active owner, or use destructor-driven blocking drain.
+Unmanaged Boost.Process v2 async wait is the sole child reaper. The embedding
+application must establish default SIGCHLD, no SA_NOCLDWAIT/competing reaper and
+keep runtime/compute pool, executor and storage alive through cleanup. On Darwin,
+the first cold session uses the shared `forge.asio.child_signal_registration`
+guard and requires exact native default (`SIG_DFL`, zero flags, empty mask);
+custom flags/masks on a default handler are rejected without mutation. The guard
+uses the existing public Asio signal set. Other sessions, including sessions on
+distinct runtimes, may join only while known own registrations are live and the
+captured handler, flags and mask are unchanged. Each session retains its own
+runtime-bound registration until its child/task/compute drains. Checked public
+unregister failure or an observed foreign disposition change returns
+`shutdown_incomplete`, preserving the SAME registration and runtime; quiescence
+is not claimed. The last successful Asio unregister restores default disposition.
+Failed startup after registration also requires explicit shutdown before
+destroying injected owners.
+
+VM boundary exceptions remain `compiler_unavailable` for acquisition failure and
+`shutdown_incomplete` for release failure. The stricter cold profile changes
+which host dispositions are admitted; public error categories stay unchanged.
+
+This is ownership coordination, not a signal handler or reaper replacement.
+Child waits remain exact-PID Boost.Process operations. The shared guard's private
+mutex serializes only cooperating Forge registrations; it cannot synchronize
+unrelated signal mutation or foreign waitpid calls. An embedding host must not
+replace the handler or introduce a competing reaper while registrations are live.
+Checks reject observed changes at acquire/release, not continuously monitor the
+process or prove the absence of unsynchronized external changes. If the first
+post-registration disposition cannot be captured, no later owner is admitted
+and cleanup retains unconfirmed registration rather than guessing ownership.
+`compute::pool::request_stop()` MAY precede `session.shutdown()`: cleanup
+submits no new compute work, but waits for already submitted verification/
+spawn/cache operations to publish ownership or unwind. The Asio runtime must
+continue servicing child reap/timers and task drain. Join/destroy injected
+owners only after successful session shutdown. Shutdown closes admission, cancels
+retained live handles outside the index lock, escalates only owned children and
+drains their callbacks/reap plus scheduled work. The deadline is SIGKILL
+escalation, not a promise about physical OS reap latency. Typed
+`shutdown_incomplete` retains state for explicit retry; destroying a
+non-quiescent owner violates lifecycle and terminates rather than blocking or
+detaching cleanup. Successful terminal delivery never allocates a new outcome.
 
 The [focused tests](../../../../tests/vm_wasm_optimizing/README.md) separate
 actual live native frames, cancellation/reuse, untrusted substitution and

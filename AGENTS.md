@@ -215,10 +215,26 @@ class service_node {
 - `forge::swarm::core` owns neutral immutable-file descriptors, identities,
   Merkle proofs and deterministic transfer mechanisms. It reuses Crypto/Raw
   and must not depend on Chain, DB, API, Asio, App or plugins.
+- Filesystem-neutral Swarm store/checkpoint contracts may name Boost.Asio
+  awaitables. They do not import or link Forge Asio or perform I/O. The
+  `swarm.storage` leaf owns file resources and uses caller-owned Forge Asio
+  disk/CPU executors; no payload DB or hidden worker pool belongs there.
 - The Swarm descriptor uses canonical Forge Raw. BEP 52 algorithm fixtures do
   not establish BitTorrent or IPFS wire compatibility.
+- `swarm.db` owns declarative Object Store models only. `swarm.storage` may
+  adapt externally owned Object Store services, but must not open/close a DB
+  driver, import concrete DB backends, store payload or create worker pools.
+  Schema registration is explicit composition. Metadata is never proof of
+  present/verified file bytes, and one file operation has one checkpoint authority.
 - Payload files, persistence adapters, active runtime and product admission
   policy have separate owners as recorded in the Swarm implementation plan.
+- `swarm.protocol` owns bounded network values and metadata assembly; it must
+  not depend on DB, storage, API, Asio or a concrete transport. `swarm.api`
+  reuses Forge.API streams and required `authenticated_caller` injection,
+  without owning a node, storage or a second identity/authorization mechanism.
+- `swarm.conversion` projects local models into public metadata and validates
+  imports into Core descriptors only. Network values cannot allocate local row
+  IDs, restore checkpoints, claim payload verification or commit DB state.
 - `forge.core.conversion` declares only the common primary template. Domain
   conversion leaves own explicit specializations in its C++ namespace; Core
   must not acquire domain or serialization dependencies through customization.
@@ -700,9 +716,11 @@ implementation-library namespaces. For plugin family/role decisions, follow
 
 ## Plugins
 
-- Network plugins live in the nested families `net.http` and `net.p2p`:
-  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver}`.
-  The `net`, `net.http` and `net.p2p` grouping namespaces contain no types or
+- Network plugins live in the nested families `net.http`, `net.p2p` and `net.tlsnotary`:
+  `plugins/net/http/server`, `plugins/net/p2p/{node,resolver}` and
+  `plugins/net/tlsnotary/session`. The TLSNotary session leaf owns bounded
+  native session lifecycle only; HTTP/P2P and product admission remain external.
+  The `net`, `net.http`, `net.p2p` and `net.tlsnotary` grouping namespaces contain no types or
   aggregate modules/targets; each leaf keeps its own dependencies and lifecycle.
 - The P2P node owns consumer PubSub, diagnostics and host events through separate
   `pubsub_api`, `diagnostics_api` and `events_api` modules. Standalone PubSub and

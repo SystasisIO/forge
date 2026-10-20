@@ -13,6 +13,10 @@
 > **Plan revision, 2026-10-16:** reusable runtime belongs to `forge::swarm`;
 > the optional plugin is a thin application adapter. Paid and free serving use
 > product-supplied admission and quota policies over the same engine.
+> **Scope clarification, 2026-10-19:** current encrypted provider fragments stay
+> on the product provider API. Swarm integration for those fragments is future
+> product work; neutral storage adapters and admission/quota enforcement remain
+> part of this plan.
 > The same revision makes Swarm a library family: Object Store metadata belongs
 > to `swarm.db`, network records to `swarm.protocol`, and remote contracts to
 > `swarm.api`. The family root stays empty; focused PRs deliver its leaves.
@@ -139,7 +143,7 @@ forge_swarm_protocol -> forge_swarm_core + Forge Raw/reflection
 forge_swarm_db -> forge_swarm_core + forge_db_object
 forge_swarm_conversion -> forge_core + forge_swarm_db + forge_swarm_protocol
 forge_swarm_storage -> forge_swarm_core + forge_swarm_db + Forge Asio
-forge_swarm_api -> forge_swarm_protocol + forge_api_core
+forge_swarm_api -> forge_swarm_protocol + forge_api_core + forge_api_auth
 forge_swarm_runtime -> forge_swarm_core + forge_swarm_api + Forge Asio
 forge_plugins_swarm_node -> forge_swarm_runtime + forge_swarm_storage
                          + Forge.App + official P2P/DB Store APIs
@@ -976,17 +980,23 @@ operation ownership without duplicating these primitives.
 
 ### 12.6 Downstream decision record
 
-The maintainer decision of 2026-10-16 maps paid serving to Storlane `providerd`
-and free distribution to `swarmd`. Both consume the same `forge::swarm` engine,
-optionally through `forge_plugins_swarm_node`. This records the use case, not a
-claim that either integration has been implemented.
+The maintainer clarification of 2026-10-19 keeps current Storlane `providerd`
+serving its encrypted storage fragments through the specialized Storlane API.
+The free `swarmd` composition serves explicitly published Swarm objects.
+Integrating paid provider fragments with Swarm is not a current deliverable.
 
 Storlane owns payment admission, shared budgets and settlement. Forge owns
 enforcement of supplied permissions/allowances and neutral transfer facts.
-An ordinary provider holding erasure fragments is not automatically a Swarm
-seed: a product bridge must supply verified canonical pieces when needed.
-Erasure reconstruction, paid receipts and automatic origin fallback are not
-introduced into Forge by this plan.
+The reusable engine still supports product storage adapters and both explicit
+free and quota-controlled policies. Encryption alone does not prevent Swarm
+transfer: a future product adapter may expose an encrypted fragment as its own
+immutable object, with a canonical descriptor, identity and verified pieces.
+That mapping needs explicit discovery, authorization and accounting contracts;
+it does not inherently require decrypting or reconstructing the original file.
+Alternatively a product may reconstruct canonical file content before exposing
+it. Neither mapping, erasure reconstruction, paid receipts nor automatic origin
+fallback is introduced into Forge by this plan. Failure of a paid path must not
+enable an unrestricted Swarm route.
 
 The first separate downstream pilot remains finalized Spine snapshots. Free
 and quota-controlled adapters are both required in Forge's own fixtures; the
@@ -1082,6 +1092,26 @@ the linked production roadmap; low-level codecs alone do not satisfy them.
   sidecars, symlink/path races, destination conflicts and cross-filesystem
   rejection. No payload DB or hidden disk thread pool.
 
+PR2's concrete contracts are `forge.swarm.core.store` and
+`forge.swarm.core.checkpoint`, implemented by
+`forge.swarm.storage.file_store` (`swarm_storage` component). A store binds one
+validated descriptor/destination and separate caller-owned disk/CPU executors.
+`begin(piece_id)` grants exclusive writer ownership; complete-block positional
+writes, authenticated commit and discard are distinct operations. Reads verify
+the actual piece buffer before returning a bounded range. Snapshot/change
+notification, leases, explicit checkpoint/publication and awaited close expose
+their own ownership rather than a hidden runtime.
+
+Default bounds are 16 unfinished pieces, 8 active I/O operations and 1 MiB
+per write/range request. A versioned checksummed Raw restart cache holds
+identity, generation, verified bitmap and unfinished block hints. Reopen
+rehashes payload independently. An optional `checkpoint_store` selects external
+metadata instead of the sidecar; PR3 supplies ObjectDB, not a second authority.
+Native POSIX publication is an atomic no-replace rename of one same-filesystem
+root. Unsupported atomic semantics fail explicitly. Parent credentials and
+root ownership remain trusted local administration boundaries; process-crash
+tests do not constitute physical power-loss or production proof.
+
 ### PR3: Indexed metadata and persistence adapter
 
 - **Owner/API:** `forge_swarm_db` declares metadata models and index descriptors;
@@ -1100,6 +1130,26 @@ the linked production roadmap; low-level codecs alone do not satisfy them.
   one operation has exactly one checkpoint authority. Schema/model registration
   occurs in composition before startup, never through model import side effects.
 
+PR3 freezes metadata schema v1 in `forge.swarm.db.content` and
+`forge.swarm.db.schema`: a version singleton and one content object with
+canonical identity/descriptor, local opaque locator, job state/priority, optional
+expiry (Unix seconds; `INT64_MAX` means no expiry) and optional PR2 resume state.
+Identity and locator are unique; ordered state/descending-priority and expiry
+indexes serve bounded cursor queries. Related fields and indexes change in one
+Object Store transaction. There are no payload or per-network-block objects.
+
+`forge.swarm.storage.catalog` adapts an externally owned Object Store. Composition
+explicitly registers models, supplies separate CPU and database executors, and
+retains DB lifecycle ownership. The DB executor is necessary because a RocksDB
+awaitable does not itself offload blocking work. Catalog requires single-writer,
+monotonic-ID Object Store policy and bounds in-flight work and page sizes.
+Checkpoint handles bind one immutable object ID, identity and locator; erase or
+replacement cannot revive an old handle. Saves validate monotonic generations,
+commit then flush the same driver; identical retries repeat the durability fence.
+Checkpoint loads restore that fence after ambiguous prior commit errors. Existing
+file verification and sync ordering remain PR2's authority. Expiry selection and
+metadata erase do not silently delete payload or decide product retention policy.
+
 ### PR4: Deterministic transfer mechanisms
 
 - **Owner/API:** `forge_swarm_core`; availability, picker and transfer state with
@@ -1112,6 +1162,24 @@ the linked production roadmap; low-level codecs alone do not satisfy them.
   response handling, request ownership, endgame cancellation and bounded
   state under long sequences. No sockets, timers or plugin lifecycle in these
   deterministic mechanisms.
+
+PR4's concrete leaves inside the existing target are `peer_observation`,
+`transfer` and `choker`. Connection-local IDs, explicit monotonic `std::chrono`
+time and a caller-supplied tie seed keep the state reproducible. `transfer`
+owns request identities, availability ordering, bounded unfinished-piece
+reservations and verification generations; it does not retain payload.
+`choker` returns serving-slot decisions, not authorization. Its samples and
+selection do not impose paid/free admission or a durable reputation system.
+
+The maintained picker order receives sparse availability/priority updates;
+ordinary requests must not re-sort the entire descriptor. Acceptance includes
+maximum-size stable inventory, identical bitmaps and single-bit changes, plus
+allocation-failure rollback with exact capacities. Donor comparison is limited
+to documented common mechanisms, not BitTorrent wire equivalence. See the
+[Core contract](../../libraries/swarm/core/README.md) and
+[donor traceability](../donors/forge-swarm-transfer-v1.md). Existing descriptor
+and checkpoint wire layouts remain unchanged. Persistence, hash verification,
+data sync and publication still follow PR2's storage ordering.
 
 ### PR5: Protocol DTOs and peer API
 
@@ -1134,6 +1202,26 @@ the linked production roadmap; low-level codecs alone do not satisfy them.
   identity/completeness rejection and rejection of remote local-state claims.
   Builders never own DB I/O or commit; a blind DTO-to-persisted-record save is
   forbidden. Installed protocol/API consumers must not link Swarm DB/storage.
+
+The concrete PR5 contract is `forge.swarm.peer` 1.0: a `metadata` server stream
+and an `exchange` duplex stream. Both take an existing required
+`forge::api::auth::authenticated_caller` fixed argument, injected from immutable
+trusted invocation context. No Swarm caller DTO or second authority mechanism
+is introduced. A transport fingerprint is an identity handoff, not admission;
+PR6 must enforce product permission and quotas, including for local typed calls.
+
+Metadata chunks carry canonical Core descriptor bytes in ordered 16 KiB pieces,
+with a 16 MiB total bound. Full assembly validates canonical encoding and the
+requested content identity. Peer messages have bounded Raw decoders installed
+through the normal Forge.API descriptor customization path in both directions.
+There is no separate Swarm framing. Session ordering, request ownership and
+block verification still belong to the PR4 Core/PR6 runtime composition.
+
+Conversion exports public metadata from an indexed content row, including a
+partially downloaded job with valid metadata. It omits private locator, job ID,
+local verification/checkpoint and policy fields. Validated imports yield only a
+Core descriptor: local row identity, payload availability and transactional save
+remain the owner's responsibility. No reverse `conversion<db::content>` exists.
 
 ### PR6: Library runtime and policy enforcement
 

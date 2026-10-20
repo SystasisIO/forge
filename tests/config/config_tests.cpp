@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <optional>
+#include <variant>
 #include <vector>
 
 import forge.config.core.key_path;
@@ -207,6 +208,24 @@ BOOST_AUTO_TEST_CASE(config_document_paths_merge_and_decode) {
    BOOST_TEST(!decoded.value.tls_enabled);
    BOOST_REQUIRE_EQUAL(decoded.value.tags.size(), 2U);
    BOOST_TEST(decoded.value.tags[1] == "beta");
+}
+
+BOOST_AUTO_TEST_CASE(config_encode_validates_records_and_preserves_valid_canonical_mapping) {
+   auto source = http_config{.bind_port = 8080, .bind_host = "127.0.0.1", .tls_enabled = true,
+                             .tags = {"alpha", "beta"}, .token = "test-token"};
+   const auto encoded = forge::config::core::encode(source, "http");
+   BOOST_TEST(encoded.try_get("http.bind-port") != nullptr);
+   BOOST_TEST(encoded.try_get("http.bind_port") == nullptr);
+   BOOST_TEST(encoded.try_get("http.port") == nullptr);
+   const auto decoded = forge::config::core::decode<http_config>(encoded, "http");
+   BOOST_REQUIRE(decoded.ok());
+   BOOST_TEST(decoded.value.bind_port == source.bind_port);
+   BOOST_TEST(decoded.value.bind_host == source.bind_host);
+   BOOST_TEST(decoded.value.tls_enabled == source.tls_enabled);
+   BOOST_TEST(decoded.value.tags == source.tags, boost::test_tools::per_element());
+   BOOST_TEST(decoded.value.token == source.token);
+   source.bind_port = 0;
+   BOOST_CHECK_THROW(forge::config::core::encode(source, "http"), forge::schema::encoding_error);
 }
 
 BOOST_AUTO_TEST_CASE(config_optional_defaults_export_and_decode_consistently) {
