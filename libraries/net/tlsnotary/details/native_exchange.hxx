@@ -16,6 +16,7 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
    static boost::asio::awaitable<void> discard(std::shared_ptr<native_exchange> self);
 
  private:
+   struct peer_window;
    void spawn();
    void prepare();
    boost::asio::awaitable<void> watch_worker();
@@ -41,6 +42,7 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
    session_options _options;
    std::vector<std::uint8_t> _request;
    bool _prover = false;
+   std::shared_ptr<peer_window> _peer_window;
    std::atomic<int> _launched_pid{-1};
    std::atomic<bool> _ownership_quiescent{true};
    int _pid = -1;

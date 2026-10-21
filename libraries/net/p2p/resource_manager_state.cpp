@@ -13,8 +13,11 @@ module;
 #include <string>
 #include <string_view>
 #include <utility>
+#include <forge/log/macros.hpp>
 
 module forge.net.p2p.resource_manager;
+
+import forge.log.logger;
 
 #include "details/resource_manager_state.hxx"
 
@@ -217,48 +220,88 @@ bool resource_manager::state::can_remove_locked(const scope_account& account,
 }
 
 bool resource_manager::state::can_add_to_current_scopes_locked(const ledger& value, const scope_totals& delta,
-                                                               memory_priority priority) const noexcept {
-   if (!can_add_locked(system_, limits_.system, delta, priority)) {
+                                                               memory_priority priority,
+                                                               memory_rejection* rejected) const noexcept {
+   const auto allowed = [&](const scope_account& account, const scope_limits& limits, const char* scope) noexcept {
+      if (can_add_locked(account, limits, delta, priority)) {
+         return true;
+      }
+      if (rejected) {
+         const auto threshold = priority_threshold(limits.max_memory, priority);
+         const auto dimension = !can_add(account.usage.memory, delta.memory, limits.max_memory) ? "memory"
+                                : account.usage.memory + delta.memory > threshold               ? "priority"
+                                                                                                : "non_memory";
+         *rejected = {.reason = "budget",
+                      .scope = scope,
+                      .dimension = dimension,
+                      .usage = account.usage.memory,
+                      .limit = limits.max_memory,
+                      .threshold = threshold};
+      }
+      return false;
+   };
+   const auto missing = [&](const char* scope) noexcept {
+      if (rejected) {
+         *rejected = {.reason = "missing_scope", .scope = scope};
+      }
+      return false;
+   };
+   if (!allowed(system_, limits_.system, "system")) {
       return false;
    }
-   if (value.transient && !can_add_locked(transient_, limits_.transient, delta, priority)) {
+   if (value.transient && !allowed(transient_, limits_.transient, "transient")) {
       return false;
    }
    if (value.peer) {
       const auto peer = peers_.find(*value.peer);
-      if (peer == peers_.end() || !can_add_locked(peer->second, limits_.peer, delta, priority)) {
+      if (peer == peers_.end()) {
+         return missing("peer");
+      }
+      if (!allowed(peer->second, limits_.peer, "peer")) {
          return false;
       }
    }
    if (value.protocol) {
       const auto protocol = protocols_.find(value.protocol->value);
       const auto peer = protocol_peers_.find(*value.peer);
-      if (protocol == protocols_.end() || peer == protocol_peers_.end()) {
-         return false;
+      if (protocol == protocols_.end()) {
+         return missing("protocol");
+      }
+      if (peer == protocol_peers_.end()) {
+         return missing("protocol_peer");
       }
       const auto protocol_peer = peer->second.find(value.protocol->value);
-      if (protocol_peer == peer->second.end() || !can_add_locked(protocol->second, limits_.protocol, delta, priority) ||
-          !can_add_locked(protocol_peer->second, limits_.protocol_peer, delta, priority)) {
+      if (protocol_peer == peer->second.end()) {
+         return missing("protocol_peer");
+      }
+      if (!allowed(protocol->second, limits_.protocol, "protocol") ||
+          !allowed(protocol_peer->second, limits_.protocol_peer, "protocol_peer")) {
          return false;
       }
    }
    if (value.service) {
       const auto service = services_.find(*value.service);
       const auto peer = service_peers_.find(*value.peer);
-      if (service == services_.end() || peer == service_peers_.end()) {
-         return false;
+      if (service == services_.end()) {
+         return missing("service");
+      }
+      if (peer == service_peers_.end()) {
+         return missing("service_peer");
       }
       const auto service_peer = peer->second.find(*value.service);
-      if (service_peer == peer->second.end() || !can_add_locked(service->second, limits_.service, delta, priority) ||
-          !can_add_locked(service_peer->second, limits_.service_peer, delta, priority)) {
+      if (service_peer == peer->second.end()) {
+         return missing("service_peer");
+      }
+      if (!allowed(service->second, limits_.service, "service") ||
+          !allowed(service_peer->second, limits_.service_peer, "service_peer")) {
          return false;
       }
    }
    const auto local = scope_account{.usage = value.usage};
    if (value.value_kind == ledger::kind::connection) {
-      return can_add_locked(local, limits_.connection, delta, priority);
+      return allowed(local, limits_.connection, "connection");
    }
-   return value.value_kind != ledger::kind::stream || can_add_locked(local, limits_.stream, delta, priority);
+   return value.value_kind != ledger::kind::stream || allowed(local, limits_.stream, "stream");
 }
 
 bool resource_manager::state::can_remove_from_current_scopes_locked(const ledger& value,
@@ -847,17 +890,44 @@ resource_manager::state::bind_service_locked(const std::shared_ptr<ledger>& valu
 
 bool resource_manager::state::reserve_memory(const std::shared_ptr<ledger>& value, std::uint64_t bytes,
                                              memory_priority priority) noexcept {
-   auto lock = std::scoped_lock{mutex_};
-   if (!value || !value->parent_active) {
-      return reject_invalid_transition_locked();
+   auto rejected = memory_rejection{};
+   auto reservation_memory = std::uint64_t{};
+   auto system_memory = std::uint64_t{};
+   auto denied_before = std::uint64_t{};
+   auto denied_after = std::uint64_t{};
+   auto invalid_before = std::uint64_t{};
+   auto invalid_after = std::uint64_t{};
+   {
+      const auto lock = std::scoped_lock{mutex_};
+      denied_before = snapshot_.denied_memory;
+      invalid_before = snapshot_.invalid_transitions;
+      if (!value || !value->parent_active) {
+         rejected = {.reason = value ? "inactive_parent" : "inactive_reservation", .scope = "reservation"};
+         static_cast<void>(reject_invalid_transition_locked());
+      } else {
+         const auto delta = scope_totals{.memory = bytes};
+         if (can_add_to_current_scopes_locked(*value, delta, priority, &rejected)) {
+            add_to_current_scopes_locked(*value, delta);
+            value->usage.memory += bytes;
+            return true;
+         }
+         static_cast<void>(reject_limit_locked(snapshot_.denied_memory));
+      }
+      reservation_memory = value ? value->usage.memory : 0;
+      system_memory = system_.usage.memory;
+      denied_after = snapshot_.denied_memory;
+      invalid_after = snapshot_.invalid_transitions;
    }
-   const auto delta = scope_totals{.memory = bytes};
-   if (!can_add_to_current_scopes_locked(*value, delta, priority)) {
-      return reject_limit_locked(snapshot_.denied_memory);
-   }
-   add_to_current_scopes_locked(*value, delta);
-   value->usage.memory += bytes;
-   return true;
+   // Values describe this exact admission attempt under mutex_, before any
+   // concurrent ACK or teardown. Sinks may safely re-enter diagnostics here.
+   wlog("forge.net.p2p.resources", "P2P memory reservation rejected",
+        ("event", "p2p.memory_reservation_failed")("reason", rejected.reason)("scope", rejected.scope)(
+            "dimension", rejected.dimension)("requested_bytes", bytes)("priority", static_cast<unsigned>(priority))(
+            "scope_usage", rejected.usage)("scope_limit", rejected.limit)("scope_threshold", rejected.threshold)(
+            "reservation_memory", reservation_memory)("system_memory", system_memory)(
+            "denied_memory_before", denied_before)("denied_memory_after", denied_after)(
+            "invalid_transitions_before", invalid_before)("invalid_transitions_after", invalid_after));
+   return false;
 }
 
 bool resource_manager::state::reserve_file_descriptors(const std::shared_ptr<ledger>& value,

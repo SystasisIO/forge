@@ -6,6 +6,9 @@ module;
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -13,6 +16,8 @@ module;
 #include <vector>
 
 module forge.net.p2p.resource_manager;
+
+import forge.log.logger;
 
 namespace forge::net::p2p::detail {
 void fail_next_service_bind_prepare_for_test() noexcept;
@@ -35,6 +40,51 @@ namespace {
 
 [[nodiscard]] protocol_id test_protocol(std::string value) {
    return protocol_id{.value = std::move(value)};
+}
+
+class memory_capture_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record& record) override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _records.push_back(record);
+      }
+      if (after_record)
+         after_record();
+   }
+
+   std::vector<forge::log_record> snapshot() const {
+      const auto lock = std::scoped_lock{_mutex};
+      return _records;
+   }
+
+   std::function<void()> after_record;
+
+ private:
+   mutable std::mutex _mutex;
+   std::vector<forge::log_record> _records;
+};
+
+struct memory_log_capture {
+   memory_log_capture() : route{forge::logger::get("forge.net.p2p.resources")}, previous{route.get_log_level()} {
+      route.set_log_level(forge::log_level::warn);
+      route.add_sink(captured);
+   }
+   ~memory_log_capture() {
+      route.remove_sink(captured);
+      route.set_log_level(previous);
+   }
+
+   forge::logger route;
+   forge::log_level previous;
+   std::shared_ptr<memory_capture_sink> captured = std::make_shared<memory_capture_sink>();
+};
+
+std::string field_value(const forge::log_record& record, std::string_view key) {
+   for (const auto& field : record.fields)
+      if (field.key == key)
+         return field.value;
+   return {};
 }
 
 [[nodiscard]] bool bind_accepted(resource_manager::stream_reservation::bind_result result) noexcept {
@@ -82,6 +132,111 @@ static_assert(has_operational_dials<resource_manager>);
 static_assert(has_pair_scopes<resource_manager::limits>);
 
 BOOST_AUTO_TEST_SUITE(resource_manager_ledger_tests)
+
+BOOST_AUTO_TEST_CASE(resource_memory_rejection_keeps_exact_scope_snapshot_before_reentrant_release) {
+   auto manager = resource_manager{resource_manager::limits{
+       .protocol_peer = {.max_memory = 100},
+       .stream = {.max_memory = 200},
+   }};
+   auto stream =
+       manager.reserve_stream(test_peer("secret-sentinel peer"), resource_manager::session_direction::outbound);
+   BOOST_REQUIRE(stream);
+   BOOST_REQUIRE(bind_accepted(stream->bind_protocol(test_protocol("secret-sentinel protocol"))));
+   auto held = stream->reserve_memory(79, resource_manager::memory_priority::high);
+   BOOST_REQUIRE(held);
+   const auto logs = memory_log_capture{};
+   logs.captured->after_record = [&] {
+      BOOST_TEST(manager.current().system.memory == 79U);
+      held->release();
+   };
+   BOOST_TEST(!stream->reserve_memory(1, resource_manager::memory_priority::high));
+   logs.captured->after_record = {};
+   BOOST_TEST(manager.current().system.memory == 0U);
+   const auto records = logs.captured->snapshot();
+   BOOST_REQUIRE_EQUAL(records.size(), 1U);
+   const auto& record = records.front();
+   BOOST_TEST(record.logger == "forge.net.p2p.resources");
+   BOOST_TEST(record.level.value == forge::log_level::warn);
+   BOOST_TEST(field_value(record, "event") == "p2p.memory_reservation_failed");
+   BOOST_TEST(field_value(record, "reason") == "budget");
+   BOOST_TEST(field_value(record, "scope") == "protocol_peer");
+   BOOST_TEST(field_value(record, "dimension") == "priority");
+   BOOST_TEST(field_value(record, "requested_bytes") == "1");
+   BOOST_TEST(field_value(record, "priority") == "203");
+   BOOST_TEST(field_value(record, "scope_usage") == "79");
+   BOOST_TEST(field_value(record, "scope_limit") == "100");
+   BOOST_TEST(field_value(record, "scope_threshold") == "79");
+   BOOST_TEST(field_value(record, "reservation_memory") == "79");
+   BOOST_TEST(field_value(record, "system_memory") == "79");
+   BOOST_TEST(field_value(record, "denied_memory_before") == "0");
+   BOOST_TEST(field_value(record, "denied_memory_after") == "1");
+   BOOST_TEST(field_value(record, "invalid_transitions_before") == "0");
+   BOOST_TEST(field_value(record, "invalid_transitions_after") == "0");
+   BOOST_TEST(record.fields.size() == 15U);
+   BOOST_TEST(forge::format_text_log_record(record).find("secret-sentinel") == std::string::npos);
+   BOOST_TEST(forge::format_json_log_record(record).find("secret-sentinel") == std::string::npos);
+   stream->release();
+   BOOST_TEST(manager.current().system.outbound_streams == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(resource_memory_rejection_keeps_first_budget_and_survives_throwing_sink) {
+   auto manager = resource_manager{resource_manager::limits{
+       .system = {.max_memory = 1},
+       .stream = {.max_memory = 1},
+   }};
+   auto stream =
+       manager.reserve_stream(test_peer("secret-sentinel peer"), resource_manager::session_direction::outbound);
+   BOOST_REQUIRE(stream);
+   auto held = stream->reserve_memory(1);
+   BOOST_REQUIRE(held);
+   const auto logs = memory_log_capture{};
+   logs.captured->after_record = [] { throw std::runtime_error{"secret-sentinel sink"}; };
+   auto denied = false;
+   BOOST_CHECK_NO_THROW(denied = !stream->reserve_memory(1));
+   BOOST_TEST(denied);
+   logs.captured->after_record = {};
+   const auto records = logs.captured->snapshot();
+   BOOST_REQUIRE_EQUAL(records.size(), 1U);
+   BOOST_TEST(field_value(records.front(), "reason") == "budget");
+   BOOST_TEST(field_value(records.front(), "scope") == "system");
+   BOOST_TEST(field_value(records.front(), "dimension") == "memory");
+   BOOST_TEST(field_value(records.front(), "scope_usage") == "1");
+   BOOST_TEST(field_value(records.front(), "scope_limit") == "1");
+   BOOST_TEST(field_value(records.front(), "scope_threshold") == "1");
+   BOOST_TEST(manager.current().denied_memory == 1U);
+   BOOST_TEST(manager.current().invalid_transitions == 0U);
+   held->release();
+   stream->release();
+   BOOST_TEST(manager.current().system.memory == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(resource_memory_rejection_distinguishes_inactive_moved_and_released_reservations) {
+   auto manager = resource_manager{};
+   const auto logs = memory_log_capture{};
+   auto empty = resource_manager::stream_reservation{};
+   BOOST_TEST(!empty.reserve_memory(1));
+   auto stream =
+       manager.reserve_stream(test_peer("secret-sentinel peer"), resource_manager::session_direction::outbound);
+   BOOST_REQUIRE(stream);
+   auto moved = std::move(*stream);
+   BOOST_TEST(!stream->reserve_memory(2));
+   moved.release();
+   BOOST_TEST(!moved.reserve_memory(3));
+   const auto records = logs.captured->snapshot();
+   BOOST_REQUIRE_EQUAL(records.size(), 3U);
+   for (std::size_t index = 0; index < records.size(); ++index) {
+      BOOST_TEST(field_value(records[index], "event") == "p2p.memory_reservation_failed");
+      BOOST_TEST(field_value(records[index], "reason") == "inactive_reservation");
+      BOOST_TEST(field_value(records[index], "scope") == "reservation");
+      BOOST_TEST(field_value(records[index], "requested_bytes") == std::to_string(index + 1));
+      BOOST_TEST(field_value(records[index], "priority") == "255");
+      BOOST_TEST(records[index].fields.size() == 5U);
+      BOOST_TEST(forge::format_json_log_record(records[index]).find("secret-sentinel") == std::string::npos);
+   }
+   BOOST_TEST(manager.current().denied_memory == 0U);
+   BOOST_TEST(manager.current().invalid_transitions == 0U);
+   BOOST_TEST(manager.current().system.outbound_streams == 0U);
+}
 
 BOOST_AUTO_TEST_CASE(resource_manager_charges_peer_before_protocol_negotiation) {
    auto manager = resource_manager{resource_manager::limits{
