@@ -4,6 +4,7 @@ add_subdirectory(crypto/wallet)
 add_subdirectory(db/store)
 add_subdirectory(net)
 add_subdirectory(log/otlp)
+add_subdirectory(swarm/node)
 
 add_library(forge_plugins INTERFACE)
 
@@ -19,6 +20,7 @@ target_link_libraries(
       forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store
+      forge_plugins_swarm_node
 )
 
 if(TARGET forge_plugins_net_tlsnotary_session)

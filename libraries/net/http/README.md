@@ -50,6 +50,11 @@ their descriptors even if the original pathname is removed before draining.
   re-exports this module, so existing imports keep working.
 - `forge.net.http.types` — FORGE-owned Beast-like request/response wrappers, HTTP
   method/status enums and endpoint DTO state.
+- `forge.net.http.wire` — bounded serialization of buffered requests and strict
+  parsing of one complete, contiguous HTTP/1.0 or HTTP/1.1 message. It uses the
+  same private Beast conversions as the ordinary HTTP client and has no TLS,
+  transcript authentication or application-policy dependency of its own.
+
 - `forge.net.http.body`, `forge.net.http.stream` — FORGE-owned chunk, reader, writer and
   stream route types.
 - `forge.net.http.file`, `forge.net.http.range` — file responses, static roots and byte
@@ -71,6 +76,49 @@ Target: `forge_net_http`.
 Dependencies: `forge_asio`, `forge_net_tls`, `forge_net_websocket`, `forge_codec_json`,
 `forge_schema`, Boost.Asio, Boost.Beast and Boost.URL.
 Server observations additionally use `forge_log` as a private implementation dependency.
+
+Ordinary client and connection requests generate a missing `Host` with
+`base_url::host_header()`: nondefault ports are included, while HTTP port 80 and
+HTTPS port 443 are omitted. Parsed IPv6 literals retain their single bracket pair.
+An explicit caller `Host` is preserved. This applies to buffered requests,
+streaming uploads, streaming responses and combined streaming. Origin-bound async
+header preparation retains its stricter Host matching rules. A port-sensitive
+signature must cover the same authority that is sent on the wire.
+
+### Complete HTTP wire messages
+
+`serialize_request(request, sensitive_names, limits)` returns owned byte storage,
+the body offset and ordered half-open ranges for the exact sensitive field values
+in that storage. Names match case-insensitively; repeated fields produce separate
+ranges. Missing or duplicate sensitive-name selections are errors. The caller
+supplies the Host and connection policy, for example `keep_alive(false)` for a
+one-exchange protocol. Serialization validates fields before Beast can normalize
+them, uses canonical Content-Length framing and rejects supplied Transfer-Encoding,
+duplicate Content-Length and lengths inconsistent with the body. Request headers
+are inspected through `request::header_fields()`, a view valid until request
+mutation, move or destruction, without copying oversized input first.
+The pre-copy budget includes the start line, field delimiters, generated
+Content-Length/Connection, final CRLF and body together. Caller-supplied Connection
+token lists use a conservative growth allowance for Beast normalization; requests
+near a configured size boundary may be rejected before serialization.
+
+`parse_request(bytes, limits)` and `parse_response(bytes, request_method, limits)`
+parse exactly one contiguous message using Beast. Wire bytes, header bytes/count
+and decoded body bytes have independent bounds. Content-Length, chunked and
+EOF-delimited responses are supported; the original request method is required
+for HEAD semantics. Interim responses, trailing bytes, incomplete framing,
+duplicate Host or framing fields, Content-Length lists, obsolete header folding,
+unsupported transfer codings and nonempty chunk trailers are rejected. Requests
+require exactly one nonempty Host and a method represented by the public enum.
+Header/count limits raise `request_header_fields_too_large`, wire/body limits raise
+`payload_too_large`, and malformed or unsupported messages raise `bad_request`.
+
+These APIs do not accept sparse or redacted byte sequences. Locally computed
+sensitive offsets describe serialization only: they do not prove the syntax,
+field boundaries or contents of hidden bytes in a remote transcript. Applications
+must establish authentication and disclosure requirements separately. The codec
+does not retry, redirect, open a connection, parse JSON or log message content.
+The focused checks are `test_forge_http_wire`.
 
 ## Server Observability
 

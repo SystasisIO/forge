@@ -2,6 +2,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -29,6 +31,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -696,6 +699,62 @@ BOOST_AUTO_TEST_CASE(compute_execute_retains_caller_until_capture_retirement_and
          BOOST_CHECK_EQUAL(value, 42);
       }
    }
+}
+
+BOOST_AUTO_TEST_CASE(compute_execute_drains_fresh_io_contexts_on_success_and_error) {
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 2}};
+   const auto original = std::make_exception_ptr(std::runtime_error{"fast compute error"});
+   auto mutex = std::mutex{};
+   auto changed = std::condition_variable{};
+   auto finished = false;
+   auto iteration = 0;
+   auto active = static_cast<std::future<void>*>(nullptr);
+   auto watchdog = std::jthread{[&] {
+      auto lock = std::unique_lock{mutex};
+      for (;;) {
+         const auto observed = iteration;
+         if (!changed.wait_for(lock, std::chrono::seconds{5}, [&] { return finished || iteration != observed; })) break;
+         if (finished) return;
+      }
+      const auto state = pool.snapshot();
+      std::fprintf(stderr, "compute stalled: iteration=%d ready=%d submitted=%llu completed=%llu failed=%llu pending=%zu running=%zu\n",
+         iteration, active && active->wait_for(std::chrono::seconds{0}) == std::future_status::ready,
+         static_cast<unsigned long long>(state.submitted), static_cast<unsigned long long>(state.completed),
+         static_cast<unsigned long long>(state.failed), state.pending, state.running);
+      std::fflush(stderr);
+      std::abort();
+   }};
+   const auto finish = boost::scope::scope_exit{[&] {
+      { const auto lock = std::scoped_lock{mutex}; finished = true; active = nullptr; }
+      changed.notify_all();
+      watchdog.join();
+   }};
+   for (auto index = 0; index < 2048; ++index) {
+      auto io = boost::asio::io_context{};
+      const auto fail = index % 2 != 0;
+      auto result = boost::asio::co_spawn(io,
+         pool.get_executor().execute({.name = "fresh-executor"}, [original, fail] {
+            if (fail) std::rethrow_exception(original);
+         }), boost::asio::use_future);
+      const auto clear_active = boost::scope::scope_exit{[&] {
+         const auto lock = std::scoped_lock{mutex};
+         active = nullptr;
+      }};
+      { const auto lock = std::scoped_lock{mutex}; active = &result; iteration = index; }
+      changed.notify_all();
+      // A ready result alone is insufficient: no tracked work may keep the
+      // otherwise idle executor alive after the completion has been delivered.
+      io.run();
+      { const auto lock = std::scoped_lock{mutex}; active = nullptr; }
+      BOOST_REQUIRE(result.wait_for(std::chrono::seconds{0}) == std::future_status::ready);
+      auto error = std::exception_ptr{};
+      try { result.get(); } catch (...) { error = std::current_exception(); }
+      BOOST_REQUIRE(error == (fail ? original : std::exception_ptr{}));
+   }
+   BOOST_CHECK_EQUAL(pool.snapshot().completed, 1024U);
+   BOOST_CHECK_EQUAL(pool.snapshot().failed, 1024U);
+   BOOST_CHECK_EQUAL(pool.snapshot().pending, 0U);
+   BOOST_CHECK_EQUAL(pool.snapshot().running, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(compute_execute_running_cancellation_waits_for_callback_and_keeps_io_live) {

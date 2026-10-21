@@ -21,6 +21,13 @@ std::string base_url::origin() const {
    return scheme + "://" + host + ":" + port;
 }
 
+std::string base_url::host_header() const {
+   if (port.empty() || port == (secure() ? "443" : "80")) {
+      return host;
+   }
+   return host + ":" + port;
+}
+
 std::string base_url::make_target(std::string_view path) const {
    auto normalized = std::string{path};
    if (normalized.empty()) {

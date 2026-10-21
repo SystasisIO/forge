@@ -15,6 +15,7 @@
 #include "libp2p_identity_material.hxx"
 #include "lifecycle_tracker.hxx"
 #include "operation_deadline.hxx"
+#include "open_address_hints.hxx"
 #include "path_selector.hxx"
 #include "path_manager.hxx"
 #include "peer_exchange_cancellation.hxx"
@@ -515,7 +516,10 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<void> remember_session(std::shared_ptr<session_state> session,
                                                  connection_manager::direction direction,
-                                                 std::function<void()> before_publish = {});
+                                                 std::function<void()> before_publish = {}, std::stop_token stop = {});
+   boost::asio::awaitable<void> remember_session_until(std::shared_ptr<session_state> session,
+      connection_manager::direction direction, std::chrono::steady_clock::time_point deadline,
+      std::shared_ptr<cancellation_latch> cancellation, std::function<void()> before_publish = {});
 
    void refresh_connection_scores();
    [[nodiscard]] connection_manager::snapshot topology_sessions() const;
@@ -793,7 +797,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<std::shared_ptr<session_state>> ensure_pubsub_direct_session(
        const peer_id& peer, std::shared_ptr<session_state> origin = {});
 
-   boost::asio::awaitable<void> announce_pubsub_subscriptions(const peer_id& peer);
+   boost::asio::awaitable<void> announce_pubsub_subscriptions(const peer_id& peer,
+       std::optional<std::chrono::steady_clock::time_point> deadline_at = {},
+       std::shared_ptr<cancellation_latch> cancellation = {});
 
    void finish_pubsub_validation(const peer_id& peer);
 
@@ -862,15 +868,19 @@ struct node::impl : std::enable_shared_from_this<impl> {
    static boost::asio::awaitable<node::session_info>
    async_connect_owned(std::shared_ptr<impl> self, forge::multiformats::multiaddr address,
                        node::connect_options value);
+   static boost::asio::awaitable<forge::net::p2p::stream> open_protocol_paths(
+      std::shared_ptr<impl>, peer_id, protocol_id, node::open_options,
+      std::chrono::steady_clock::time_point started, std::shared_ptr<cancellation_latch>);
 
    boost::asio::awaitable<std::shared_ptr<session_state>> ensure_direct_session(
        const peer_id& peer, std::chrono::milliseconds timeout = node::connect_options{}.timeout,
        std::size_t max_direct_endpoints = node::connect_options{}.max_direct_endpoints,
        std::chrono::milliseconds direct_attempt_timeout = node::connect_options{}.direct_attempt_timeout,
-       std::shared_ptr<cancellation_latch> cancellation = {});
+       std::shared_ptr<cancellation_latch> cancellation = {},
+       std::vector<forge::multiformats::multiaddr> address_hints = {});
 
    boost::asio::awaitable<forge::net::p2p::stream>
-   open_protocol_on_direct_session(const peer_id& peer, const protocol_id& protocol,
+   open_protocol_on_session(const peer_id& peer, const protocol_id& protocol,
                                    std::shared_ptr<session_state> session, std::chrono::milliseconds timeout,
                                    std::shared_ptr<cancellation_latch> cancellation = {},
                                    detail::stream_open_phase* phase = nullptr);
@@ -878,20 +888,23 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<forge::net::p2p::stream>
    open_protocol_direct(const peer_id& peer, const protocol_id& protocol, std::chrono::milliseconds timeout,
                         std::size_t max_direct_endpoints = node::open_options{}.max_direct_endpoints,
-                        std::chrono::milliseconds direct_attempt_timeout = node::open_options{}.direct_attempt_timeout);
+                        std::chrono::milliseconds direct_attempt_timeout = node::open_options{}.direct_attempt_timeout,
+                        std::shared_ptr<const detail::open_address_hints> hints = {});
 
    boost::asio::awaitable<opened_direct_stream> open_protocol_direct_with_context(
        const peer_id& peer, const protocol_id& protocol, std::chrono::milliseconds timeout,
        std::size_t max_direct_endpoints = node::open_options{}.max_direct_endpoints,
        std::chrono::milliseconds direct_attempt_timeout = node::open_options{}.direct_attempt_timeout,
-       std::shared_ptr<cancellation_latch> cancellation = {});
+       std::shared_ptr<cancellation_latch> cancellation = {},
+       std::shared_ptr<const detail::open_address_hints> hints = {});
 
    static boost::asio::awaitable<opened_direct_stream> open_protocol_direct_owned(
        std::shared_ptr<impl> self, std::shared_ptr<session_state> cached,
        peer_id peer, protocol_id protocol, std::chrono::steady_clock::time_point started,
        std::chrono::milliseconds timeout, std::size_t max_direct_endpoints,
        std::chrono::milliseconds direct_attempt_timeout,
-       std::shared_ptr<cancellation_latch> cancellation);
+       std::shared_ptr<cancellation_latch> cancellation,
+       std::shared_ptr<const detail::open_address_hints> hints);
 
    boost::asio::awaitable<dht_exchange_result> exchange_dht(const protocol_id& profile, const peer_id& peer,
                                                             dht::message request, std::chrono::milliseconds timeout,
@@ -914,15 +927,18 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<upgraded_session>
    open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout,
-                    std::function<void(const peer_id&)> authenticated_admission);
+                    std::function<void(const peer_id&)> authenticated_admission,
+                    std::shared_ptr<const detail::open_address_hints> hints = {});
 
    boost::asio::awaitable<std::shared_ptr<session_state>>
-   ensure_relay_session(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout);
+   ensure_relay_session(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout,
+      std::shared_ptr<const detail::open_address_hints> hints = {});
 
    boost::asio::awaitable<forge::net::p2p::stream> open_protocol_via_relay(const peer_id& peer,
                                                                            const protocol_id& protocol,
                                                                            const peer_id& relay_peer,
-                                                                           std::chrono::milliseconds timeout);
+                                                                           std::chrono::milliseconds timeout,
+                                                                           std::shared_ptr<const detail::open_address_hints> hints = {});
 
    boost::asio::awaitable<void> request_peer_exchange(const peer_id& peer);
    void launch_peer_exchange();
@@ -1045,7 +1061,8 @@ struct node::impl : std::enable_shared_from_this<impl> {
                            relay_admission admission);
 
    boost::asio::awaitable<hole_punch::status> attempt_hole_punch(peer_id peer, std::optional<peer_id> relay_peer,
-                                                                 std::chrono::milliseconds timeout);
+                                                                 std::chrono::milliseconds timeout,
+                                                                 std::shared_ptr<const detail::open_address_hints> hints = {});
 };
 
 } // namespace forge::net::p2p

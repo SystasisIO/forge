@@ -6,6 +6,7 @@ module;
 #include <iterator>
 #include <list>
 #include <memory>
+#include <stop_token>
 #include <mutex>
 #include <utility>
 

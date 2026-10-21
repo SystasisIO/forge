@@ -5,15 +5,22 @@
 #include <boost/asio/use_future.hpp>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <source_location>
 #include <stop_token>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -31,17 +38,55 @@ template <typename T> boost::asio::awaitable<std::optional<T>> boxed(boost::asio
    co_return co_await std::move(work);
 }
 
-template <typename T> T run(boost::asio::awaitable<T> work) {
+template <typename T, typename Diagnose> T drain_with_diagnostics(boost::asio::io_context& io,
+   std::future<T>& result, Diagnose diagnose, std::source_location where) {
+   auto mutex = std::mutex{};
+   auto changed = std::condition_variable{};
+   auto drained = false;
+   auto watchdog = std::jthread{[&] {
+      auto lock = std::unique_lock{mutex};
+      if (changed.wait_for(lock, std::chrono::seconds{5}, [&] { return drained; })) return;
+      lock.unlock();
+      std::fprintf(stderr, "storage async operation stalled at %s:%u: future_ready=%d io_stopped=%d\n",
+         where.file_name(), where.line(),
+         result.wait_for(std::chrono::seconds{0}) == std::future_status::ready, io.stopped());
+      diagnose();
+      std::fflush(stderr);
+      // Keep a failed operation from hanging the harness; do not cancel it or
+      // pretend that stopping its executor proves completion or safe cleanup.
+      std::abort();
+   }};
+   auto failure = std::exception_ptr{};
+   try { io.run(); } catch (...) { failure = std::current_exception(); }
+   { auto lock = std::scoped_lock{mutex}; drained = true; }
+   changed.notify_all();
+   watchdog.join();
+   if (failure) std::rethrow_exception(failure);
+   if (result.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+      std::fprintf(stderr, "storage executor drained without a result at %s:%u\n", where.file_name(), where.line());
+      std::fflush(stderr);
+      std::abort();
+   }
+   return result.get();
+}
+
+template <typename T> T run(boost::asio::awaitable<T> work,
+   std::source_location where = std::source_location::current()) {
    auto io = boost::asio::io_context{};
    if constexpr (std::is_void_v<T>) {
       auto result = boost::asio::co_spawn(io, std::move(work), boost::asio::use_future);
-      io.run();
-      result.get();
+      drain_with_diagnostics(io, result, [] {}, where);
    } else {
       auto result = boost::asio::co_spawn(io, boxed(std::move(work)), boost::asio::use_future);
-      io.run();
-      return std::move(result.get()).value();
+      return std::move(drain_with_diagnostics(io, result, [] {}, where)).value();
    }
+}
+
+template <typename Diagnose> void run_with_diagnostics(boost::asio::awaitable<void> work, Diagnose diagnose,
+   std::source_location where = std::source_location::current()) {
+   auto io = boost::asio::io_context{};
+   auto result = boost::asio::co_spawn(io, std::move(work), boost::asio::use_future);
+   drain_with_diagnostics(io, result, std::move(diagnose), where);
 }
 
 inline std::vector<std::uint8_t> data(std::size_t size, std::uint8_t seed = 1) {

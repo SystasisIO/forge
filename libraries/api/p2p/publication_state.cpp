@@ -9,6 +9,7 @@ module;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <utility>
 
 module forge.api.p2p.publication;
@@ -26,7 +27,19 @@ publication_state::publication_state(boost::asio::any_io_executor owner_executor
 
 publication_state::~publication_state() = default;
 
+std::stop_token publication_state::stop_token() const noexcept { return stop_.get_token(); }
+
+void publication_state::bind_native(std::stop_token native) {
+   if (native.stop_possible()) {
+      native_stop_ = std::make_unique<std::stop_callback<std::function<void()>>>(native,
+         [weak = weak_from_this()]() noexcept {
+            if (const auto self = weak.lock()) { self->stop_.request_stop(); }
+         });
+   }
+}
+
 bool publication_state::active() const noexcept {
+   if (stop_.stop_requested()) { return false; }
    auto callback = active_handler{};
    try {
       {
@@ -40,7 +53,7 @@ bool publication_state::active() const noexcept {
          return false;
       }
       const auto lock = std::scoped_lock{mutex_};
-      return !close_requested_;
+      return !close_requested_ && !stop_.stop_requested();
    } catch (...) {
       return false;
    }
@@ -56,6 +69,9 @@ void publication_state::close() noexcept {
       close_requested_ = true;
       callback = std::move(close_);
    }
+
+   // Callbacks may synchronously re-enter or destroy the public facade.
+   stop_.request_stop();
 
    auto failure = std::exception_ptr{};
    try {
@@ -173,13 +189,19 @@ std::shared_ptr<publication_state> make_publication_state(
    boost::asio::any_io_executor owner_executor,
    publication_state::close_handler close,
    publication_state::drain_handler drain,
-   publication_state::active_handler active) {
-   return std::make_shared<publication_state>(
+   publication_state::active_handler active, std::stop_token native) {
+   auto state = std::make_shared<publication_state>(
       std::move(owner_executor), std::move(close), std::move(drain), std::move(active));
+   state->bind_native(native);
+   return state;
 }
 
 bool publication_active(std::shared_ptr<publication_state> state) noexcept {
    return state && state->active();
+}
+
+std::stop_token publication_stop_token(std::shared_ptr<publication_state> state) noexcept {
+   return state ? state->stop_token() : std::stop_token{};
 }
 
 void close_publication(std::shared_ptr<publication_state> state) noexcept {

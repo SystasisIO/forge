@@ -281,7 +281,7 @@ void node::impl::launch_pruned_session_teardown(const std::shared_ptr<session_st
 
 boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::impl::session_state> session,
                                                           connection_manager::direction direction,
-                                                          std::function<void()> before_publish) {
+                                                          std::function<void()> before_publish, std::stop_token stop) {
    enum class rejection {
       none,
       admission,
@@ -298,7 +298,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
    auto admission_rejected = admission_rejection::none;
    auto admission_failure = std::exception_ptr{};
    try {
-      admission_ticket = co_await session_admission_gate.acquire();
+      admission_ticket = co_await session_admission_gate.acquire(stop);
    } catch (const forge::asio::exceptions::canceled&) {
       admission_rejected = admission_rejection::canceled;
    } catch (const forge::asio::exceptions::rejected&) {
@@ -790,6 +790,58 @@ boost::asio::awaitable<void> node::impl::async_discard_session(const std::shared
    session->native_lifetime.reset();
 }
 
+boost::asio::awaitable<void> node::impl::remember_session_until(std::shared_ptr<session_state> session,
+   connection_manager::direction direction, std::chrono::steady_clock::time_point deadline_at,
+   std::shared_ptr<cancellation_latch> cancellation, std::function<void()> before_publish) {
+   const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline_at - std::chrono::steady_clock::now());
+   if (remaining <= std::chrono::milliseconds::zero()) {
+      FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P session deadline expired before publication");
+   }
+   auto deadline = operation_deadline{runtime.context(), remaining};
+   auto subscription = cancellation_latch::subscribe(cancellation, [stop = deadline.stopping()]() noexcept {
+      static_cast<void>(stop.request_stop());
+   });
+   auto bridge = std::make_shared<detail::worker_stop_bridge>();
+   auto gate_stop = std::stop_source{};
+   deadline.arm([bridge, gate_stop]() mutable noexcept {
+      gate_stop.request_stop();
+      bridge->request_stop();
+   });
+   auto published = false;
+   auto failure = std::exception_ptr{};
+   try {
+      co_await detail::async_run_with_owner_cancellation(bridge,
+         [this, session, direction, deadline_at, cancellation, before_publish = std::move(before_publish),
+          &deadline, &published, gate_stop](boost::asio::cancellation_slot) -> boost::asio::awaitable<void> {
+            co_await remember_session(session, direction, [&] {
+               if (before_publish) { before_publish(); }
+               if (cancellation && cancellation->stop_requested()) {
+                  FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P session canceled before publication");
+               }
+               if (std::chrono::steady_clock::now() >= deadline_at || deadline.timed_out()) {
+                  FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P session deadline expired before publication");
+               }
+               if (!deadline.finish() || deadline.stopped() || gate_stop.stop_requested()) {
+                  FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P session stopped before publication");
+               }
+            }, gate_stop.get_token());
+            published = true;
+         });
+   } catch (...) { failure = std::current_exception(); }
+   if (!published) {
+      const auto timed_out = deadline.timed_out() ||
+         (!deadline.stopped() && std::chrono::steady_clock::now() >= deadline_at);
+      static_cast<void>(deadline.finish());
+      if (timed_out) { FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P session deadline expired during admission"); }
+      if ((cancellation && cancellation->stop_requested()) || gate_stop.stop_requested()) {
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P session canceled during admission");
+      }
+      if (failure) { std::rethrow_exception(failure); }
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P session admission did not publish a winner");
+   }
+   if (failure) { std::rethrow_exception(failure); }
+}
+
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
 node::impl::commit_direct_attempt(detail::direct_attempt&& attempt,
                                    std::vector<forge::multiformats::multiaddr> roots,
@@ -833,27 +885,9 @@ node::impl::commit_direct_attempt(detail::direct_attempt&& attempt,
       std::rethrow_exception(commit_failure);
    }
 
-   auto admission_deadline = std::optional<operation_deadline>{};
-   auto admission_cancellation = cancellation_latch::subscription{};
-   auto published = false;
    try {
-      const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(
-          deadline_at - std::chrono::steady_clock::now());
-      if (remaining <= std::chrono::milliseconds::zero()) {
-         FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P dial deadline expired before publication");
-      }
-      admission_deadline.emplace(runtime.context(), remaining);
-      auto bridge = std::make_shared<detail::worker_stop_bridge>();
-      admission_cancellation = cancellation_latch::subscribe(
-          cancellation, [stop = admission_deadline->stopping()] noexcept {
-             static_cast<void>(stop.request_stop());
-          });
-      admission_deadline->arm([bridge] noexcept { bridge->request_stop(); });
-      co_await detail::async_run_with_owner_cancellation(
-          bridge, [this, session, &admission_deadline, &published, deadline_at, cancellation, upgrade_only, direction](
-                      boost::asio::cancellation_slot) -> boost::asio::awaitable<void> {
-             co_await remember_session(session, direction,
-                 [this, session, &admission_deadline, deadline_at, cancellation, upgrade_only] {
+      co_await remember_session_until(session, direction, deadline_at, cancellation,
+                 [this, session, upgrade_only] {
                     if (upgrade_only && std::ranges::any_of(sessions, [&](const auto& item) {
                            return !item.second->closed && item.second->info.path == path::kind::direct &&
                                item.second->info.remote_peer == session->info.remote_peer &&
@@ -861,24 +895,7 @@ node::impl::commit_direct_attempt(detail::direct_attempt&& attempt,
                         })) {
                        FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P direct upgrade already has an authenticated winner");
                     }
-                    if (cancellation && cancellation->stop_requested()) {
-                       FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P dial canceled before publication");
-                    }
-                    if (std::chrono::steady_clock::now() >= deadline_at || admission_deadline->timed_out()) {
-                       FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P dial deadline expired before publication");
-                    }
-                    if (!admission_deadline->finish() || admission_deadline->stopped()) {
-                       FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P dial stopped before publication");
-                    }
                  });
-             published = true;
-          });
-      if (!published) {
-         if (admission_deadline->timed_out() || std::chrono::steady_clock::now() >= deadline_at) {
-            FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P dial deadline expired during admission");
-         }
-         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P session admission did not publish a winner");
-      }
       if (!launch_session_accept_loop(session)) {
          FORGE_THROW_EXCEPTION(exceptions::closed, "P2P session accept loop could not start");
       }
@@ -889,21 +906,17 @@ node::impl::commit_direct_attempt(detail::direct_attempt&& attempt,
                  std::chrono::steady_clock::now() - attempt.started_at));
       }
       launch_identify(session);
-      if (announce) { co_await announce_pubsub_subscriptions(session->info.remote_peer); }
    } catch (...) {
       commit_failure = std::current_exception();
    }
    if (commit_failure) {
       forget_session(session);
       co_await async_retire_session(session, true);
-      if (!published && admission_deadline && admission_deadline->timed_out()) {
-         FORGE_THROW_EXCEPTION(exceptions::timeout, "P2P dial deadline expired during admission");
-      }
-      if (!published && cancellation && cancellation->stop_requested()) {
-         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P dial canceled during admission");
-      }
       std::rethrow_exception(commit_failure);
    }
+   // The authenticated session is committed. A subscription stream's timeout
+   // or cancellation must not tear down this now-shared carrier.
+   if (announce) { co_await announce_pubsub_subscriptions(session->info.remote_peer, deadline_at, cancellation); }
    co_return session;
 }
 

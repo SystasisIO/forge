@@ -67,6 +67,50 @@ bool includes(const std::vector<core::peer_id>& peers, core::peer_id id) {
 
 BOOST_AUTO_TEST_SUITE(swarm_transfer)
 
+BOOST_AUTO_TEST_CASE(allowed_piece_filter_preserves_global_selection_and_endgame) {
+   using namespace transfer_test;
+   const auto description = manifest(2, 2);
+   auto state = core::transfer{description, {}, 41U};
+   const auto a = connect(state, {1U});
+   const auto b = connect(state, {1U});
+   const auto first = state.pick(a, at(0), 1U).at(0);
+   BOOST_CHECK(first.piece == (core::piece_id{0, 0}));
+   BOOST_CHECK(state.receive(a, first.id, first.length, at(1)).accepted);
+   state.set_availability(a, std::array<std::uint8_t, 1>{3U});
+   const auto rare = state.pick(a, at(2), 1U).at(0);
+   BOOST_CHECK(rare.piece == (core::piece_id{0, 1}));
+   BOOST_CHECK(state.cancel(a, rare.id, at(2)));
+   const auto allowed = std::array{core::piece_id{0, 0}};
+   const auto next = state.pick(a, at(3), 1U, std::span<const core::piece_id>{allowed}).at(0);
+   BOOST_CHECK(next.piece == first.piece);
+   BOOST_CHECK_EQUAL(next.offset, core::block_size);
+   BOOST_CHECK_EQUAL(state.availability({0, 0}), 2U);
+   BOOST_CHECK_EQUAL(state.availability({0, 1}), 1U);
+   BOOST_CHECK(state.pick(b, at(4), 1U, std::span<const core::piece_id>{allowed}).empty());
+   BOOST_CHECK(state.pick(a, at(4), 1U, std::span<const core::piece_id>{}).empty());
+   BOOST_CHECK(state.cancel(a, next.id, at(4)));
+   state.set_priority({0, 0}, 0);
+   BOOST_CHECK(state.pick(a, at(5), 1U, std::span<const core::piece_id>{allowed}).empty());
+   auto unrestricted = state.pick(a, at(6), 1U, std::nullopt);
+   BOOST_REQUIRE_EQUAL(unrestricted.size(), 1U);
+   BOOST_CHECK(unrestricted.front().piece == (core::piece_id{0, 1}));
+
+   auto left = core::transfer{manifest(), {}, 42U};
+   auto right = core::transfer{manifest(), {}, 42U};
+   const auto l = connect(left, {15U});
+   const auto r = connect(right, {15U});
+   BOOST_CHECK(left.pick(l, at(0), 4) == right.pick(r, at(0), 4, std::nullopt));
+
+   auto tail = core::transfer{manifest(2), {}, 43U};
+   const auto source = connect(tail, {3U});
+   const auto duplicate = connect(tail, {3U});
+   BOOST_REQUIRE_EQUAL(tail.pick(source, at(0), 2).size(), 2U);
+   BOOST_CHECK(tail.pick(duplicate, at(1), 1, std::span<const core::piece_id>{}).empty());
+   const auto copy = tail.pick(duplicate, at(2), 1, std::span<const core::piece_id>{allowed});
+   BOOST_REQUIRE_EQUAL(copy.size(), 1U);
+   BOOST_CHECK(copy.front().piece == allowed.front());
+}
+
 BOOST_AUTO_TEST_CASE(availability_counts_rarest_sequential_and_explicit_priorities) {
    using namespace transfer_test;
    auto state = core::transfer{manifest(), {}, 41U};

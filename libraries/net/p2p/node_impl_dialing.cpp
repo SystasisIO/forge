@@ -358,22 +358,31 @@ node::impl::connect_direct(std::vector<detail::direct_dial_root> roots, node::co
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
 node::impl::ensure_direct_session(const peer_id& peer, std::chrono::milliseconds timeout,
                                   std::size_t max_direct_endpoints, std::chrono::milliseconds direct_attempt_timeout,
-                                  std::shared_ptr<cancellation_latch> cancellation) {
+                                  std::shared_ptr<cancellation_latch> cancellation,
+                                  std::vector<forge::multiformats::multiaddr> address_hints) {
    if (cancellation && cancellation->stop_requested()) {
       FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P direct session acquisition canceled");
    }
    if (auto existing = session_for_path(peer, path::kind::direct)) {
       co_return existing;
    }
-   const auto record = store.find(peer);
-   if (!record) {
-      FORGE_THROW_EXCEPTION(exceptions::peer_not_found, "P2P peer has no known direct endpoint");
+   auto roots = std::vector<detail::direct_dial_root>{};
+   if (const auto record = store.find(peer)) {
+      for (auto& candidate : path_selector::rank_direct(*record, std::chrono::system_clock::now())) {
+         if (roots.size() < options.dns_resolution.bounds.max_roots) {
+            roots.push_back({std::move(candidate.address), detail::direct_dial_provenance::persistent});
+         }
+      }
    }
-   auto preferred = path_selector::rank_direct(*record, std::chrono::system_clock::now());
-   auto roots = std::vector<forge::multiformats::multiaddr>{};
-   roots.reserve(preferred.size());
-   for (auto& candidate : preferred) {
-      roots.push_back(std::move(candidate.address));
+   // Independently known roots retain priority at the shared input bound.
+   // Untrusted hints cannot crowd a working address out of this operation.
+   for (auto& address : address_hints) {
+      if (roots.size() >= options.dns_resolution.bounds.max_roots) { break; }
+      if (std::ranges::none_of(roots, [&](const auto& value) {
+             return value.address.components() == address.components();
+          })) {
+         roots.push_back({std::move(address), detail::direct_dial_provenance::transient_operation});
+      }
    }
    if (roots.empty()) {
       FORGE_THROW_EXCEPTION(exceptions::peer_not_found, "P2P peer has no known direct endpoint");

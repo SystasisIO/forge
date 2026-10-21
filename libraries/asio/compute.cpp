@@ -271,7 +271,11 @@ boost::asio::awaitable<void> operation_state::execute(reservation reservation_va
                            handler = std::move(handler.get())](std::exception_ptr error) mutable {
              // Standard Asio delivery: dispatch/allocation failure AFTER Q is
              // a host-runtime failure, never an inline compute-worker resume.
-             boost::asio::post(executor, [guard = std::move(guard), handler = std::move(handler),
+             // Keep the guard on this posting stack until post() returns. A
+             // different IO thread may run the handler immediately; moving the
+             // only guard into it permits executor teardown while post() still
+             // accesses its scheduler. The queued operation tracks itself.
+             boost::asio::post(executor, [handler = std::move(handler),
                                           error = std::move(error)]() mutable { handler(std::move(error)); });
           };
           static_assert(std::is_nothrow_move_constructible_v<decltype(dispatch)>);

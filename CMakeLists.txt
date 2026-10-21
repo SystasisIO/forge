@@ -353,6 +353,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/conversion/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/api/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/runtime/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/transaction/include"
@@ -917,6 +918,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_api_core
       forge_api_auth
       forge_swarm_api
+      forge_swarm_runtime
       forge_api_stream
       forge_api_transport
       forge_api_quic
@@ -955,6 +957,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store
+      forge_plugins_swarm_node
       forge_plugins
    )
    if(TARGET forge_auth_appauth)
@@ -1101,6 +1104,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       api_core
       api_auth
       swarm_api
+      swarm_runtime
       api_stream
       api_transport
       api_quic
@@ -1139,6 +1143,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       plugins_net_http_server
       plugins_log_otlp
       plugins_db_store
+      plugins_swarm_node
       plugins
    )
    if(TARGET forge_auth_appauth)
@@ -1318,6 +1323,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/api/core/include/forge
       libraries/api/auth/include/forge
       libraries/swarm/api/include/forge
+      libraries/swarm/runtime/include/forge
       libraries/api/http/include/forge
       libraries/api/stream/include/forge
       libraries/api/transport/include/forge

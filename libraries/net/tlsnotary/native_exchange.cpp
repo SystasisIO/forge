@@ -15,6 +15,7 @@ module;
 #include <boost/asio/write.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/process/v2/process_handle.hpp>
+#include <boost/system/system_error.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -33,16 +34,21 @@ module;
 #include <spawn.h>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 module forge.net.tlsnotary.engine;
 
+import forge.exceptions;
+import forge.log.logger;
 import forge.net.transport.stream;
+import forge.net.transport.buffer;
 import forge.net.transport.exceptions;
 import forge.asio.gate;
 import forge.asio.notification;
@@ -52,6 +58,37 @@ import forge.asio.notification;
 namespace forge::net::tlsnotary::detail {
 
 namespace {
+
+void log_channel_failure(std::uint64_t session, bool prover, bool server, const char* operation) noexcept {
+   auto kind = "unknown";
+   auto category = "unknown";
+   auto code = 0;
+   auto file = "";
+   auto line = std::uint_least32_t{};
+   try {
+      throw;
+   } catch (const forge::exceptions::base& error) {
+      kind = "forge";
+      category = error.code().category().name();
+      code = error.code().value();
+      file = error.location().file_name();
+      line = error.location().line();
+   } catch (const boost::system::system_error& error) {
+      kind = "boost";
+      category = error.code().category().name();
+      code = error.code().value();
+   } catch (const std::system_error& error) {
+      kind = "std";
+      category = error.code().category().name();
+      code = error.code().value();
+   } catch (...) {
+   }
+
+   wlog("forge.net.tlsnotary", "TLSNotary raw channel operation failed",
+        ("event", "tlsnotary.channel_failure")("session", session)("role", prover ? "prover" : "verifier")(
+            "channel", server ? "server" : "peer")("operation", operation)("cause_kind", kind)(
+            "cause_category", category)("cause_code", code)("cause_file", file)("cause_line", line));
+}
 
 void spawn_ok(int value) {
    if (value != 0)
@@ -87,13 +124,43 @@ exceptions::code status(std::uint32_t code) {
    }
 }
 } // namespace
+
+struct native_exchange::peer_window {
+   // Pace one producer below the default 12.75 MiB high-priority P2P scope.
+   // This is not a reservation of shared P2P capacity or an authorization limit.
+   static constexpr auto capacity = std::size_t{1024 * 1024};
+   std::atomic<std::size_t> used{0};
+   std::atomic<bool> closed{false};
+   forge::asio::notification changed;
+
+   struct ticket {
+      ticket(std::shared_ptr<peer_window> value, std::size_t count) : window{std::move(value)}, bytes{count} {
+         window->used.fetch_add(bytes);
+      }
+      ~ticket() {
+         window->used.fetch_sub(bytes);
+         window->changed.notify();
+      }
+      ticket(const ticket&) = delete;
+      ticket& operator=(const ticket&) = delete;
+
+      std::shared_ptr<peer_window> window;
+      std::size_t bytes;
+   };
+
+   void close() noexcept {
+      closed.store(true);
+      changed.notify();
+   }
+};
+
 native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::compute::executor compute,
                                  std::filesystem::path worker, prover_request request,
                                  std::chrono::steady_clock::time_point deadline)
     : _strand{boost::asio::make_strand(runtime.context())}, _socket{_strand}, _timer{_strand},
       _compute{std::move(compute)}, _worker{std::move(worker)}, _peer{std::move(request.peer)},
       _server{std::move(request.server)}, _source{std::move(request.source)}, _options{std::move(request.options)},
-      _request{std::move(request.request_bytes)}, _prover{true} {
+      _request{std::move(request.request_bytes)}, _prover{true}, _peer_window{std::make_shared<peer_window>()} {
    _timer.expires_at(deadline);
 }
 
@@ -102,7 +169,8 @@ native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::com
                                  std::chrono::steady_clock::time_point deadline)
     : _strand{boost::asio::make_strand(runtime.context())}, _socket{_strand}, _timer{_strand},
       _compute{std::move(compute)}, _worker{std::move(worker)}, _peer{std::move(request.peer)},
-      _source{std::move(request.source)}, _options{std::move(request.options)} {
+      _source{std::move(request.source)}, _options{std::move(request.options)},
+      _peer_window{std::make_shared<peer_window>()} {
    _timer.expires_at(deadline);
 }
 
@@ -314,6 +382,7 @@ void native_exchange::request_stop() noexcept {
       return;
    _stopped.store(true);
    _abort.store(true);
+   _peer_window->close();
    _peer.request_cancel();
    _server.request_cancel();
    try {
@@ -325,12 +394,17 @@ void native_exchange::request_stop() noexcept {
    }
 }
 
-void native_exchange::stop_on_strand() noexcept {
-   _abort.store(true);
+void native_exchange::close_ipc_on_strand() noexcept {
    auto error = boost::system::error_code{};
    _socket.cancel(error);
    _socket.close(error);
    _writer.close();
+}
+
+void native_exchange::stop_on_strand() noexcept {
+   _abort.store(true);
+   _peer_window->close();
+   close_ipc_on_strand();
    _peer.request_cancel();
    _server.request_cancel();
    kill_owned();
@@ -405,6 +479,7 @@ boost::asio::awaitable<void> native_exchange::read_channel(bool server, std::uin
       } catch (const forge::net::transport::exceptions::end_of_stream&) {
          pending.clear();
       } catch (...) {
+         log_channel_failure(_options.id, _prover, server, "read");
          FORGE_THROW_EXCEPTION(exceptions::transport_failed, "TLSNotary raw stream read failed");
       }
 
@@ -434,12 +509,44 @@ boost::asio::awaitable<void> native_exchange::write_channel(bool server, std::ve
    if (bytes.size() > _options.max_peer_bytes - _outgoing[index])
       FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "raw stream write exceeds session wire limit");
    _outgoing[index] += bytes.size();
+   auto credit = std::shared_ptr<peer_window::ticket>{};
+   if (!server && !eof && !bytes.empty()) {
+      if (bytes.size() > peer_window::capacity)
+         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "native peer frame exceeds producer window");
+      for (;;) {
+         // Ticket releases can run on the transport's owner thread. Capture the
+         // epoch before testing capacity so a concurrent release cannot be lost.
+         const auto epoch = _peer_window->changed.epoch();
+         if (_abort.load() || _peer_window->closed.load())
+            FORGE_THROW_EXCEPTION(exceptions::cancelled, "native peer producer stopped");
+         if (std::chrono::steady_clock::now() >= deadline())
+            FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "native peer producer deadline exceeded");
+         if (bytes.size() <= peer_window::capacity - _peer_window->used.load()) {
+            // _writing[0] permits only one producer; other threads only release.
+            credit = std::make_shared<peer_window::ticket>(_peer_window, bytes.size());
+            break;
+         }
+         try {
+            static_cast<void>(co_await _peer_window->changed.async_wait_until(epoch, deadline()));
+         } catch (...) {
+            if (std::chrono::steady_clock::now() >= deadline())
+               FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "native peer producer deadline exceeded");
+            throw;
+         }
+      }
+   }
+   if (_abort.load())
+      FORGE_THROW_EXCEPTION(exceptions::cancelled, "native channel stopped before write");
    try {
       if (eof)
          co_await stream.async_close_write();
-      else
-         co_await stream.async_write(bytes);
+      else {
+         auto owned = forge::net::transport::chunk{std::move(bytes)};
+         forge::net::transport::detail::chunk_access::attach_lifetime(owned, std::move(credit));
+         co_await stream.async_write(std::move(owned));
+      }
    } catch (...) {
+      log_channel_failure(_options.id, _prover, server, eof ? "close_write" : "write");
       FORGE_THROW_EXCEPTION(exceptions::transport_failed, "TLSNotary raw stream write failed");
    }
 
@@ -488,7 +595,7 @@ boost::asio::awaitable<void> native_exchange::discard(std::shared_ptr<native_exc
       state->_finishing = true;
       state->stop_on_strand();
       state->_timer.cancel();
-      while (state->_pumps != 0 || state->_reap_pending || state->_pid > 0) {
+      while (state->_pumps != 0 || state->_timer_pending || state->_reap_pending || state->_pid > 0) {
          if (state->_pid > 0 && !state->_reap_pending) {
             try {
                state->adopt();
@@ -498,7 +605,7 @@ boost::asio::awaitable<void> native_exchange::discard(std::shared_ptr<native_exc
          }
 
          const auto epoch = state->_changed.epoch();
-         if (state->_pumps != 0 || state->_reap_pending)
+         if (state->_pumps != 0 || state->_timer_pending || state->_reap_pending)
             static_cast<void>(co_await state->_changed.async_wait(epoch));
       }
 
@@ -527,7 +634,7 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
       try {
          if (state->_stopped.load())
             FORGE_THROW_EXCEPTION(exceptions::cancelled, "native session cancelled before launch");
-         ++state->_pumps;
+         state->_timer_pending = true;
          try {
             state->_timer.async_wait(boost::asio::bind_executor(state->_strand, [state](auto error) {
                if (!error) {
@@ -535,11 +642,11 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
                   state->stop_on_strand();
                }
 
-               --state->_pumps;
+               state->_timer_pending = false;
                state->_changed.notify();
             }));
          } catch (...) {
-            --state->_pumps;
+            state->_timer_pending = false;
             throw;
          }
 
@@ -660,8 +767,15 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
          }
       }
 
-      state->_timer.cancel();
-      state->stop_on_strand();
+      if (!failure && !state->_error && !state->_expired && !state->_stopped.load()) {
+         // The worker publishes success only after its existing bridge writes
+         // and FIN acknowledgements have drained. Preserve graceful transport
+         // close: terminal cancellation would reset QUIC and discard its queue.
+         state->close_ipc_on_strand();
+      } else {
+         state->_timer.cancel();
+         state->stop_on_strand();
+      }
       while (state->_pumps != 0 || state->_reap_pending || state->_pid > 0) {
          if (state->_pid > 0 && !state->_reap_pending) {
             try {
@@ -692,6 +806,13 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
             if (!failure)
                failure = std::make_exception_ptr(exceptions::transport_failed{"TLSNotary server cleanup failed"});
          }
+      }
+
+      state->_timer.cancel();
+      while (state->_timer_pending) {
+         const auto epoch = state->_changed.epoch();
+         if (state->_timer_pending)
+            static_cast<void>(co_await state->_changed.async_wait(epoch));
       }
 
       if (state->quiescent()) {

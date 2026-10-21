@@ -91,6 +91,10 @@ class transfer {
    void set_priority(piece_id, std::uint8_t priority);
 
    [[nodiscard]] std::vector<request> pick(peer_id, transfer_time now, std::uint32_t count);
+   // nullopt preserves unrestricted selection; an empty span permits no pieces.
+   // Admission filters eligibility only, never inventory, priority or global endgame.
+   [[nodiscard]] std::vector<request> pick(peer_id, transfer_time now, std::uint32_t count,
+                                          std::optional<std::span<const piece_id>> allowed);
    // Caller reports only payload retained by its writer; exact owned length required.
    [[nodiscard]] receive_result receive(peer_id, std::uint64_t id, std::uint32_t length, transfer_time now);
    [[nodiscard]] bool cancel(peer_id, std::uint64_t id, transfer_time now);

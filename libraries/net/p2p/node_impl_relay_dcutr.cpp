@@ -522,7 +522,8 @@ boost::asio::awaitable<bool> node::impl::wait_for_direct_session(const peer_id& 
 }
 
 boost::asio::awaitable<hole_punch::status> node::impl::attempt_hole_punch(
-    peer_id peer, std::optional<peer_id> relay_peer, std::chrono::milliseconds timeout) {
+    peer_id peer, std::optional<peer_id> relay_peer, std::chrono::milliseconds timeout,
+    std::shared_ptr<const detail::open_address_hints> hints) {
    validate_operation_timeout(timeout, "P2P hole punch timeout");
    const auto deadline = std::chrono::steady_clock::now() + timeout;
    if (authenticated_direct_session(peer)) { co_return hole_punch::status::succeeded; }
@@ -540,13 +541,16 @@ boost::asio::awaitable<hole_punch::status> node::impl::attempt_hole_punch(
    try {
       if (!session) {
          session = co_await ensure_relay_session(peer, *relay_peer,
-             std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()));
+             std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()), hints);
       }
       if (authenticated_direct_session(peer)) { co_return hole_punch::status::succeeded; }
       const auto claim = request_path_upgrade(session, deadline);
       if (claim.owner) { co_return co_await paths->async_wait(claim.owner, deadline); }
    } catch (...) {
       // The existing relay remains a usable fallback for callers opening streams.
+      if (hints && hints->cancellation && hints->cancellation->stop_requested()) {
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P hole-punch acquisition canceled");
+      }
    }
    co_return hole_punch::status::failed;
 }

@@ -171,6 +171,7 @@ forge::net::p2p::node::open_options plugin::impl::open_options_for(remote_option
        .max_direct_endpoints = policy.path.max_direct_endpoints,
        .max_relay_candidates = policy.path.max_relay_candidates,
        .allow_hole_punch = policy.relay_client_enabled && policy.path.allow_hole_punch,
+       .address_hints = std::move(value.address_hints),
    };
 }
 

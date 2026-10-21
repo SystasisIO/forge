@@ -27,6 +27,12 @@ module;
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/compat/move_only_function.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -65,6 +71,9 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/node_impl.hxx"
+#include "details/cancellation_latch.hxx"
+#include "details/operation_deadline.hxx"
+#include "details/owner_cancellation.hxx"
 #include "details/relay_hop_exchange.hxx"
 #include "details/stream_upgrade.hxx"
 
@@ -95,64 +104,141 @@ static_assert(std::is_nothrow_move_constructible_v<upgraded_session>);
 
 boost::asio::awaitable<upgraded_session>
 node::impl::open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout,
-                             std::function<void(const peer_id&)> authenticated_admission) {
+                             std::function<void(const peer_id&)> authenticated_admission,
+                             std::shared_ptr<const detail::open_address_hints> hints) {
    const auto started = std::chrono::steady_clock::now();
    record_path_attempt(path::kind::relay);
-   auto relay_session = co_await ensure_direct_session(relay_peer, timeout);
+   auto stop = std::make_shared<detail::worker_stop_bridge>();
+   auto parent_stop = cancellation_latch::subscribe(hints ? hints->cancellation : nullptr,
+      [stop]() noexcept { stop->request_stop(); });
+   auto acquisition = std::make_shared<cancellation_latch>();
+   auto deadline = operation_deadline{runtime.context(), timeout};
+   deadline.arm([stop]() noexcept { stop->request_stop(); });
+   auto owned = std::shared_ptr<detail::resource_stream>{};
+   auto result = std::optional<upgraded_session>{};
+   auto failure = std::exception_ptr{};
    try {
-      const auto& relay_endpoint = relay_transport_endpoint(*relay_session);
-      const auto local_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, local);
-      auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, peer);
-      connection_gate->address_dial(peer, remote_endpoint);
-      auto exchange = co_await detail::async_exchange_relay_hop(
-          runtime.context(), remaining_timeout(started, timeout, "P2P relay protocol open"), "P2P relay protocol open",
-          [this, relay_session](
-              detail::stream_admission_handler admitted) -> boost::asio::awaitable<forge::net::p2p::stream> {
-             co_return co_await open_session_stream(relay_session, builtins::relay_hop, true, std::move(admitted));
-          },
-          relay::hop_message{
-              .kind = relay::hop_message::message_kind::connect,
-              .target = relay::peer{.id = peer},
-          },
-          reachability::options{}.max_message_size);
-      auto response = std::move(exchange.response);
-      if (response.kind != relay::hop_message::message_kind::status || response.status != relay::status::ok) {
-         FORGE_THROW_CODE(response.kind == relay::hop_message::message_kind::status ? exceptions::code::relay_rejected
-                                                                                    : exceptions::code::protocol_error,
-                          response.kind == relay::hop_message::message_kind::status
-                              ? "P2P relay open rejected with status " +
-                                    std::to_string(static_cast<std::uint16_t>(response.status))
-                              : "P2P relay open rejected with unexpected response");
-      }
-      record_path_open(path::kind::relay);
-      auto stream = detail::stream_access::with_buffer(std::move(exchange.stream), std::move(exchange.buffered));
-      auto upgraded = co_await upgrade_relay_outbound_session(
-          std::move(stream), options, identity, peer,
-          upgrade_callbacks{
-              .secured =
-                  [gate = connection_gate, local_endpoint, remote_endpoint](const peer_id& authenticated_peer) {
-                     gate->secured(connection_direction::outbound, authenticated_peer, local_endpoint, remote_endpoint);
-                  },
-              .established = std::move(authenticated_admission),
-              .upgraded =
-                  [gate = connection_gate, local_endpoint, remote_endpoint](const peer_id& authenticated_peer) {
-                     gate->upgraded(connection_direction::outbound, authenticated_peer, local_endpoint,
-                                    remote_endpoint);
-                  },
+      co_await detail::async_run_with_owner_cancellation(
+          stop, [&](boost::asio::cancellation_slot slot) -> boost::asio::awaitable<void> {
+             slot.assign([acquisition](boost::asio::cancellation_type) noexcept { acquisition->request_stop(); });
+             if (stop->stop_requested()) {
+                FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P circuit acquisition canceled before dial");
+             }
+             auto relay_session = co_await ensure_direct_session(
+                 relay_peer, remaining_timeout(started, timeout, "P2P relay carrier acquisition"),
+                 hints ? hints->max_direct_endpoints : node::open_options{}.max_direct_endpoints,
+                 hints ? hints->direct_attempt_timeout : node::open_options{}.direct_attempt_timeout, acquisition,
+                 hints ? hints->carriers(relay_peer) : std::vector<forge::multiformats::multiaddr>{});
+             const auto &relay_endpoint = relay_transport_endpoint(*relay_session);
+             const auto local_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, local);
+             auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, peer);
+             connection_gate->address_dial(peer, remote_endpoint);
+             auto exchange = co_await detail::async_exchange_relay_hop(
+                 runtime.context(), remaining_timeout(started, timeout, "P2P relay protocol open"),
+                 "P2P relay protocol open",
+                 [this, relay_session, slot, stop, &owned](
+                     detail::stream_admission_handler admitted) -> boost::asio::awaitable<forge::net::p2p::stream> {
+                    auto circuit_owner = detail::make_owner_stream_admission(slot, stop);
+                    auto combined =
+                        detail::stream_admission_handler{[circuit_owner, admitted, &owned](const auto &resource) {
+                                                            owned = resource;
+                                                            circuit_owner(resource);
+                                                            admitted(resource);
+                                                         },
+                                                         [circuit_owner, admitted] {
+                                                            circuit_owner.commit();
+                                                            admitted.commit();
+                                                         }};
+                    co_return co_await open_session_stream(relay_session, builtins::relay_hop, true,
+                                                           std::move(combined));
+                 },
+                 relay::hop_message{
+                     .kind = relay::hop_message::message_kind::connect,
+                     .target = relay::peer{.id = peer},
+                 },
+                 reachability::options{}.max_message_size, acquisition);
+             auto response = std::move(exchange.response);
+             if (response.kind != relay::hop_message::message_kind::status || response.status != relay::status::ok) {
+                FORGE_THROW_CODE(response.kind == relay::hop_message::message_kind::status
+                                     ? exceptions::code::relay_rejected
+                                     : exceptions::code::protocol_error,
+                                 response.kind == relay::hop_message::message_kind::status
+                                     ? "P2P relay open rejected with status " +
+                                           std::to_string(static_cast<std::uint16_t>(response.status))
+                                     : "P2P relay open rejected with unexpected response");
+             }
+             record_path_open(path::kind::relay);
+             if (stop->stop_requested()) {
+                FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P circuit acquisition canceled before upgrade");
+             }
+             auto stream = detail::stream_access::with_buffer(std::move(exchange.stream), std::move(exchange.buffered));
+             auto upgraded = co_await upgrade_relay_outbound_session(
+                 std::move(stream), options, identity, peer,
+                 upgrade_callbacks{
+                     .secured =
+                         [gate = connection_gate, local_endpoint, remote_endpoint](const peer_id &authenticated_peer) {
+                            gate->secured(connection_direction::outbound, authenticated_peer, local_endpoint,
+                                          remote_endpoint);
+                         },
+                     .established = std::move(authenticated_admission),
+                     .upgraded =
+                         [gate = connection_gate, local_endpoint, remote_endpoint](const peer_id &authenticated_peer) {
+                            gate->upgraded(connection_direction::outbound, authenticated_peer, local_endpoint,
+                                           remote_endpoint);
+                         },
+                 });
+             upgraded.circuit_endpoint = std::move(remote_endpoint);
+             upgraded.carrier_session_id = relay_session->id;
+             result.emplace(std::move(upgraded));
           });
-      upgraded.circuit_endpoint = std::move(remote_endpoint);
-      upgraded.carrier_session_id = relay_session->id;
-      co_return std::move(upgraded);
-   } catch (const forge::exceptions::base& error) {
-      if (p2p_code(error) != exceptions::code::connection_rejected) {
-         record_relay_failure();
-      }
-      rethrow_transport_as_p2p(error);
+   } catch (...) {
+      failure = std::current_exception();
    }
+   const auto completed = deadline.finish();
+   if (failure || !completed || stop->stop_requested()) {
+      // The admitted circuit, not the shared carrier, owns every handshake
+      // stage. Join unconditional close even while wrappers retain references.
+      if (result) {
+         result->session->cancel();
+      }
+      if (owned) {
+         owned->request_cancel();
+         const auto throwing = co_await boost::asio::this_coro::throw_if_cancelled();
+         co_await boost::asio::this_coro::throw_if_cancelled(false);
+         try {
+            co_await boost::asio::co_spawn(
+                runtime.context(), owned->async_close(),
+                boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+         } catch (...) {
+            if (!failure) {
+               failure = std::current_exception();
+            }
+         }
+         co_await boost::asio::this_coro::throw_if_cancelled(throwing);
+      }
+      if (deadline.timed_out() || !completed) {
+         throw_operation_timeout("P2P relay protocol open");
+      }
+      if (stop->stop_requested()) {
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P circuit acquisition canceled");
+      }
+      try {
+         std::rethrow_exception(failure);
+      } catch (const forge::exceptions::base &error) {
+         if (p2p_code(error) != exceptions::code::connection_rejected) {
+            record_relay_failure();
+         }
+         rethrow_transport_as_p2p(error);
+      }
+   }
+   if (!result) { FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P circuit acquisition did not run"); }
+   co_return std::move(*result);
 }
 
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
-node::impl::ensure_relay_session(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout) {
+node::impl::ensure_relay_session(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout,
+   std::shared_ptr<const detail::open_address_hints> hints) {
+   const auto deadline_at = std::chrono::steady_clock::now() + timeout;
    if (auto existing = session_for_path(peer, path::kind::relay, relay_peer)) {
       co_return existing;
    }
@@ -185,7 +271,7 @@ node::impl::ensure_relay_session(const peer_id& peer, const peer_id& relay_peer,
              FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected,
                                    "P2P established outbound relay session limit reached");
           }
-       });
+       }, hints);
    auto session = std::make_shared<session_state>();
    session->info = node::session_info{
        .remote_peer = std::move(upgraded.peer),
@@ -201,18 +287,32 @@ node::impl::ensure_relay_session(const peer_id& peer, const peer_id& relay_peer,
    session->info.carrier_session_id = upgraded.carrier_session_id;
    session->connection = std::move(*upgraded.session).as_transport();
    session->resource = std::move(*reservation);
-   co_await remember_session(session, connection_manager::direction::outbound);
-   launch_session_accept_loop(session);
-   launch_identify(session);
+   auto failure = std::exception_ptr{};
+   try {
+      co_await remember_session_until(session, connection_manager::direction::outbound,
+         deadline_at, hints ? hints->cancellation : nullptr);
+      if (!launch_session_accept_loop(session)) {
+         FORGE_THROW_EXCEPTION(exceptions::closed, "P2P relay session accept loop could not start");
+      }
+      launch_identify(session);
+   } catch (...) { failure = std::current_exception(); }
+   if (failure) {
+      forget_session(session);
+      co_await async_retire_session(session, true);
+      std::rethrow_exception(failure);
+   }
    co_return session;
 }
 
 boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_via_relay(const peer_id& peer,
                                                                                     const protocol_id& protocol,
                                                                                     const peer_id& relay_peer,
-                                                                                    std::chrono::milliseconds timeout) {
-   auto session = co_await ensure_relay_session(peer, relay_peer, timeout);
-   co_return co_await open_session_stream(session, protocol);
+                                                                                    std::chrono::milliseconds timeout,
+                                                                                    std::shared_ptr<const detail::open_address_hints> hints) {
+   const auto started = std::chrono::steady_clock::now();
+   auto session = co_await ensure_relay_session(peer, relay_peer, timeout, hints);
+   co_return co_await open_protocol_on_session(peer, protocol, session,
+      remaining_timeout(started, timeout, "P2P relay protocol open"), hints ? hints->cancellation : nullptr);
 }
 
 boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared_ptr<node::impl::session_state> session,

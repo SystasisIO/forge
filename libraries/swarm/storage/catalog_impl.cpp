@@ -27,17 +27,18 @@ import forge.db.object.index;
 import forge.db.object.snapshot;
 import forge.db.object.transaction;
 import forge.swarm.core.exceptions;
+import forge.asio.notification;
 
 #include "details/catalog_impl.hxx"
 
 namespace forge::swarm::storage {
 
-catalog::impl::impl(forge::db::object::store value, options settings)
+catalog::impl::impl(std::shared_ptr<access> value, options settings)
    : objects(std::move(value)), config(std::move(settings)) {
-   if (!config.cpu.valid() || !config.database || config.max_inflight == 0U || config.max_inflight > 32U) {
+   if (!objects || !config.cpu.valid() || !config.database || config.max_inflight == 0U || config.max_inflight > 32U) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "catalog requires CPU/DB executors and max_inflight in 1..32");
    }
-   const auto runtime = objects.runtime_options();
+   const auto runtime = objects->runtime_options();
    if (runtime.writes != forge::db::object::write_policy::single_writer ||
        runtime.id_allocation != forge::db::object::id_allocation_policy::monotonic) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "catalog requires single-writer ObjectDB with monotonic IDs");
@@ -47,15 +48,21 @@ catalog::impl::impl(forge::db::object::store value, options settings)
 catalog::impl::admission::admission(std::shared_ptr<impl> value) : owner(std::move(value)) {
    auto count = owner->inflight.load(std::memory_order_relaxed);
    do {
+      if (count & closed_bit) {
+         FORGE_THROW_EXCEPTION(core::exceptions::storage_closed, "catalog admission is closed");
+      }
       if (count >= owner->config.max_inflight) {
          FORGE_THROW_EXCEPTION(core::exceptions::storage_busy, "catalog operation limit is exhausted");
       }
-   } while (!owner->inflight.compare_exchange_weak(count, count + 1U, std::memory_order_relaxed));
+   } while (!owner->inflight.compare_exchange_weak(count, count + 1U, std::memory_order_acq_rel));
 }
 
 catalog::impl::admission::admission(admission&& other) noexcept : owner(std::move(other.owner)) {}
 catalog::impl::admission::~admission() {
-   if (owner) owner->inflight.fetch_sub(1U, std::memory_order_relaxed);
+   if (owner) {
+      owner->inflight.fetch_sub(1U, std::memory_order_acq_rel);
+      owner->changed.notify();
+   }
 }
 
 void catalog::impl::check_token(std::stop_token token) {
@@ -131,17 +138,16 @@ boost::asio::awaitable<void> catalog::impl::commit_flush(impl& self, forge::db::
    if (failure && backend->active()) std::rethrow_exception(failure);
    // An after-commit observer can fail after the actual commit. Restore durability anyway;
    // a flush failure is ambiguous committed state, not a transaction that can be rolled back.
-   co_await self.objects.driver()->async_flush(true);
+   co_await self.objects->flush();
    if (failure) std::rethrow_exception(failure);
 }
 
 boost::asio::awaitable<std::shared_ptr<catalog>> catalog::impl::open(
    std::shared_ptr<impl> self, std::stop_token token) {
-   // Descriptor checks only: registration remains an explicit composition operation.
-   static_cast<void>(self->objects.index<db::schema_index, db::by_schema_id>());
-   static_cast<void>(self->objects.index<db::content_index, db::by_id>());
+   // Transaction index access validates explicit model registration for either access path.
    co_await mutate<void>(self, token, [token](forge::db::object::transaction& tx)
       -> boost::asio::awaitable<void> {
+      const auto contents_view = tx.index<db::content_index, db::by_id>();
       const auto schema = co_await tx.index<db::schema_index, db::by_schema_id>()
          .lower_bound(db::schema_state::id_t{0}).page({.limit = 2});
       co_await check_stop(token);
@@ -149,7 +155,7 @@ boost::asio::awaitable<std::shared_ptr<catalog>> catalog::impl::open(
          co_await require_schema(tx);
          co_return;
       }
-      const auto contents = co_await tx.index<db::content_index, db::by_id>()
+      const auto contents = co_await contents_view
          .lower_bound(db::content::id_t{0}).page({.limit = 1});
       if (!contents.items.empty() || contents.next) {
          FORGE_THROW_EXCEPTION(exceptions::schema_mismatch, "catalog content exists without its schema singleton");
@@ -158,6 +164,26 @@ boost::asio::awaitable<std::shared_ptr<catalog>> catalog::impl::open(
       co_await tx.insert(db::schema_state{});
    }, true);
    co_return std::shared_ptr<catalog>{new catalog{std::move(self)}};
+}
+
+boost::asio::awaitable<void> catalog::impl::close(std::shared_ptr<impl> self) {
+   // async_close launches this only as a disconnected co_spawn root. Do not
+   // change cancellation filters, pending history or throw policy of its caller.
+   while (true) {
+      const auto epoch = self->changed.epoch();
+      auto state = self->inflight.load(std::memory_order_acquire);
+      if (state & retired_bit) co_return;
+      if ((state & (count_mask | retiring_bit)) == 0U &&
+          self->inflight.compare_exchange_strong(state, closed_bit | retiring_bit, std::memory_order_acq_rel)) {
+         // Publish completion only after releasing the guarded DB access. Other
+         // close callers join this same fence, including its destructor.
+         self->objects.reset();
+         self->inflight.store(closed_bit | retired_bit, std::memory_order_release);
+         self->changed.notify();
+         co_return;
+      }
+      co_await self->changed.async_wait(epoch);
+   }
 }
 
 boost::asio::awaitable<db::content> catalog::impl::create(
@@ -202,7 +228,7 @@ boost::asio::awaitable<db::content> catalog::impl::create(
 boost::asio::awaitable<std::optional<db::content>> catalog::impl::find(
    std::shared_ptr<impl> self, core::swarm_id id, std::stop_token token) {
    co_await check_stop(token);
-   auto read = co_await self->objects.begin_read();
+   auto read = co_await self->objects->begin_read();
    co_await require_schema(read);
    co_return co_await self->lookup(read, id, token);
 }
@@ -239,7 +265,7 @@ boost::asio::awaitable<forge::db::object::object_page<db::content>> catalog::imp
    validate_page(page);
    co_await self->config.cpu.execute({"swarm.catalog.state", token}, [state] { validate_state(state); });
    co_await check_stop(token);
-   auto read = co_await self->objects.begin_read();
+   auto read = co_await self->objects->begin_read();
    co_await require_schema(read);
    co_await check_stop(token);
    auto result = co_await read.index<db::content_index, db::by_state_priority>()
@@ -256,7 +282,7 @@ boost::asio::awaitable<forge::db::object::object_page<db::content>> catalog::imp
    std::shared_ptr<impl> self, std::int64_t exclusive, forge::db::core::page_request page, std::stop_token token) {
    validate_page(page);
    co_await check_stop(token);
-   auto read = co_await self->objects.begin_read();
+   auto read = co_await self->objects->begin_read();
    co_await require_schema(read);
    co_await check_stop(token);
    auto result = co_await read.index<db::content_index, db::by_expiry>()

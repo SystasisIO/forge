@@ -68,6 +68,15 @@ struct resource_manager::state {
       scope_totals usage;
    };
 
+   struct memory_rejection {
+      const char* reason = "missing_scope";
+      const char* scope = "unknown";
+      const char* dimension = "none";
+      std::uint64_t usage = 0;
+      std::uint64_t limit = 0;
+      std::uint64_t threshold = 0;
+   };
+
    [[nodiscard]] ledger_attempt make_ledger_locked() noexcept;
    [[nodiscard]] dial_attempt reserve_dial_locked(std::optional<peer_id> peer) noexcept;
    [[nodiscard]] bool reject_limit_locked(std::uint64_t& reason) noexcept;
@@ -77,11 +86,12 @@ struct resource_manager::state {
                                      const scope_totals& delta, memory_priority priority) const noexcept;
    [[nodiscard]] bool can_remove_locked(const scope_account& account, const scope_totals& delta) const noexcept;
    [[nodiscard]] bool can_add_to_current_scopes_locked(const ledger& value, const scope_totals& delta,
-                                                       memory_priority priority) const noexcept;
+                                                       memory_priority priority,
+                                                       memory_rejection* rejected = nullptr) const noexcept;
    [[nodiscard]] bool can_remove_from_current_scopes_locked(const ledger& value,
                                                             const scope_totals& delta) const noexcept;
    [[nodiscard]] transition_result bind_service_locked(const std::shared_ptr<ledger>& value,
-                                                        std::string_view service) noexcept;
+                                                       std::string_view service) noexcept;
    void add_locked(scope_account& account, const scope_totals& delta) noexcept;
    void remove_locked(scope_account& account, const scope_totals& delta) noexcept;
    void add_to_current_scopes_locked(const ledger& value, const scope_totals& delta) noexcept;

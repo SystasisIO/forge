@@ -38,5 +38,6 @@ struct endpoint {
 };
 
 [[nodiscard]] endpoint parse_endpoint(std::string_view value);
+[[nodiscard]] endpoint parse_endpoint(const forge::multiformats::multiaddr& value);
 
 } // namespace forge::net::p2p

@@ -221,12 +221,17 @@ node::impl::request_relay_reservation(const peer_id& relay_peer, relay::reservat
       relay_reservation_operations.emplace(relay_peer, operation);
    }
    const auto stop = std::make_shared<detail::worker_stop_bridge>();
+   auto deadline = operation_deadline{runtime.context(), timeout};
+   deadline.arm([cancellation = operation->cancellation]() noexcept { cancellation->request_stop(); });
    auto parent_subscription = cancellation_latch::subscribe(parent,
        [cancellation = operation->cancellation]() noexcept { cancellation->request_stop(); });
    auto subscription = cancellation_latch::subscribe(operation->cancellation,
-       [stop]() noexcept { stop->request_stop(); });
-   auto deadline = operation_deadline{runtime.context(), timeout};
-   deadline.arm([cancellation = operation->cancellation]() noexcept { cancellation->request_stop(); });
+       [stop, deadline_stop = deadline.stopping()]() noexcept {
+          // Seal explicit cancellation before joined cleanup can cross the
+          // deadline. If the timer already won, request_stop leaves it intact.
+          static_cast<void>(deadline_stop.request_stop());
+          stop->request_stop();
+       });
    auto result = std::optional<relay::reservation::info>{};
    auto failure = std::exception_ptr{};
    try {
@@ -387,6 +392,9 @@ node::impl::request_relay_reservation(const peer_id& relay_peer, relay::reservat
       refresh_relay_publication();
    }
    if (!completed || deadline.timed_out()) { throw_operation_timeout("P2P relay reservation"); }
+   if (operation->cancellation->stop_requested()) {
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P relay reservation canceled");
+   }
    if (failure) {
       try { std::rethrow_exception(failure); }
       catch (const forge::exceptions::base& error) { rethrow_transport_as_p2p(error); }

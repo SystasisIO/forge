@@ -8,6 +8,7 @@ module;
 #include <list>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <utility>
 
 module forge.plugins.net.p2p.node.plugin;
@@ -39,6 +40,8 @@ bool api_publication_generation::active() const noexcept {
    const auto lock = std::scoped_lock{mutex_};
    return admission_open_;
 }
+
+std::stop_token api_publication_generation::stop_token() const noexcept { return stop_.get_token(); }
 
 void api_publication_generation::set_retirement_handler(
    std::function<void(const api_publication_generation*)> handler) {
@@ -86,6 +89,8 @@ void api_publication_generation::request_close() noexcept {
       cancellation_complete_ = false;
       cancelling.splice(cancelling.end(), active_sessions_);
    }
+
+   stop_.request_stop();
 
    for (const auto& entry : cancelling) {
       entry->value->cancel();

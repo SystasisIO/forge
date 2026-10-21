@@ -5,6 +5,13 @@
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <forge/exceptions/macros.hpp>
 #include <chrono>
 #include <thread>
 #include "support.hpp"
@@ -13,6 +20,7 @@
 import forge.swarm.storage.catalog;
 import forge.db.object.exceptions;
 import forge.db.object.hooks;
+import forge.asio.notification;
 
 #if defined(FORGE_TEST_HAS_MDBX)
 import forge.asio.affine;
@@ -27,6 +35,63 @@ namespace meta = forge::swarm::db;
 namespace dbo = forge::db::object;
 
 namespace {
+
+class catalog_access_probe final : public storage::catalog::access {
+ public:
+   catalog_access_probe(dbo::store objects, std::shared_ptr<dbc::driver> driver)
+      : objects(std::move(objects)), driver(std::move(driver)) {}
+
+   dbo::store::options runtime_options() const override { check(); return objects.runtime_options(); }
+   boost::asio::awaitable<dbo::snapshot> begin_read() override {
+      check();
+      const auto epoch = released.epoch();
+      entered.notify();
+      if (hold_reads && epoch == 0U) {
+         if (co_await released.async_wait_until(epoch, std::chrono::steady_clock::now() + std::chrono::seconds{5}) == epoch) {
+            throw std::runtime_error{"catalog read barrier timed out"};
+         }
+      }
+      check();
+      co_return co_await objects.begin_read();
+   }
+   boost::asio::awaitable<dbo::transaction> begin_transaction() override {
+      check();
+      co_return co_await objects.begin_transaction();
+   }
+   boost::asio::awaitable<void> flush() override {
+      check();
+      ++flushes;
+      if (fail_flush) { throw std::runtime_error{"access flush failed"}; }
+      co_await driver->async_flush(true);
+   }
+
+   dbo::store objects;
+   std::shared_ptr<dbc::driver> driver;
+   std::atomic<bool> available{true};
+   std::atomic<unsigned> flushes{0};
+   bool hold_reads = false;
+   bool fail_flush = false;
+   forge::asio::notification entered;
+   forge::asio::notification released;
+
+ private:
+   void check() const {
+      if (!available.load()) {
+         FORGE_THROW_EXCEPTION(core::exceptions::storage_closed, "guarded test access is closed");
+      }
+   }
+};
+
+// Same constrained registration surface as a named object_handle; no store is
+// borrowed by register_objects after this synchronous call returns.
+struct registration_view {
+   dbo::store& objects;
+   const bool& setup;
+   template <dbo::application_object_model Object> void register_object() const {
+      if (!setup) { throw std::logic_error{"registration is outside setup"}; }
+      objects.register_object<Object>();
+   }
+};
 
 struct catalog_fixture {
    fixture files;
@@ -59,11 +124,55 @@ boost::asio::awaitable<std::optional<meta::content>> find_deferred(
    co_return co_await catalog->async_find(id);
 }
 
+boost::asio::awaitable<bool> close_preserving_caller_cancellation(
+   std::shared_ptr<storage::catalog> catalog, boost::asio::cancellation_signal& signal, bool precancel) {
+   auto filters = std::make_shared<std::array<unsigned, 2>>();
+   co_await boost::asio::this_coro::reset_cancellation_state(
+      [filters](boost::asio::cancellation_type_t type) {
+         ++(*filters)[0];
+         return type & boost::asio::cancellation_type::partial;
+      },
+      [filters](boost::asio::cancellation_type_t type) {
+         ++(*filters)[1];
+         return type & boost::asio::cancellation_type::partial;
+      });
+   // A caller with pending cancellation explicitly permits cleanup awaits.
+   const auto throw_policy = !precancel;
+   co_await boost::asio::this_coro::throw_if_cancelled(throw_policy);
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto interrupt_timer = [&signal, executor]() -> boost::asio::awaitable<bool> {
+      auto timer = boost::asio::steady_timer{executor, std::chrono::milliseconds{500}};
+      boost::asio::post(executor, [&signal] {
+         signal.emit(boost::asio::cancellation_type::terminal);
+         signal.emit(boost::asio::cancellation_type::partial);
+      });
+      auto error = boost::system::error_code{};
+      co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+      co_return error == boost::asio::error::operation_aborted;
+   };
+   if (precancel && !co_await interrupt_timer()) co_return false;
+   const auto before = (co_await boost::asio::this_coro::cancellation_state).cancelled();
+   if (precancel && before != boost::asio::cancellation_type::partial) co_return false;
+   co_await catalog->async_close();
+   const auto preserved = (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy &&
+      (co_await boost::asio::this_coro::cancellation_state).cancelled() == before;
+   const auto interrupted = co_await interrupt_timer();
+   co_return preserved && interrupted &&
+      (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy &&
+      (co_await boost::asio::this_coro::cancellation_state).cancelled() == boost::asio::cancellation_type::partial &&
+      (*filters)[0] == (precancel ? 4U : 2U) && (*filters)[1] == (precancel ? 4U : 2U);
+}
+
 boost::asio::awaitable<void> parity(std::shared_ptr<dbc::driver> driver, fixture& files) {
    auto database = boost::asio::thread_pool{1};
    auto objects = co_await dbo::store::open(driver);
-   storage::catalog::register_objects(objects);
-   auto catalog = co_await storage::catalog::async_open(objects, {files.cpu.get_executor(), database.get_executor()});
+   auto setup = true;
+   const auto registration = registration_view{objects, setup};
+   storage::catalog::register_objects(registration);
+   setup = false;
+   BOOST_CHECK_THROW(storage::catalog::register_objects(registration), std::logic_error);
+   auto access = std::make_shared<catalog_access_probe>(objects, driver);
+   auto catalog = co_await storage::catalog::async_open(access, {files.cpu.get_executor(), database.get_executor()});
    const auto bytes = data(5U * core::block_size + 3U);
    const auto manifest = describe({bytes});
    const auto id = core::calculate_swarm_id(manifest);
@@ -136,6 +245,12 @@ boost::asio::awaitable<void> parity(std::shared_ptr<dbc::driver> driver, fixture
    BOOST_CHECK((co_await store->async_read({0, 1}, 0, 17)) ==
       std::vector<std::uint8_t>(bytes.begin() + manifest.piece_size, bytes.begin() + manifest.piece_size + 17));
    co_await store->async_close();
+   co_await catalog->async_close();
+   BOOST_CHECK_THROW(static_cast<void>(adapter->async_load(id, {})), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(adapter->async_save(*saved->checkpoint, {})), core::exceptions::storage_closed);
+   BOOST_CHECK(access->flushes.load() > 0U);
+   BOOST_CHECK((co_await objects.get(row.id)).id == row.id);
+   co_await driver->async_flush(true);
 }
 
 } // namespace
@@ -183,6 +298,35 @@ BOOST_AUTO_TEST_CASE(identity_locator_uniqueness_and_explicit_schema_registratio
    BOOST_CHECK(run(env.catalog->async_find(first.swarm)).has_value());
    auto unregistered = run(dbo::store::open(env.driver, {.family = dbc::family{"other"}}));
    BOOST_CHECK_THROW(run(storage::catalog::async_open(unregistered, {env.files.cpu.get_executor(), env.database.get_executor()})), dbo::exceptions::unregistered_object);
+}
+
+BOOST_AUTO_TEST_CASE(correct_schema_cannot_hide_missing_content_model_in_either_open_overload) {
+   for (const auto guarded_access : {false, true}) {
+      BOOST_TEST_CONTEXT("guarded_access=" << guarded_access) {
+         auto files = fixture{};
+         auto database = boost::asio::thread_pool{1};
+         auto driver = std::make_shared<memory_driver>();
+         auto objects = run(dbo::store::open(driver));
+         objects.register_object<meta::schema_index>();
+         run(objects.insert(meta::schema_state{}));
+         BOOST_CHECK_EQUAL(run(objects.get(meta::schema_id)).version, meta::schema_version);
+         {
+            auto tx = run(objects.begin_transaction());
+            // No query is awaited: constructing the view must validate registration.
+            BOOST_CHECK_THROW(static_cast<void>((tx.index<meta::content_index, meta::by_id>())),
+               dbo::exceptions::unregistered_object);
+            run(tx.rollback());
+         }
+         const auto options = storage::catalog::options{files.cpu.get_executor(), database.get_executor()};
+         if (guarded_access) {
+            auto access = std::make_shared<catalog_access_probe>(objects, driver);
+            BOOST_CHECK_THROW(run(storage::catalog::async_open(access, options)), dbo::exceptions::unregistered_object);
+         } else {
+            BOOST_CHECK_THROW(run(storage::catalog::async_open(objects, options)), dbo::exceptions::unregistered_object);
+         }
+         run(driver->async_close());
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(state_priority_and_expiry_queries_are_bounded_index_pages) {
@@ -281,6 +425,124 @@ BOOST_AUTO_TEST_CASE(flush_failure_is_not_an_acknowledgement_and_load_restores_t
    env.driver->state->fail_flush = false;
    BOOST_CHECK(run(adapter->async_load(row.swarm, {})) == checkpoint);
    BOOST_CHECK(env.driver->state->live == env.driver->state->durable);
+}
+
+BOOST_AUTO_TEST_CASE(access_flush_is_the_checkpoint_fence_and_guard_failures_propagate) {
+   auto env = catalog_fixture{};
+   auto access = std::make_shared<catalog_access_probe>(env.objects, env.driver);
+   env.catalog = run(storage::catalog::async_open(access,
+      {env.files.cpu.get_executor(), env.database.get_executor()}));
+   const auto row = env.create();
+   auto adapter = run(env.catalog->async_checkpoint_store(row.swarm, row.locator));
+   const auto checkpoint = complete(row.manifest, 2);
+   const auto before = access->flushes.load();
+   access->fail_flush = true;
+   BOOST_CHECK_THROW(run(adapter->async_save(checkpoint, {})), std::runtime_error);
+   BOOST_CHECK_THROW(run(adapter->async_load(row.swarm, {})), std::runtime_error);
+   BOOST_CHECK_EQUAL(access->flushes.load(), before + 2U);
+   BOOST_CHECK(run(env.catalog->async_find(row.swarm))->checkpoint == checkpoint);
+   access->fail_flush = false;
+   BOOST_CHECK(run(adapter->async_load(row.swarm, {})) == checkpoint);
+   BOOST_CHECK(env.driver->state->live == env.driver->state->durable);
+   access->available = false;
+   BOOST_CHECK_THROW(run(env.catalog->async_find(row.swarm)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(run(adapter->async_save(checkpoint, {})), core::exceptions::storage_closed);
+   access->available = true;
+   run(env.catalog->async_close());
+}
+
+BOOST_AUTO_TEST_CASE(explicit_close_rejects_all_admission_releases_access_and_keeps_db_open) {
+   auto env = catalog_fixture{};
+   auto access = std::make_shared<catalog_access_probe>(env.objects, env.driver);
+   auto weak = std::weak_ptr<catalog_access_probe>{access};
+   env.catalog = run(storage::catalog::async_open(access,
+      {env.files.cpu.get_executor(), env.database.get_executor()}));
+   const auto row = env.create();
+   auto adapter = run(env.catalog->async_checkpoint_store(row.swarm, row.locator));
+   access.reset();
+   auto closing = env.catalog->async_close();
+   // Admission closes when the awaitable is constructed, not at initial resume.
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_find(row.swarm)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_create(env.manifest(1), "later", {})), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_update(row.swarm, {})), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_erase(row.swarm)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_by_state(meta::job_state::paused)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_expiring_before(100)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(env.catalog->async_checkpoint_store(row.swarm, row.locator)), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(adapter->async_load(row.swarm, {})), core::exceptions::storage_closed);
+   BOOST_CHECK_THROW(static_cast<void>(adapter->async_save(complete(row.manifest, 1), {})), core::exceptions::storage_closed);
+   run(std::move(closing));
+   BOOST_CHECK(weak.expired());
+   run(env.catalog->async_close());
+   BOOST_CHECK(run(env.objects.get(row.id)).swarm == row.swarm);
+   run(env.driver->async_flush(true));
+   auto reopened = run(storage::catalog::async_open(env.objects,
+      {env.files.cpu.get_executor(), env.database.get_executor()}));
+   BOOST_CHECK(run(reopened->async_find(row.swarm)).has_value());
+   run(reopened->async_close());
+}
+
+BOOST_AUTO_TEST_CASE(close_joins_accepted_read_and_concurrent_closers) {
+   using namespace std::chrono_literals;
+   auto env = catalog_fixture{};
+   auto access = std::make_shared<catalog_access_probe>(env.objects, env.driver);
+   env.catalog = run(storage::catalog::async_open(access,
+      {env.files.cpu.get_executor(), env.database.get_executor()}));
+   const auto row = env.create();
+   access->hold_reads = true;
+   auto io = boost::asio::io_context{};
+   auto work = boost::asio::make_work_guard(io);
+   const auto epoch = access->entered.epoch();
+   auto entered = boost::asio::co_spawn(io,
+      access->entered.async_wait_until(epoch, std::chrono::steady_clock::now() + 3s), boost::asio::use_future);
+   auto reading = boost::asio::co_spawn(io, env.catalog->async_find(row.swarm), boost::asio::use_future);
+   auto thread = std::jthread{[&] { io.run(); }};
+   const auto reached = entered.wait_for(4s) == std::future_status::ready && entered.get() != epoch;
+   auto first = boost::asio::co_spawn(io, env.catalog->async_close(), boost::asio::use_future);
+   auto second = boost::asio::co_spawn(io, env.catalog->async_close(), boost::asio::use_future);
+   const auto first_pending = first.wait_for(20ms) == std::future_status::timeout;
+   const auto second_pending = second.wait_for(20ms) == std::future_status::timeout;
+   access->released.notify();
+   work.reset();
+   thread.join();
+   BOOST_REQUIRE_MESSAGE(reached, "accepted read never entered guarded access");
+   BOOST_CHECK(first_pending);
+   BOOST_CHECK(second_pending);
+   BOOST_CHECK(reading.get().has_value());
+   BOOST_CHECK_NO_THROW(first.get());
+   BOOST_CHECK_NO_THROW(second.get());
+   BOOST_CHECK(run(env.objects.get(row.id)).swarm == row.swarm);
+}
+
+BOOST_AUTO_TEST_CASE(close_counts_unstarted_work_and_survives_facade_destruction) {
+   using namespace std::chrono_literals;
+   auto env = catalog_fixture{};
+   const auto row = env.create();
+   auto adapter = run(env.catalog->async_checkpoint_store(row.swarm, row.locator));
+   auto accepted = std::optional{env.catalog->async_find(row.swarm)};
+   auto closing = env.catalog->async_close();
+   env.catalog.reset();
+   auto io = boost::asio::io_context{};
+   auto finished = boost::asio::co_spawn(io, std::move(closing), boost::asio::use_future);
+   auto thread = std::jthread{[&] { io.run(); }};
+   const auto pending = finished.wait_for(20ms) == std::future_status::timeout;
+   accepted.reset();
+   thread.join();
+   BOOST_CHECK(pending);
+   BOOST_CHECK_NO_THROW(finished.get());
+   BOOST_CHECK_THROW(static_cast<void>(adapter->async_load(row.swarm, {})), core::exceptions::storage_closed);
+   BOOST_CHECK(run(env.objects.get(row.id)).swarm == row.swarm);
+}
+
+BOOST_AUTO_TEST_CASE(close_preserves_caller_filters_pending_cancellation_and_next_timer) {
+   for (const auto precancel : {false, true}) {
+      auto env = catalog_fixture{};
+      auto signal = boost::asio::cancellation_signal{};
+      auto io = boost::asio::io_context{};
+      auto result = boost::asio::co_spawn(io, close_preserving_caller_cancellation(env.catalog, signal, precancel),
+         boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+      BOOST_CHECK(drain_with_diagnostics(io, result, [] {}, std::source_location::current()));
+   }
 }
 
 BOOST_AUTO_TEST_CASE(schema_mismatch_and_unversioned_populated_catalog_fail_closed) {

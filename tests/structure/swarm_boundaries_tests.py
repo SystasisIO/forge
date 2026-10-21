@@ -105,11 +105,14 @@ class SwarmBoundariesTests(unittest.TestCase):
          "protocol": ("swarm.core.descriptor", "raw.codec"),
          "api": ("swarm.protocol.peer_message", "api.auth.authenticated_caller"),
          "conversion": ("core.conversion", "swarm.db.content", "swarm.protocol.metadata"),
+         "runtime": ("swarm.api.peer", "swarm.core.store", "asio.task", "asio.notification"),
       }
       rejected = {
          "protocol": ("swarm.db.content", "api.core.connection", "net.p2p.node"),
          "api": ("swarm.db.content", "swarm.storage.catalog", "net.p2p.node"),
          "conversion": ("swarm.storage.catalog", "swarm.api.peer", "asio.task"),
+         "runtime": ("swarm.db.content", "swarm.storage.file_store", "net.p2p.node", "app.plugin",
+                     "api.transport.connection", "api.stream.session"),
       }
       for leaf, modules in allowed.items():
          self.write(f"libraries/swarm/{leaf}/entity.cpp", "".join(f"import forge.{m};\n" for m in modules))
@@ -123,14 +126,37 @@ class SwarmBoundariesTests(unittest.TestCase):
                self.assertTrue(any("reverse dependency" in e for e in self.errors()))
                self.write(name, original)
       for leaf, target in (("protocol", "forge_swarm_db"), ("api", "forge_net_p2p"),
-                           ("conversion", "forge_swarm_storage")):
+                           ("conversion", "forge_swarm_storage"), ("runtime", "forge_swarm_storage"),
+                           ("runtime", "forge_api_p2p")):
          with self.subTest(leaf=leaf, target=target):
             self.write(f"libraries/swarm/{leaf}/CMakeLists.txt", f"target_link_libraries(forge_swarm_{leaf} PUBLIC {target})\n")
             self.assertTrue(any("reverse dependency" in e for e in self.errors()))
 
+   def test_runtime_cannot_create_private_workers(self):
+      for source in ("std::thread worker;", "std::async(work);", "boost::asio::thread_pool pool;",
+                     "boost::asio::io_context context;"):
+         with self.subTest(source=source):
+            self.write("libraries/swarm/runtime/engine.cpp", source)
+            self.assertTrue(any("private worker runtime" in e for e in self.errors()))
+
    def test_domain_cannot_redeclare_conversion_primary(self):
       self.write("libraries/swarm/conversion/conversion.cppm", "template <class Result> class conversion;\n")
       self.assertTrue(any("Core primary" in e for e in self.errors()))
+
+   def test_swarm_plugin_delegates_execution_and_connections(self):
+      name = "plugins/swarm/node/plugin.cpp"
+      self.write(name, "import forge.swarm.runtime.engine;\nimport forge.plugins.net.p2p.node.api;\n")
+      self.assertEqual(self.errors(), [])
+      for source in ("std::thread worker;", "boost::asio::io_context hidden;",
+                     "import forge.db.rocksdb.driver;", "current.async_open_protocol_stream(peer, protocol);"):
+         with self.subTest(source=source):
+            self.write(name, source)
+            self.assertTrue(any("Swarm plugin" in e for e in self.errors()))
+
+   def test_swarm_plugin_root_is_only_a_grouping_namespace(self):
+      self.write("plugins/swarm/node/include/forge/plugins/swarm/node/types.cppm",
+                 "export namespace forge::plugins::swarm { struct job {}; }\n")
+      self.assertTrue(any("node leaf" in e for e in self.errors()))
 
 
 if __name__ == "__main__":

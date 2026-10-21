@@ -93,6 +93,7 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/node_impl.hxx"
+#include "details/cancellation_latch.hxx"
 #include "details/owner_cancellation.hxx"
 
 #include "details/peer_failure.hxx"
@@ -983,126 +984,53 @@ boost::asio::awaitable<forge::net::p2p::stream> node::async_open_protocol_stream
 
 boost::asio::awaitable<forge::net::p2p::stream> node::async_open_protocol_stream(peer_id peer, protocol_id protocol,
                                                                                  node::open_options options) {
-   validate_operation_timeout(options.timeout, "P2P protocol open timeout");
-   validate_operation_timeout(options.direct_attempt_timeout, "P2P direct attempt timeout");
-   validate_operation_timeout(options.relay_attempt_timeout, "P2P relay attempt timeout");
-   if (options.max_direct_endpoints == 0 || options.max_relay_candidates == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P path attempt limits must be positive");
-   }
-   auto self = impl_;
-   self->require_private_protocol_allowed(protocol);
-   if (self->private_network_enabled()) {
-      if (options.relay_peer) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P private-network protocol open does not permit a relay peer");
-      }
-      options.allow_relay = false;
-      options.allow_hole_punch = false;
-   }
-   auto effective = options;
-   effective.allow_relay =
-       effective.allow_relay && self->options.path_policy.allow_relay && self->options.relay_policy.client_enabled;
-   effective.allow_hole_punch = effective.allow_hole_punch && self->options.path_policy.allow_hole_punch;
-   effective.max_direct_endpoints =
-       std::min(effective.max_direct_endpoints, self->options.path_policy.max_direct_endpoints);
-   effective.max_relay_candidates =
-       std::min(effective.max_relay_candidates, self->options.path_policy.max_relay_candidates);
-   const auto started = std::chrono::steady_clock::now();
-   auto last_kind = std::optional<exceptions::code>{};
-   auto last_message = std::string{};
-   if (self->options.path_policy.allow_direct) {
-      try {
-         co_return co_await self->open_protocol_direct(
-             peer, protocol, effective.timeout, effective.max_direct_endpoints, effective.direct_attempt_timeout);
-      } catch (const forge::exceptions::base& error) {
-         const auto kind = p2p_code(error);
-         last_kind = kind;
-         last_message = error.what();
-         auto node_stopped = false;
-         if (kind == exceptions::code::closed) {
-            auto lock = std::scoped_lock{self->mutex};
-            node_stopped = self->stopped;
-         }
-         if ((kind == exceptions::code::closed && node_stopped) || kind == exceptions::code::canceled ||
-             kind == exceptions::code::unsupported_protocol || kind == exceptions::code::protocol_error ||
-             kind == exceptions::code::codec_error) {
-            throw;
-         }
-         try {
-            (void)remaining_timeout(started, effective.timeout, "P2P protocol open");
-         } catch (const forge::exceptions::base&) {
-            throw;
-         }
-         if (!effective.allow_relay && !(effective.allow_hole_punch && effective.relay_peer)) {
-            throw;
-         }
-      }
-   }
-
-   auto relay_candidates = std::vector<peer_id>{};
-   if (effective.relay_peer) {
-      relay_candidates.push_back(*effective.relay_peer);
-   } else if (effective.allow_relay || effective.allow_hole_punch) {
-      relay_candidates = self->fresh_outbound_relay_candidates(effective.max_relay_candidates,
-                                                               self->options.relay_policy.refresh_margin);
-      if (relay_candidates.empty() && self->options.relay_policy.auto_discovery_enabled) {
-         const auto remaining = remaining_timeout(started, effective.timeout, "P2P AutoRelay refresh");
-         const auto refresh_timeout =
-             attempt_timeout(remaining, effective.relay_attempt_timeout, "P2P AutoRelay refresh");
-         try {
-            (void)co_await self->refresh_relay_candidates(peer, refresh_timeout);
-            relay_candidates = self->fresh_outbound_relay_candidates(effective.max_relay_candidates,
-                                                                     self->options.relay_policy.refresh_margin);
-         } catch (const forge::exceptions::base& error) {
-            last_kind = p2p_code(error);
-            last_message = error.what();
-         }
-      }
-   }
-
-   if (effective.allow_hole_punch) {
-      for (const auto& relay_peer : relay_candidates) {
-         const auto remaining = remaining_timeout(started, effective.timeout, "P2P hole punch");
-         const auto per_attempt = attempt_timeout(remaining, effective.relay_attempt_timeout, "P2P hole punch attempt");
-         try {
-            const auto status = co_await self->attempt_hole_punch(peer, relay_peer, per_attempt);
-            if (status == hole_punch::status::succeeded) {
-               co_return co_await self->open_protocol_direct(
-                   peer, protocol, remaining_timeout(started, effective.timeout, "P2P protocol open after hole punch"),
-                   effective.max_direct_endpoints, effective.direct_attempt_timeout);
-            }
-         } catch (const forge::exceptions::base& error) {
-            last_kind = p2p_code(error);
-            last_message = error.what();
-         }
-      }
-   }
-
-   if (!effective.allow_relay) {
-      if (last_kind) {
-         FORGE_THROW_CODE(*last_kind, last_message);
-      }
-      FORGE_THROW_EXCEPTION(exceptions::relay_not_available, "P2P relay fallback is disabled");
-   }
-
-   if (relay_candidates.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::relay_not_available, "P2P path manager found no reserved relay candidate");
-   }
-   for (const auto& relay_peer : relay_candidates) {
-      const auto remaining = remaining_timeout(started, effective.timeout, "P2P protocol open");
-      const auto per_attempt = attempt_timeout(remaining, effective.relay_attempt_timeout, "P2P relay path attempt");
-      try {
-         co_return co_await self->open_protocol_via_relay(peer, protocol, relay_peer, per_attempt);
-      } catch (const forge::exceptions::base& error) {
-         last_kind = p2p_code(error);
-         last_message = error.what();
-      }
-   }
-   if (last_kind) {
-      FORGE_THROW_CODE(*last_kind, last_message);
-   }
-   FORGE_THROW_EXCEPTION(exceptions::relay_not_available, "P2P path manager exhausted relay candidates");
+   return boost::asio::co_spawn(impl_->runtime.context(),
+      open_protocol_owned(impl_, std::move(peer), std::move(protocol), std::move(options)), boost::asio::use_awaitable);
 }
+
+boost::asio::awaitable<forge::net::p2p::stream> node::open_protocol_owned(std::shared_ptr<impl> self,
+   peer_id peer, protocol_id protocol, node::open_options options) {
+   validate_operation_timeout(options.timeout, "P2P protocol open timeout");
+   const auto started = std::chrono::steady_clock::now();
+   auto tracked = self->lifecycle.track();
+   if (!tracked.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "P2P protocol open admission is closed"); }
+   auto stop = std::make_shared<detail::worker_stop_bridge>();
+   auto cancellation = std::make_shared<cancellation_latch>();
+   auto selected = std::make_shared<forge::net::p2p::stream>();
+   const auto expires_at = started + options.timeout;
+   auto failure = std::exception_ptr{};
+   try {
+      co_await detail::async_run_with_owner_cancellation(stop,
+         [self, peer = std::move(peer), protocol = std::move(protocol), options = std::move(options),
+          started, cancellation, selected, stop](boost::asio::cancellation_slot slot) mutable -> boost::asio::awaitable<void> {
+            slot.assign([cancellation, selected](boost::asio::cancellation_type) noexcept {
+               cancellation->request_stop(); selected->request_cancel();
+            });
+            if (stop->stop_requested()) {
+               cancellation->request_stop();
+               FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled before acquisition");
+            }
+            *selected = co_await impl::open_protocol_paths(self, std::move(peer), std::move(protocol),
+               std::move(options), started, cancellation);
+         }, {.lifecycle_stop = tracked.stop_source()});
+   } catch (...) { failure = std::current_exception(); }
+   // Each native phase owns its timeout and error attribution. A competing
+   // outer timer would turn a remote timeout into local cancellation before
+   // that owner can account it. All phases consume the same absolute budget.
+   const auto expired = !failure && std::chrono::steady_clock::now() >= expires_at;
+   if (failure || expired || stop->stop_requested()) {
+      // This function is a separate co_spawn root, not the caller's coroutine.
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
+      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+      selected->request_cancel();
+      try { co_await selected->async_close(); } catch (...) { if (!failure) failure = std::current_exception(); }
+      if (stop->stop_requested()) { FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled"); }
+      if (expired) throw_operation_timeout("P2P protocol open");
+      std::rethrow_exception(failure);
+   }
+   co_return std::move(*selected);
+}
+
 
 boost::asio::awaitable<void> node::async_stop() {
    return async_stop_after_topology_join(impl_);

@@ -1243,6 +1243,28 @@ remain the owner's responsibility. No reverse `conversion<db::content>` exists.
   reservation finalization, including partial/unknown-delivery failures. Prove
   joined shutdown and no hidden unlimited or origin fallback path.
 
+PR6 contract decisions:
+
+- `forge.swarm.runtime.engine` owns the active engine and exports its sharing
+  and download handle partitions. Admission, quota and capability contracts
+  have their own modules; the family root remains empty.
+- Admission distinguishes metadata from content. A product-supplied shared
+  quota binds content and the authenticated requester; free service is explicit.
+  Requested, attempted, accepted-queue, unknown-outcome and verified bytes are
+  separate observations, not payment receipts.
+- Connection capabilities expose a transport-confirmed remote identity for
+  shared peer limits; discovery route strings never become authorization.
+- A caller may set one fixed download `total_deadline`. Otherwise only bounded
+  callback, request and useful-progress idle timeouts apply. Local disk/CPU
+  backpressure is not peer idleness; progress never extends a grant's expiry.
+- Runtime tie selection uses existing Forge random entropy by default and an
+  explicit fixed seed for reproducible tests. Core remains deterministic.
+- A verified local resume may publish without network access. Normal input
+  half-close drains accepted responses; explicit cancellation remains separate.
+  Operation close awaits actual workers/handlers and never stops caller-owned
+  stores or execution. These decisions require focused tests and exact-head
+  review before acceptance; they do not complete PR7 or integrated PR8 proof.
+
 ### PR7: Thin Swarm node plugin
 
 - **Owner/API:** `forge_plugins_swarm_node`; `plugin::descriptor()`, typed local
@@ -1252,7 +1274,8 @@ remain the owner's responsibility. No reverse `conversion<db::content>` exists.
   remote calls; Forge.App supplies lifecycle and execution dependencies;
   products supply stores and admission/quota policies. ObjectDB catalog mode
   obtains its named store through `plugins.db.store` and composes the PR3
-  library adapter. Standalone file mode has no mandatory DB Store service.
+  library adapter. File mode opens no additional Swarm catalog; the official
+  P2P plugin retains its own DB Store/Secrets dependencies.
   The plugin delegates sessions, timers, picking and limits to the PR6 runtime.
 - **Acceptance:** prove programmatic-runtime/plugin parity, configured free and
   quota-controlled service, missing-policy fail-closed behavior, publication
@@ -1260,6 +1283,69 @@ remain the owner's responsibility. No reverse `conversion<db::content>` exists.
   Include DB-backed restart parity and indexed catalog queries without scans.
   The same paid policy must not be bypassable through metadata, a second route
   or an alternate binding. No copied business or network orchestration.
+
+PR7 implementation contracts:
+
+- The leaf is `plugins/swarm/node`, namespace `forge::plugins::swarm::node`,
+  target `forge_plugins_swarm_node`, component `plugins_swarm_node` and local
+  contract `forge.plugins.swarm.node`. `plugin::descriptor(options)` composes
+  dependencies before startup. Do not expose a mutable P2P node, raw DB driver
+  or a catalog-close authority through the consumer API.
+- Local share/download operations return the existing runtime handles. Products
+  still supply their stores; the plugin does not stop them or App execution.
+  Optional indexed catalog operations and checkpoint capabilities delegate to
+  the existing storage adapter, without another metadata implementation.
+- An explicit free policy is opt-in; a missing product policy fails closed.
+  Free configuration cannot silently replace an injected product policy.
+  Transport authentication is required but is not serving permission.
+- The Preview runtime's string-provider boundary must be replaced by passive,
+  owned `capabilities::route` objects. Lookup and explicitly supplied download
+  routes use the same contract; a route exposes a bounded, non-authoritative
+  key and repeatable `async_connect(stop, deadline) const`. Remove the old
+  string-based connect contract without aliases or a second connection path.
+  Explicit routes do not require a discovery capability.
+- A route retains bounded immutable backend context until its consumers drain;
+  the returned awaitable retains context independently of the original route
+  object. Runtime remains transport-neutral and does not import P2P types.
+  This Preview C++ source change does not alter API wire or persisted layouts.
+- The P2P adapter must preserve the complete sanitized provider address set.
+  Native provider lookup returns addresses but does not establish a trusted
+  address-book entry. Never discard them and assume that opening by peer ID
+  alone can reach an unknown provider. Do not add a Swarm peer cache, encoded
+  route blobs, an endpoint dial loop or a first-address-only shortcut.
+- Extend the existing native/API open options with operation-scoped address
+  hints. Native acquisition owns address fallback, expected-peer verification,
+  gater/resource admission, the shared deadline and relay/hole-punch behavior.
+  Preserve all relay carrier roots, including an unknown carrier. Temporary
+  hints establish neither durable address facts nor Kademlia membership.
+  Go's temporary provider addresses and Rust's query-owned addresses are the
+  donor models; operation scope avoids a durable cache/schema migration.
+- Swarm requires authenticated remote peer evidence before transport conversion
+  and derives its remote principal exactly as the existing P2P API binding.
+  Client metadata, discovery results and route keys cannot supply that evidence.
+- A bounded child call plus Forge notification bridges stop/deadline to the
+  official APIs. Cancellation must reach the native operation, and return waits
+  for actual completion and late resource cleanup. No detached cleanup or
+  cancellation of the shared node. Connection setup timeout must not become a
+  default total deadline for a long-lived exchange.
+- The catalog gains a neutral access contract for guarded named Object handles,
+  preserving its single transaction/checkpoint implementation and flush fences.
+  Explicit logical close seals admission and drains accepted operations before
+  releasing access, without closing the DB driver or resetting caller
+  cancellation history. Close follows engine checkpoint/drain; escaped
+  checkpoint capabilities reject new calls afterward. Existing eager-admission
+  obligations remain: await or destroy accepted unstarted operations.
+- Named-catalog mode requires an application-owned DB executor; never run a
+  blocking driver flush on the P2P scheduler or create a hidden plugin pool.
+  Publication retirement supplies a sticky generation stop token, including
+  replacement without RPC, to cancel the owning engine and its advertisements.
+  Provider registration stop retains the explicit withdrawal/drain barrier.
+- Additional acceptance covers discovery of an initially unknown provider,
+  failed-first/successful-second address fallback, identity mismatch, scoped
+  circuit carrier hints, route retries/context lifetime, native cancellation
+  and late completion. Metadata coverage includes incomplete model registration,
+  close/drain and both ObjectDB drivers. These are composition gates, not the
+  complete PR8 multi-process/full-transport production proof.
 
 ### PR8: Integrated acceptance
 

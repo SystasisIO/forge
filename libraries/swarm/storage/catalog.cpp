@@ -24,8 +24,10 @@ import forge.db.object.exceptions;
 import forge.db.object.index;
 import forge.db.object.snapshot;
 import forge.db.object.transaction;
+import forge.asio.notification;
 
 #include "details/catalog_impl.hxx"
+#include "details/catalog_store_access.hxx"
 
 namespace forge::swarm::storage {
 
@@ -33,15 +35,27 @@ catalog::catalog(std::shared_ptr<impl> value) : _impl(std::move(value)) {}
 catalog::~catalog() = default;
 
 void catalog::register_objects(forge::db::object::store& objects) {
-   objects.register_object<db::schema_index>();
-   objects.register_object<db::content_index>();
+   register_objects<forge::db::object::store>(objects);
 }
 
 boost::asio::awaitable<std::shared_ptr<catalog>> catalog::async_open(
    forge::db::object::store objects, options config, std::stop_token token) {
+   return async_open(std::make_shared<detail::catalog_store_access>(std::move(objects)), std::move(config), token);
+}
+
+boost::asio::awaitable<std::shared_ptr<catalog>> catalog::async_open(
+   std::shared_ptr<access> objects, options config, std::stop_token token) {
    auto self = std::make_shared<impl>(std::move(objects), std::move(config));
    return impl::dispatch<std::shared_ptr<catalog>>(impl::admission{self}, token,
       [](std::shared_ptr<impl> owner, std::stop_token stop) { return impl::open(std::move(owner), stop); });
+}
+
+boost::asio::awaitable<void> catalog::async_close() {
+   auto self = _impl;
+   // One atomic word linearizes close against the existing eager admission CAS.
+   self->inflight.fetch_or(impl::closed_bit, std::memory_order_acq_rel);
+   return boost::asio::co_spawn(self->config.database, impl::close(self),
+      boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
 }
 
 boost::asio::awaitable<db::content> catalog::async_create(

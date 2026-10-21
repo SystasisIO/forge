@@ -158,6 +158,7 @@ registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
 | [swarm/protocol](libraries/swarm/protocol/README.md) | `forge_swarm_protocol` | Preview bounded metadata chunks and peer messages with canonical Raw decoding. | `forge_swarm_core`, `forge_raw`, `forge_reflect`, `forge_exceptions`. |
 | [swarm/api](libraries/swarm/api/README.md) | `forge_swarm_api` | Preview live metadata and duplex peer contracts with trusted caller injection; no storage or network runtime. | `forge_swarm_protocol`, `forge_api_core`, `forge_api_auth`, Boost Asio. |
 | [swarm/conversion](libraries/swarm/conversion/README.md) | `forge_swarm_conversion` | Explicit public metadata projection and validated descriptor import, without DB mutation. | `forge_core`, `forge_swarm_db`, `forge_swarm_protocol`. |
+| [swarm/runtime](libraries/swarm/runtime/README.md) | `forge_swarm_runtime` | Preview transfer orchestration, scoped sharing/downloads and explicit product admission/quota enforcement. | `forge_swarm_core`, `forge_swarm_api`, `forge_asio`, `forge_exceptions`. |
 | [chain/savanna/values](libraries/chain/savanna/values/README.md) | `forge_chain_savanna_values` | Canonical guest-safe finalizer and finalizer-policy values. | `forge_crypto_bls`, `forge_raw`, `forge_variant`. |
 | [chain/protocol](libraries/chain/protocol/README.md) | `forge_chain_protocol` | Canonical protocol values, ordered keys, transactions, blocks, ABI and signing rules. | `forge_chain_core`, `forge_chain_savanna_values`, `forge_compression`, `forge_raw`, `forge_variant`, `forge_crypto_asymmetric_values`, `forge_crypto_digest`. |
 | [chain/api](libraries/chain/api/README.md) | `forge_chain_api` | Transport-neutral chain contracts, HTTP/P2P clients and verified audited reads. | `forge_api_core`, `forge_api_http`, `forge_chain_protocol`, `forge_db_authenticated`, `forge_net_http`. |
@@ -226,7 +227,7 @@ registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
 | [db/mdbx](libraries/db/mdbx/README.md) | `forge_db_mdbx` | Vendored libmdbx implementation of the shared DB driver contract. | `forge_asio`, `forge_db_core`, `forge_exceptions`; libmdbx privately. |
 | [rocksdb](libraries/rocksdb/README.md) | `forge_rocksdb` | Optional RocksDB TransactionDB wrapper. | RocksDB privately, `forge_exceptions`, `forge_schema`. |
 | [db/rocksdb](libraries/db/rocksdb/README.md) | `forge_db_rocksdb` | RocksDB implementation of the shared DB driver contract. | `forge_db_core`, `forge_rocksdb`. |
-| [plugins](plugins/README.md) | `forge_plugins`, `forge_plugins_*_*` | Official infrastructure plugins: Chain signer, crypto secrets, P2P node (including PubSub, diagnostics and events), optional API resolver, HTTP server, logging and named DB Store. | `forge_app`, `forge_api_core`, focused plugin targets. |
+| [plugins](plugins/README.md) | `forge_plugins`, `forge_plugins_*_*` | Official infrastructure plugins: Chain signer, crypto secrets, P2P node (including PubSub, diagnostics and events), optional API resolver and Swarm node, HTTP server, logging and named DB Store. | `forge_app`, `forge_api_core`, focused plugin targets. |
 | [tui](libraries/tui/README.md) | `forge_tui` | Terminal UI value models, render helpers, runner. | Notcurses core privately and optionally. |
 
 `find_package(Forge CONFIG REQUIRED)` is intentionally lightweight and discovers

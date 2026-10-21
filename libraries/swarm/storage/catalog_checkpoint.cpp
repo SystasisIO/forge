@@ -24,6 +24,7 @@ import forge.db.object.exceptions;
 import forge.db.object.index;
 import forge.db.object.snapshot;
 import forge.db.object.transaction;
+import forge.asio.notification;
 
 #include "details/catalog_impl.hxx"
 #include "details/catalog_checkpoint.hxx"
@@ -48,7 +49,7 @@ boost::asio::awaitable<std::shared_ptr<core::checkpoint_store>> catalog::impl::b
    locator = co_await self->config.cpu.execute({"swarm.catalog.locator", token},
       [locator = std::move(locator)]() mutable { validate_locator(locator); return std::move(locator); });
    co_await check_stop(token);
-   auto read = co_await self->objects.begin_read();
+   auto read = co_await self->objects->begin_read();
    co_await require_schema(read);
    auto row = co_await self->lookup(read, id, token);
    if (!row || row->locator != locator) {
@@ -78,7 +79,7 @@ boost::asio::awaitable<std::optional<core::resume_state>> catalog::checkpoint::l
    core::swarm_id id, std::stop_token token) {
    if (id != expected->swarm) { FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "checkpoint requested for a different identity"); }
    co_await impl::check_stop(token);
-   auto read = co_await self->objects.begin_read();
+   auto read = co_await self->objects->begin_read();
    co_await impl::require_schema(read);
    co_await impl::check_stop(token);
    auto row = co_await read.find(expected->row);
@@ -94,7 +95,7 @@ boost::asio::awaitable<std::optional<core::resume_state>> catalog::checkpoint::l
       // A previous commit may have outlived an unsuccessful flush/observer acknowledgement.
       // Do not expose that generation as durable until this owned driver's fence succeeds.
       const auto executor = co_await boost::asio::this_coro::executor;
-      co_await boost::asio::co_spawn(executor, self->objects.driver()->async_flush(true),
+      co_await boost::asio::co_spawn(executor, self->objects->flush(),
          boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
    }
    co_await impl::check_stop(token);

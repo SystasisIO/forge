@@ -76,6 +76,22 @@ target_link_libraries(test_forge_swarm_api PRIVATE forge_swarm_api forge_api_tra
    forge_asio forge_raw Boost::included_unit_test_framework)
 add_test(NAME test_forge_swarm_api COMMAND test_forge_swarm_api)
 set_tests_properties(test_forge_swarm_api PROPERTIES TIMEOUT 90)
+add_executable(test_forge_swarm_runtime
+   swarm_runtime/main.cpp
+   swarm_runtime/quota_tests.cpp
+   swarm_runtime/runtime_tests.cpp
+)
+target_link_libraries(test_forge_swarm_runtime PRIVATE
+   forge_swarm_runtime forge_swarm_storage Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_runtime COMMAND test_forge_swarm_runtime)
+set_tests_properties(test_forge_swarm_runtime PROPERTIES TIMEOUT 120)
+add_executable(test_forge_swarm_runtime_integration unit/main.cpp swarm_runtime_integration/transfer_tests.cpp)
+target_link_libraries(test_forge_swarm_runtime_integration PRIVATE
+   forge_swarm_runtime forge_swarm_storage forge_api_transport forge_api_stream forge_net_tcp
+   Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_runtime_integration COMMAND test_forge_swarm_runtime_integration)
+set_tests_properties(test_forge_swarm_runtime_integration PROPERTIES TIMEOUT 120)
+add_subdirectory(swarm_plugin)
 add_test(NAME test_forge_package_dependency_boundary
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/package_dependency_boundary_tests.py)
 set_tests_properties(test_forge_package_dependency_boundary PROPERTIES TIMEOUT 60)
@@ -429,6 +445,10 @@ add_test(NAME test_forge_codec_json COMMAND test_forge_codec_json WORKING_DIRECT
 add_executable(test_forge_http_sse unit/main.cpp http/sse_tests.cpp)
 target_link_libraries(test_forge_http_sse PRIVATE forge_net_http Boost::included_unit_test_framework)
 add_test(NAME test_forge_http_sse COMMAND test_forge_http_sse)
+
+add_executable(test_forge_http_wire unit/main.cpp http/wire_tests.cpp)
+target_link_libraries(test_forge_http_wire PRIVATE forge_net_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_wire COMMAND test_forge_http_wire)
 
 foreach(_codec IN ITEMS base64 base58 hex)
    add_executable(test_forge_codec_${_codec} unit/main.cpp codec/${_codec}_tests.cpp)
@@ -2341,6 +2361,7 @@ add_executable(
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp
    plugins/p2p_protocol_registry_tests.cpp
+   plugins/publication_stop_tests.cpp
    plugins/protocol_registry_fixture.cpp
    plugins/details/protocol_registry_fixture.hxx
    plugins/p2p_host_event_api_tests.cpp
@@ -3393,7 +3414,7 @@ add_custom_target(
       --test-command forge_package_swarm_db_component
    DEPENDS test_forge_package_install
 )
-foreach(swarm_component IN ITEMS protocol conversion api)
+foreach(swarm_component IN ITEMS protocol conversion api runtime)
    add_custom_target(test_forge_package_swarm_${swarm_component}_component
       COMMAND ${CMAKE_CTEST_COMMAND}
          --build-and-test
@@ -4511,7 +4532,7 @@ add_test(
       --test-command forge_package_swarm_db_component
 )
 set_tests_properties(test_forge_package_swarm_db_component PROPERTIES DEPENDS test_forge_package_install)
-foreach(swarm_component IN ITEMS protocol conversion api)
+foreach(swarm_component IN ITEMS protocol conversion api runtime)
    add_test(NAME test_forge_package_swarm_${swarm_component}_component
       COMMAND ${CMAKE_CTEST_COMMAND}
          --build-and-test
@@ -5129,7 +5150,7 @@ endif()
 if(TARGET forge_net_tlsnotary)
    add_executable(forge_tlsnotary_fault_worker tlsnotary/worker_fault.cpp)
    add_executable(test_forge_net_tlsnotary tlsnotary/runtime_tests.cpp)
-   target_link_libraries(test_forge_net_tlsnotary PRIVATE forge_net_tlsnotary forge_net_tcp forge_crypto_pki OpenSSL::SSL)
+   target_link_libraries(test_forge_net_tlsnotary PRIVATE forge_net_tlsnotary forge_net_tcp forge_crypto_pki forge_log OpenSSL::SSL)
    target_compile_definitions(test_forge_net_tlsnotary PRIVATE
       FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}"
       FORGE_TLSNOTARY_FAULT_WORKER="$<TARGET_FILE:forge_tlsnotary_fault_worker>"
@@ -5151,4 +5172,26 @@ if(TARGET forge_net_tlsnotary)
          --test-command forge_package_net_tlsnotary_component
             "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
    set_tests_properties(test_forge_package_net_tlsnotary_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
+   add_test(NAME test_forge_package_net_tlsnotary_leaf_component
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_net_tlsnotary_component
+         ${CMAKE_BINARY_DIR}/forge-package-net-tlsnotary-leaf-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS} -DFORGE_TLSNOTARY_TEST_PLUGIN=OFF
+         --test-command forge_package_net_tlsnotary_component
+            "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
+   set_tests_properties(test_forge_package_net_tlsnotary_leaf_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
 endif()
+
+set(_forge_swarm_plugin_consumer
+   ${CMAKE_CTEST_COMMAND} --build-and-test
+   ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_swarm_node_component
+   ${CMAKE_BINARY_DIR}/forge-package-plugins-swarm-node-component
+   --build-generator ${CMAKE_GENERATOR}
+   --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+   --test-command forge_package_plugins_swarm_node_component)
+add_custom_target(test_forge_package_plugins_swarm_node_component
+   COMMAND ${_forge_swarm_plugin_consumer} DEPENDS test_forge_package_install)
+add_test(NAME test_forge_package_plugins_swarm_node_component COMMAND ${_forge_swarm_plugin_consumer})
+set_tests_properties(test_forge_package_plugins_swarm_node_component PROPERTIES
+   DEPENDS test_forge_package_install TIMEOUT 900)
