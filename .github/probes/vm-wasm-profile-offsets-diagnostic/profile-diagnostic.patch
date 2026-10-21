@@ -20,7 +20,29 @@
  #include <utility>
  #include <vector>
  
-@@ -230,7 +235,98 @@
+@@ -81,6 +86,13 @@
+          emit({0x20, 0});
+          emit({0x6e});
+          emit({0x21, 1});
++         // The second quotient depends on the first and feeds the next iteration.
++         emit({0x20, 0});
++         emit({0x20, 1});
++         emit({0x41, 1});
++         emit({0x72});
++         emit({0x6e});
++         emit({0x21, 1});
+          emit({0x20, 0});
+          emit({0x41, 1});
+          emit({0x6b});
+@@ -114,6 +126,7 @@
+       std::uint32_t result = 1;
+       do {
+          result = ((result * (other ? 5U : 3U)) ^ (other ? 11U : 7U)) / count;
++         result = count / (result | 1U);
+       } while (--count);
+       return result;
+    }
+@@ -230,7 +243,98 @@
     return result;
  }
  
@@ -120,15 +142,14 @@
     std::set<std::uint32_t> offsets;
     sample known{};
     for (std::sig_atomic_t i = 0; i < samples.count; ++i) {
-@@ -323,11 +419,11 @@
+@@ -323,11 +427,11 @@
     BOOST_TEST(first->call_with_return("env", "mix", 130U)->to_ui32() == profile_fixture::expected(130));
     BOOST_TEST(first->call_with_return("env", "other", 130U)->to_ui32() == profile_fixture::expected(130, true));
     const auto mix = collect(first_map, &second_map, [&] { first->call("env", "mix", 4000000U); });
 -   const auto known = verify_samples(mix, fixture, 0);
--   const auto other = collect(first_map, &second_map, [&] { first->call("env", "other", 4000000U); });
--   verify_samples(other, fixture, 1);
 +   const auto known = verify_samples(mix, fixture, 0, first_map, "first.mix");
-+   const auto other = collect(first_map, &second_map, [&] { first->call("env", "other", 4000000U); });
+    const auto other = collect(first_map, &second_map, [&] { first->call("env", "other", 4000000U); });
+-   verify_samples(other, fixture, 1);
 +   verify_samples(other, fixture, 1, first_map, "first.other");
     const auto independent = collect(second_map, &first_map, [&] { second->call("env", "mix", 4000000U); });
 -   const auto second_known = verify_samples(independent, fixture, 0);
@@ -136,7 +157,7 @@
     BOOST_TEST(first_map.translate(nullptr) == UINT32_MAX);
     BOOST_TEST(first_map.translate(reinterpret_cast<const void*>(UINTPTR_MAX)) == UINT32_MAX);
     BOOST_TEST(first_map.translate(fixture.wasm.data()) == UINT32_MAX);
-@@ -357,7 +453,7 @@
+@@ -357,7 +461,7 @@
     shared.set_context(&context);
     shared.initialize();
     const auto samples = collect(source.get_debug(), nullptr, [&] { shared.call("env", "mix", 4000000U); });
@@ -145,7 +166,7 @@
     BOOST_TEST(shared.get_debug().translate(reinterpret_cast<const void*>(known.pc)) == known.offset);
     for (unsigned i = 0; i != 3; ++i) {
        shared.initialize();
-@@ -402,7 +498,7 @@
+@@ -402,7 +506,7 @@
     profile_fixture fixture;
     auto backend = std::make_unique<profiled_backend>(fixture.wasm, nullptr);
     const auto initial = collect(backend->get_debug(), nullptr, [&] { backend->call("env", "mix", 4000000U); });
@@ -154,7 +175,7 @@
     auto observer = backend->get_module().get_debug();
     sample_buffer after_destruction;
     after_destruction.pinned_pc = known.pc;
-@@ -488,7 +584,7 @@
+@@ -488,7 +592,7 @@
     // The backend/module wrapper and context are gone while the consumer's
     // observer is still published to the signal handler.
     sampling.reset();
@@ -163,7 +184,7 @@
     BOOST_TEST(allocation.current_bytes() > baseline);
     bool observed = false;
     auto consumer = std::thread{[pin = std::move(retained), &observed, known]() mutable {
-@@ -530,7 +626,7 @@
+@@ -530,7 +634,7 @@
     BOOST_TEST(&backend.get_module() == original_module);
     BOOST_TEST(backend.call_with_return(host, "env", "mix", 130U)->to_ui32() == profile_fixture::expected(130));
     const auto samples = collect(backend.get_debug(), nullptr, [&] { backend.call(host, "env", "other", 4000000U); });
