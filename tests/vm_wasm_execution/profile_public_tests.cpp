@@ -81,6 +81,13 @@ struct profile_fixture {
          emit({0x20, 0});
          emit({0x6e});
          emit({0x21, 1});
+         // The second quotient depends on the first and feeds the next iteration.
+         emit({0x20, 0});
+         emit({0x20, 1});
+         emit({0x41, 1});
+         emit({0x72});
+         emit({0x6e});
+         emit({0x21, 1});
          emit({0x20, 0});
          emit({0x41, 1});
          emit({0x6b});
@@ -114,6 +121,7 @@ struct profile_fixture {
       std::uint32_t result = 1;
       do {
          result = ((result * (other ? 5U : 3U)) ^ (other ? 11U : 7U)) / count;
+         result = count / (result | 1U);
       } while (--count);
       return result;
    }
