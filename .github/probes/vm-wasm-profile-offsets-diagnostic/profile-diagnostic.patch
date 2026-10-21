@@ -1,0 +1,174 @@
+--- a/tests/vm_wasm_execution/profile_public_tests.cpp
++++ b/tests/vm_wasm_execution/profile_public_tests.cpp
+@@ -6,14 +6,19 @@
+ #include <chrono>
+ #include <cstdint>
+ #include <exception>
++#include <iostream>
+ #include <latch>
++#include <limits>
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <set>
+ #include <span>
++#include <sstream>
+ #include <stop_token>
+ #include <string>
+ #include <thread>
++#include <tuple>
+ #include <utility>
+ #include <vector>
+ 
+@@ -230,7 +235,98 @@
+    return result;
+ }
+ 
+-sample verify_samples(const sample_buffer& samples, const profile_fixture& fixture, std::size_t function) {
++void diagnose_samples(const sample_buffer& samples, const profile_fixture& fixture, std::size_t function,
++                      const vm::profile_instr_map& map, const char* population) {
++   if (active_samples || active_map || foreign_map)
++      throw std::logic_error("Profile diagnostics require sampling_scope to be stopped");
++   const auto count = static_cast<std::size_t>(samples.count);
++   if (count > samples.values.size())
++      throw std::logic_error("Profile diagnostic sample count exceeds the existing buffer");
++   const auto& opcodes = fixture.opcodes.at(function);
++   const auto same_function = [&](std::uint32_t offset) { return std::ranges::find(opcodes, offset) != opcodes.end(); };
++   using key = std::tuple<std::uintptr_t, std::uint32_t, std::uint32_t, std::uint32_t>;
++   std::map<key, std::size_t> histogram;
++   std::set<std::uintptr_t> pcs;
++   std::set<std::uint32_t> offsets;
++   std::optional<std::uintptr_t> anchor;
++   std::size_t mapped = 0;
++   for (std::size_t i = 0; i != count; ++i) {
++      const auto& value = samples.values[i];
++      ++histogram[{value.pc, value.offset, value.foreign, value.pinned}];
++      pcs.insert(value.pc);
++      if (value.offset != UINT32_MAX) {
++         ++mapped;
++         offsets.insert(value.offset);
++         if (!anchor)
++            anchor = value.pc;
++      }
++   }
++   std::ostringstream output;
++   output << "PROFILE_DIAG_V1 begin case=" << boost::unit_test::framework::current_test_case().full_name()
++          << " population=" << population << " function=" << function << " count=" << count
++          << " capacity=" << samples.values.size() << " pinned_pc=" << samples.pinned_pc
++          << " wasm_bytes=" << fixture.wasm.size() << " code_section=" << fixture.code_section << '\n';
++   output << "PROFILE_DIAG_V1 fixture wasm_hex=";
++   constexpr char hex[] = "0123456789abcdef";
++   for (const auto byte : fixture.wasm)
++      output << hex[byte >> 4] << hex[byte & 15];
++   output << "\nPROFILE_DIAG_V1 fixture_opcodes offsets=";
++   for (const auto offset : opcodes)
++      output << offset << ',';
++   output << '\n';
++   for (const auto& [value, frequency] : histogram) {
++      const auto& [pc, offset, foreign, pinned] = value;
++      output << "PROFILE_DIAG_V1 sample executed=1 pc=" << pc << " offset=" << offset << " foreign=" << foreign
++             << " pinned=" << pinned << " count=" << frequency << '\n';
++   }
++   output << "PROFILE_DIAG_V1 sample_summary count=" << count << " mapped=" << mapped << " unknown=" << count - mapped
++          << " distinct_pcs=" << pcs.size() << " distinct_offsets=" << offsets.size() << '\n';
++   if (anchor) {
++      // Lookup-only control: never dereference queried addresses or add them to samples.
++      constexpr std::uintptr_t query_budget = 65536;
++      const auto backward = std::min(*anchor, query_budget / 2);
++      const auto forward = std::min(std::numeric_limits<std::uintptr_t>::max() - *anchor, query_budget - backward - 1);
++      const auto begin = *anchor - backward;
++      const auto end = *anchor + forward;
++      output << "PROFILE_DIAG_V1 control_window executed=0 anchor_pc=" << *anchor << " begin=" << begin
++             << " end_inclusive=" << end << " query_budget=" << query_budget << '\n';
++      std::size_t ranges = 0, emitted = 0;
++      const auto emit = [&](std::uintptr_t first, std::uintptr_t last, std::uint32_t offset) {
++         ++ranges;
++         if (emitted < 256) {
++            output << "PROFILE_DIAG_V1 control_range executed=0 begin=" << first << " end_inclusive=" << last
++                   << " offset=" << offset << " same_function=" << same_function(offset) << '\n';
++            ++emitted;
++         }
++      };
++      auto first = begin;
++      auto offset = map.translate(reinterpret_cast<const void*>(begin));
++      for (auto pc = begin;;) {
++         if (pc == end) {
++            emit(first, pc, offset);
++            break;
++         }
++         const auto last = pc;
++         ++pc;
++         const auto next = map.translate(reinterpret_cast<const void*>(pc));
++         if (next != offset) {
++            emit(first, last, offset);
++            first = pc;
++            offset = next;
++         }
++      }
++      output << "PROFILE_DIAG_V1 control_summary executed=0 queries=" << end - begin + 1 << " ranges=" << ranges
++             << " emitted=" << emitted << " truncated=" << (ranges != emitted) << '\n';
++   } else {
++      output << "PROFILE_DIAG_V1 control_summary executed=0 queries=0 reason=no_mapped_sample\n";
++   }
++   output << "PROFILE_DIAG_V1 end population=" << population << '\n';
++   std::cerr << output.str() << std::flush;
++}
++
++sample verify_samples(const sample_buffer& samples, const profile_fixture& fixture, std::size_t function,
++                      const vm::profile_instr_map& map, const char* population) {
++   diagnose_samples(samples, fixture, function, map, population);
+    std::set<std::uint32_t> offsets;
+    sample known{};
+    for (std::sig_atomic_t i = 0; i < samples.count; ++i) {
+@@ -323,11 +419,11 @@
+    BOOST_TEST(first->call_with_return("env", "mix", 130U)->to_ui32() == profile_fixture::expected(130));
+    BOOST_TEST(first->call_with_return("env", "other", 130U)->to_ui32() == profile_fixture::expected(130, true));
+    const auto mix = collect(first_map, &second_map, [&] { first->call("env", "mix", 4000000U); });
+-   const auto known = verify_samples(mix, fixture, 0);
+-   const auto other = collect(first_map, &second_map, [&] { first->call("env", "other", 4000000U); });
+-   verify_samples(other, fixture, 1);
++   const auto known = verify_samples(mix, fixture, 0, first_map, "first.mix");
++   const auto other = collect(first_map, &second_map, [&] { first->call("env", "other", 4000000U); });
++   verify_samples(other, fixture, 1, first_map, "first.other");
+    const auto independent = collect(second_map, &first_map, [&] { second->call("env", "mix", 4000000U); });
+-   const auto second_known = verify_samples(independent, fixture, 0);
++   const auto second_known = verify_samples(independent, fixture, 0, second_map, "second.mix");
+    BOOST_TEST(first_map.translate(nullptr) == UINT32_MAX);
+    BOOST_TEST(first_map.translate(reinterpret_cast<const void*>(UINTPTR_MAX)) == UINT32_MAX);
+    BOOST_TEST(first_map.translate(fixture.wasm.data()) == UINT32_MAX);
+@@ -357,7 +453,7 @@
+    shared.set_context(&context);
+    shared.initialize();
+    const auto samples = collect(source.get_debug(), nullptr, [&] { shared.call("env", "mix", 4000000U); });
+-   const auto known = verify_samples(samples, fixture, 0);
++   const auto known = verify_samples(samples, fixture, 0, source.get_debug(), "shared.mix");
+    BOOST_TEST(shared.get_debug().translate(reinterpret_cast<const void*>(known.pc)) == known.offset);
+    for (unsigned i = 0; i != 3; ++i) {
+       shared.initialize();
+@@ -402,7 +498,7 @@
+    profile_fixture fixture;
+    auto backend = std::make_unique<profiled_backend>(fixture.wasm, nullptr);
+    const auto initial = collect(backend->get_debug(), nullptr, [&] { backend->call("env", "mix", 4000000U); });
+-   const auto known = verify_samples(initial, fixture, 0);
++   const auto known = verify_samples(initial, fixture, 0, backend->get_debug(), "initial.mix");
+    auto observer = backend->get_module().get_debug();
+    sample_buffer after_destruction;
+    after_destruction.pinned_pc = known.pc;
+@@ -488,7 +584,7 @@
+    // The backend/module wrapper and context are gone while the consumer's
+    // observer is still published to the signal handler.
+    sampling.reset();
+-   known = verify_samples(samples, fixture, 0);
++   known = verify_samples(samples, fixture, 0, retained, "retained.mix");
+    BOOST_TEST(allocation.current_bytes() > baseline);
+    bool observed = false;
+    auto consumer = std::thread{[pin = std::move(retained), &observed, known]() mutable {
+@@ -530,7 +626,7 @@
+    BOOST_TEST(&backend.get_module() == original_module);
+    BOOST_TEST(backend.call_with_return(host, "env", "mix", 130U)->to_ui32() == profile_fixture::expected(130));
+    const auto samples = collect(backend.get_debug(), nullptr, [&] { backend.call(host, "env", "other", 4000000U); });
+-   verify_samples(samples, fixture, 1);
++   verify_samples(samples, fixture, 1, backend.get_debug(), "post_cancel.other");
+    BOOST_TEST(host.calls == 1U);
+ }
+ 

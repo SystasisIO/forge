@@ -1,0 +1,107 @@
+name: Diagnose CI67 profile offset diversity
+
+on:
+  push:
+    branches: [vm-wasm-profile-offsets-diagnostic-v1]
+    paths:
+      - .github/workflows/diagnose-vm-wasm-profile-offsets.yml
+      - .github/scripts/diagnose-vm-wasm-profile-offsets.py
+      - .github/probes/vm-wasm-profile-offsets-diagnostic/profile-diagnostic.patch
+      - .github/probes/vm-wasm-profile-offsets-diagnostic/README.md
+
+permissions: {}
+
+jobs:
+  profile:
+    if: >-
+      github.repository == 'SystasisIO/forge' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/vm-wasm-profile-offsets-diagnostic-v1' &&
+      toJSON(github.event.deleted) == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      DIAG_SOURCE: ${{ github.workspace }}/baseline-source
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      CTEST_PARALLEL_LEVEL: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      CPATH: ''
+    steps:
+      - name: Bind the fresh runner-local diagnostic root
+        run: |
+          printf 'DIAG_ROOT=%s/vm-wasm-profile-offsets-%s-%s\n' \
+            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+
+      - name: Read diagnostic transport, not the runtime baseline
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read exact raw050 runtime and pinned vendors
+        uses: actions/checkout@v4
+        with:
+          ref: 0504095b77e306429192793ffbae1393ef23f82c
+          path: baseline-source
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify successful CI67 producer inside the failed run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py trust
+
+      - name: Install normal ABI preflight prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee "$DIAG_ROOT/evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$DIAG_ROOT/evidence/apt-install.log"
+
+      - name: Consume exact CI67 LLVM without rebuild or fallback
+        run: >-
+          GITHUB_WORKSPACE="$DIAG_SOURCE" bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-toolchain.sh"
+          "$DIAG_ROOT/evidence/toolchain" consume-linux
+          "$DIAG_ROOT/bundle" "$DIAG_ROOT/llvm"
+          c6955fb6e6ca2b1d249f7ad784c839e8478d82c7ef6cd5db35f7b1e701e804df
+          07a659677fa4c4d84a4856fd75acd714df78dcd67ff839ad67f6edbf913d82aa
+
+      - name: Require actual libc++220108 headers
+        run: >-
+          python3 "$DIAG_SOURCE/.github/scripts/check-vm-wasm-toolchain.py"
+          headers "$DIAG_ROOT/evidence/toolchain"
+
+      - name: Discover normal Linux dependencies and record actual versions
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py dependencies
+
+      - name: Activate qualified CMake3.31.6 after Brew
+        run: >-
+          bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-cmake.sh"
+          "$DIAG_ROOT/evidence/toolchain/cmake"
+
+      - name: Apply only the frozen test diagnostic after clean-source proof
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py instrument
+
+      - name: Configure unchanged CI67 root flags
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py configure
+
+      - name: Build only the canonical profile target with two workers
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py build
+
+      - name: Run exactly one canonical ten-case profile CTest
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py profile
+
+      - name: Seal finite evidence without masking the runtime result
+        if: always()
+        run: python3 .github/scripts/diagnose-vm-wasm-profile-offsets.py collect
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci67-profile-offsets-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DIAG_ROOT }}/upload/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
