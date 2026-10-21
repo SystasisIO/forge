@@ -52,6 +52,31 @@ now fail explicitly; clear custom `SIGCHLD` configuration before acquiring the
 guard. Existing VM boundary exception categories and process/session APIs are
 unchanged. Release is explicit after all owned process handles have drained.
 
+## Retained peer writes and diagnostics
+
+Native MPC can produce peer bytes faster than a lower transport releases queued
+writes. A successful `async_write` does not necessarily release the chunk's
+resource reservation. The native bridge now uses a private 1 MiB sliding byte
+window, released by the existing chunk lifetime, to pace that producer. It moves
+owned frames into transport chunks and admits further bytes when a retained
+chunk is released; it does not wait for a peer acknowledgement after every frame.
+
+The window uses the existing session deadline and cancellation path. Cleanup
+joins worker and bridge activity, while late chunk release retains only the
+independent window state. There is no retry, quota increase, public API change
+or wire-format change. Custom and concurrently shared P2P budgets may still
+reject a write.
+
+Safe diagnostics distinguish the failing TLSNotary channel and operation from
+the underlying typed transport error. P2P memory-admission diagnostics report
+the rejecting scope, dimension, limits and counters. They exclude payloads,
+credentials, peer identifiers and arbitrary exception messages.
+
+The native package leaf now declares its existing logger dependency explicitly,
+including package discovery. Retaining-stream tests cover the full window,
+single-chunk resumption, late release, cancellation, deadline and read/write
+failure. Those ownership tests are separate from the real MPC fixture tests.
+
 ## Qualification boundary
 
 This is an Experimental integration of an exact research upstream revision,
