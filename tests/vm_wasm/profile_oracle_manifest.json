@@ -1,0 +1,3232 @@
+{
+  "case_count": 2568,
+  "case_results_when_interpreter_and_jit_enabled": 34,
+  "donor_commit": "e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f",
+  "fixture_commit": "ffbbb552e6020623d8ae148d81a152c8ef700325",
+  "harness_adaptations": [
+    {
+      "donor_sha256": "7eeddf96ad2340bb4de11ae131a68991d3a0f9138fa4ea9c5691f9650811a69f",
+      "historical_port_sha256": "10b6d05a534c08055279a5144d3108dde96f7576779d811e1ad4e48d3687ad7d",
+      "purpose": "Real host pointer/reference identity storage for the unchanged memoryless fixture",
+      "replacements": [
+        {
+          "count": 1,
+          "new": "namespace {\n#include \"host_functions_support.hpp\"\ntemplate<typename Host>",
+          "old": "namespace {\n\ntemplate<typename Host>"
+        },
+        {
+          "count": 1,
+          "new": "   cnv(Host* host, execution_interface interface) : type_converter<Host>(host, host_function_test_interface(interface)) {}",
+          "old": "   using type_converter<Host>::type_converter;"
+        },
+        {
+          "count": 4,
+          "new": "host_function_test_memory(bkend.get_context().linear_memory()) + offset",
+          "old": "bkend.get_context().linear_memory() + offset"
+        }
+      ],
+      "source": "host_functions_tests.cpp"
+    }
+  ],
+  "harness_inputs": [
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "4cbd3ccedcdec79a4ea22010e510de807cbeb22bfa1b131d5eb6d15a483ecf38"
+    },
+    {
+      "path": "test_support.hpp",
+      "sha256": "c93ee5cc6efdea8422b9f6f25800a0770fc1e8111bdf7bf15a9e9bb35ab3d3b1"
+    },
+    {
+      "path": "test_prelude.hpp",
+      "sha256": "bcd576160030a19d63dbcf4acfd7917759ae3c187461b0c4e717e474d908596b"
+    },
+    {
+      "path": "host_functions_support.hpp",
+      "sha256": "3e3df54007da7076ca85f09a92fdda7a4ed25f6b0e2bef3e2e1457119984c7de"
+    },
+    {
+      "path": "donor/sources.cmake",
+      "sha256": "575c4d83dbfbf0337c03f5835a7b96700cc07fb17f37a259bc444d1b654fed4b"
+    }
+  ],
+  "historical_assertion_sites": 18217,
+  "historical_donor_manifest_sha256": "ede2eae24fe49c00c8ccfa99f8e4c8f2fbc370734e012c99bd225c38c36ca186",
+  "oracle": "forge-approved-wamr-profile-v1; not historical EOS VM parity",
+  "policy": {
+    "approval": "docs/releases/unreleased-wamr-bounded-profile.md#retired-parser-permissions",
+    "max_call_depth": 1024,
+    "max_initial_pages": 65535,
+    "modern_inputs": "u32 zero memidx encodings; unreachable br_table bottom typing",
+    "parse_code": 4000006,
+    "profile_code": 4030000
+  },
+  "profile_assertion_sites": 18231,
+  "rule_categories": {
+    "capacity": 2,
+    "modern_grammar": 8,
+    "modern_typing": 1,
+    "retired_malformed": 6
+  },
+  "rule_count": 17,
+  "rules": [
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 122,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "cc246b0ecb3a5c2c512e5d5cc961068147e77385e51b052be7883c722cb9f514",
+      "id": "retired_after_end_static",
+      "replacements": [
+        [
+          "   backend_t backend(code_after_end_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, &wa), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_code_after_function_end_tests.cpp",
+      "tags": "[allow_code_after_function_end_test]",
+      "title": "Test allow_code_after_function_end static pass"
+    },
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 135,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "6964b7fc0495ed00efb29d962e06c8e0516a679901a166547b53096d07e21d0a",
+      "id": "retired_after_end_dynamic",
+      "replacements": [
+        [
+          "   backend_t backend(code_after_end_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_code_after_function_end_tests.cpp",
+      "tags": "[allow_code_after_function_end_test]",
+      "title": "Test allow_code_after_function_end dynamic pass"
+    },
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 56,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "1f17ab494ce82afed9e7025f25e48879cb7b2d54ccda4e672c6067fefa3e22ad",
+      "id": "retired_empty_local_static",
+      "replacements": [
+        [
+          "   backend_t backend(bad_local_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(bad_local_wasm, &wa), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_invalid_empty_local_set_tests.cpp",
+      "tags": "[allow_invalid_empty_local_set_test]",
+      "title": "Test allow_invalid_empty_local_set static pass"
+    },
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 66,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "ff3d60146adcf1f32511e7f96e95c3260da484d5c242f51fc255c5e7f7e47bb4",
+      "id": "retired_empty_local_dynamic",
+      "replacements": [
+        [
+          "   backend_t backend(bad_local_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(bad_local_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_invalid_empty_local_set_tests.cpp",
+      "tags": "[allow_invalid_empty_local_set_test]",
+      "title": "Test allow_invalid_empty_local_set dynamic pass"
+    },
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 96,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "c1a093eb5fdaba2ae823224772fd82021bb56abf994b2df5c1e37a12dc695e3e",
+      "id": "retired_limits_flags_static",
+      "replacements": [
+        [
+          "   backend_t backend_mem_no_max(mem_no_max_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(mem_no_max_wasm, &wa), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_mem_max(mem_max_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(mem_max_wasm, &wa), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_table_no_max(table_no_max_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(table_no_max_wasm, &wa), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_table_max(table_max_wasm, &wa);",
+          "   BOOST_CHECK_THROW(backend_t(table_max_wasm, &wa), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_u32_limits_flags_tests.cpp",
+      "tags": "[allow_u32_limits_flags_test]",
+      "title": "Test allow_u32_limits_flags static pass"
+    },
+    {
+      "category": "retired_malformed",
+      "compiled_case_line": 112,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "c808bab3bf1cfa24ce7e1ad96e4cac328fae017a29eb5c25b38509a7a04d1890",
+      "id": "retired_limits_flags_dynamic",
+      "replacements": [
+        [
+          "   backend_t backend_mem_max(mem_max_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(mem_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_mem_no_max(mem_no_max_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(mem_no_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_table_max(table_max_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(table_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ],
+        [
+          "   backend_t backend_table_no_max(table_no_max_wasm, nullptr, dynamic_options{true});",
+          "   BOOST_CHECK_THROW(backend_t(table_no_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);"
+        ]
+      ],
+      "source": "allow_u32_limits_flags_tests.cpp",
+      "tags": "[allow_u32_limits_flags_test]",
+      "title": "Test allow_u32_limits_flags dynamic pass"
+    },
+    {
+      "category": "capacity",
+      "compiled_case_line": 60,
+      "fixture_inputs": [],
+      "fixtures": [],
+      "historical_case_sha256": "6f359091c56bcd37e63d966efd1b76f4678501af834b93d6bd012b09a4e0a3b2",
+      "id": "capacity_depth",
+      "replacements": [
+        [
+          "   // Very large call depth requires dynamically allocating a new stack",
+          "   // Refuse over-profile configuration, then recover with the supported depth."
+        ],
+        [
+          "   bkend.initialize(nullptr, dynamic_options{1024*1024});\n\n   BOOST_TEST(static_cast<bool>(!bkend.call_with_return(\"env\", \"call\", (uint32_t)1024*1024 - 1)));",
+          "   BOOST_CHECK_THROW(bkend.initialize(nullptr, dynamic_options{1024*1024}), exceptions::profile);\n   bkend.initialize(nullptr, dynamic_options{51});\n   BOOST_TEST(static_cast<bool>(!bkend.call_with_return(\"env\", \"call\", (uint32_t)50)));"
+        ]
+      ],
+      "source": "implementation_limits_tests.cpp",
+      "tags": "[call_depth]",
+      "title": "Test call depth dynamic"
+    },
+    {
+      "category": "capacity",
+      "compiled_case_line": 31,
+      "fixture_inputs": [
+        {
+          "path": "e_memory.1.wasm",
+          "sha256": "02e35f634641014b9f99ba4e03dc267e47a8cfa618cce2a573818b54c660d847"
+        }
+      ],
+      "fixtures": [
+        "e_memory.1.wasm"
+      ],
+      "historical_case_sha256": "ab57fb09a9eeba16063a5413f6024a2ab8b5b3c79252b8af73df6b867be240e2",
+      "id": "capacity_initial_pages",
+      "replacements": [
+        [
+          "   backend_t bkend( code, &wa );",
+          "   BOOST_CHECK_THROW(backend_t(code, &wa), exceptions::profile);"
+        ]
+      ],
+      "source": "spec/e_memory_tests.cpp",
+      "tags": "[e_memory_1_wasm_tests]",
+      "title": "Testing wasm <e_memory_1_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 221,
+      "fixture_inputs": [
+        {
+          "path": "binary.38.wasm",
+          "sha256": "909d4aa41a4f6623de2050a202fc9f9051ab2fe9befad35e4fc51590e179de33"
+        }
+      ],
+      "fixtures": [
+        "binary.38.wasm"
+      ],
+      "historical_case_sha256": "f09740a1f62ad337eb060607106f1578fa76f200a854435418105700f6d0fb2a",
+      "id": "modern_binary_38",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_38_wasm_tests]",
+      "title": "Testing wasm <binary_38_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 227,
+      "fixture_inputs": [
+        {
+          "path": "binary.39.wasm",
+          "sha256": "1705fe3c26ab0a39d9e10a9b7e5bf651f05c5cbdf87955105d13d2728216b3a8"
+        }
+      ],
+      "fixtures": [
+        "binary.39.wasm"
+      ],
+      "historical_case_sha256": "c21bf01afaea00f9f64c3f04075b7048c4671c45b967c6b16850276f88c53d9d",
+      "id": "modern_binary_39",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_39_wasm_tests]",
+      "title": "Testing wasm <binary_39_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 239,
+      "fixture_inputs": [
+        {
+          "path": "binary.40.wasm",
+          "sha256": "6bcc89147ce94827cca33c548c0eb2024e4a81570ed61863dec0dfbf20b1c9a1"
+        }
+      ],
+      "fixtures": [
+        "binary.40.wasm"
+      ],
+      "historical_case_sha256": "9dd7ef8f94d4369a4536be623b657b55ae3e8b6db6c25e15df12f345e803c601",
+      "id": "modern_binary_40",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_40_wasm_tests]",
+      "title": "Testing wasm <binary_40_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 245,
+      "fixture_inputs": [
+        {
+          "path": "binary.41.wasm",
+          "sha256": "2b1fd5cdc1a748b6328cc9d50df39d4bf6c556ee98ae1129b49772db5759bbeb"
+        }
+      ],
+      "fixtures": [
+        "binary.41.wasm"
+      ],
+      "historical_case_sha256": "93ddfece640b30c4b361c56bd282039bf50342d2a6442606ceb95ea13c6784f8",
+      "id": "modern_binary_41",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_41_wasm_tests]",
+      "title": "Testing wasm <binary_41_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 257,
+      "fixture_inputs": [
+        {
+          "path": "binary.43.wasm",
+          "sha256": "1574757b0db4833333076f316fe8bf18628f778e49adeaf8f459c8d2b4915d6e"
+        }
+      ],
+      "fixtures": [
+        "binary.43.wasm"
+      ],
+      "historical_case_sha256": "d800051418d33348e62248160b72607d4c79886e08a8c9376854977e40b708e7",
+      "id": "modern_binary_43",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_43_wasm_tests]",
+      "title": "Testing wasm <binary_43_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 263,
+      "fixture_inputs": [
+        {
+          "path": "binary.44.wasm",
+          "sha256": "e243a4ae6cfcdb613e343d696bfdae24d53ce0699df3ddfb76f1a33fb6496e9d"
+        }
+      ],
+      "fixtures": [
+        "binary.44.wasm"
+      ],
+      "historical_case_sha256": "535f0f53bafa0e7e2d04f4bf238f2aa6941885743c5e4d5a08e25fd49fa7087c",
+      "id": "modern_binary_44",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_44_wasm_tests]",
+      "title": "Testing wasm <binary_44_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 269,
+      "fixture_inputs": [
+        {
+          "path": "binary.45.wasm",
+          "sha256": "eabdad468198fb15996d6aef9ef74107fcf790a1c7100e955cde92970ef93492"
+        }
+      ],
+      "fixtures": [
+        "binary.45.wasm"
+      ],
+      "historical_case_sha256": "3f0bde343b6880749e7eec9d335df601f4188ede798c27ea71258d325b7033e0",
+      "id": "modern_binary_45",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_45_wasm_tests]",
+      "title": "Testing wasm <binary_45_wasm>"
+    },
+    {
+      "category": "modern_grammar",
+      "compiled_case_line": 275,
+      "fixture_inputs": [
+        {
+          "path": "binary.46.wasm",
+          "sha256": "96835584e3bf2470bbec7338a887ad606c24547e89622a094d25ce9a1091c90b"
+        }
+      ],
+      "fixtures": [
+        "binary.46.wasm"
+      ],
+      "historical_case_sha256": "a9e5ab65056fe679a0ac7c639cf4e4e106105259ddaa5004eae29d5caf07988b",
+      "id": "modern_binary_46",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/binary_tests.cpp",
+      "tags": "[binary_46_wasm_tests]",
+      "title": "Testing wasm <binary_46_wasm>"
+    },
+    {
+      "category": "modern_typing",
+      "compiled_case_line": 607,
+      "fixture_inputs": [
+        {
+          "path": "unreached-invalid.87.wasm",
+          "sha256": "bacf1f994262ca392b65de12ab9f651d06b5777d92843ece67eafde666706100"
+        }
+      ],
+      "fixtures": [
+        "unreached-invalid.87.wasm"
+      ],
+      "historical_case_sha256": "993a4585b99d31c89b8f7ece4c5eda97b434f61cfb4ddcda3b7bd12a80b0f85a",
+      "id": "modern_unreachable_br_table",
+      "replacements": [
+        [
+          "   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"
+        ]
+      ],
+      "source": "spec/unreached-invalid_tests.cpp",
+      "tags": "[unreached-invalid_87_wasm_tests]",
+      "title": "Testing wasm <unreached-invalid_87_wasm>"
+    }
+  ],
+  "schema_version": 1,
+  "source_count": 105,
+  "sources": [
+    {
+      "case_count": 12,
+      "donor_assertions": {
+        "CHECK": 9,
+        "CHECK_THROWS_AS": 17,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "b4765c757ef18563eb7284d61c8dcbb7558c9b2cc11adeefe8d644bec6ea6ba1",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 17,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 9
+      },
+      "historical_port_sha256": "c18470053666f8c2b5a3efc8189f72cf1ecdcbffed108eaebf4bae739becf921",
+      "output": "unit/allocator_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 17,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 9
+      },
+      "profile_port_sha256": "c18470053666f8c2b5a3efc8189f72cf1ecdcbffed108eaebf4bae739becf921",
+      "registration_sha256": "205c36ca5bbe9423d4370514291108dd061e7a3b52f11d2c05325bc275c3810d",
+      "source": "allocator_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "92de2eb1027c8b178098094e90d9bec3a64639737782df4d7d53db808c1883a1",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "1628bc00e3fce624d390fb072e5fe04d1efa9a11e77855d9fdc9233f1586df1c",
+      "output": "unit/eosio_max_nested_structures_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "1628bc00e3fce624d390fb072e5fe04d1efa9a11e77855d9fdc9233f1586df1c",
+      "registration_sha256": "518cda8c08e9e179874cce123408fd2200fae01ae12f9d612d704d53985efd5f",
+      "source": "eosio_max_nested_structures_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 12,
+        "CHECK_THROWS_AS": 9,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "19b27738f731e727d2df78d38a44020662772f6877b01c41d1840b89b73b354b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 9,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 12
+      },
+      "historical_port_sha256": "09f77efef874d3af85a99843136bce67fa457a92ad20fe5e684b9396798e7ad7",
+      "output": "unit/guarded_ptr_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 9,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 12
+      },
+      "profile_port_sha256": "09f77efef874d3af85a99843136bce67fa457a92ad20fe5e684b9396798e7ad7",
+      "registration_sha256": "a8cecef1f5b7ef2a9aa12b470771536453b6026ceaf064c10d670da420070407",
+      "source": "guarded_ptr_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 30,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a23c84654b7f3a6e7e1cab10f56ece44ba626c65ed407540a1ff3124636a93cf",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "historical_port_sha256": "d91f00ce8097f504931c67a00ef1cb143fd2a1425b876e9167344c62a9676444",
+      "output": "unit/varint_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "profile_port_sha256": "d91f00ce8097f504931c67a00ef1cb143fd2a1425b876e9167344c62a9676444",
+      "registration_sha256": "2977764b2a7c0e20bc02e298e7249c759d04370574dd3b1196af391dfcb2ba26",
+      "source": "varint_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 21,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "ee09c525dd48a2c9257684f629cd7cff919b88de708be485b229bb98b1d6c23b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 21
+      },
+      "historical_port_sha256": "e95f7c3e8d27138c6eb07eb4af5fd54342a0abd215a21e90c08a27691828ee0a",
+      "output": "unit/variant_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 21
+      },
+      "profile_port_sha256": "e95f7c3e8d27138c6eb07eb4af5fd54342a0abd215a21e90c08a27691828ee0a",
+      "registration_sha256": "fc6235eba63369f28de11caad4221a180d7eaf09c0607d7ddb554648c4e0b848",
+      "source": "variant_tests.cpp"
+    },
+    {
+      "case_count": 8,
+      "donor_assertions": {
+        "CHECK": 30,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "7eeddf96ad2340bb4de11ae131a68991d3a0f9138fa4ea9c5691f9650811a69f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "historical_port_sha256": "10b6d05a534c08055279a5144d3108dde96f7576779d811e1ad4e48d3687ad7d",
+      "output": "unit/host_functions_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "profile_port_sha256": "d00560095da7d772c717d1d63743e346e17be6220d0bd12044400a0e3d45e333",
+      "registration_sha256": "dbee9174366fd79538e240ad922873586fdf03a860e96f14ed83b1dddbf5a0c1",
+      "source": "host_functions_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 8,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "be84541609cfb79ee92aa3238c87c6a6c52533c3ed207ac5414fb235cc606704",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 8
+      },
+      "historical_port_sha256": "ea052d0c9e1d401e813014236768ffd9ab1f62831e87381389c3dee739ea49c5",
+      "output": "unit/preconditions_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 8
+      },
+      "profile_port_sha256": "ea052d0c9e1d401e813014236768ffd9ab1f62831e87381389c3dee739ea49c5",
+      "registration_sha256": "9ade03bfa28e2feb7a6bdd73dd46e75ad58c7a39d463243c0dc2e184929e840c",
+      "source": "preconditions_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 6,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "711005a791821b96628b3d7e6d6a6e0c21fa723afa4705369f0a1a67ce9bc6c0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "a9b4427e88031e024a98c080e44887bee65fc86013c15b0ab5ad886e15563633",
+      "output": "unit/allow_code_after_function_end_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 8,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "7bdf2ecfe04dc9e3b0c7073a4f27d16ec1c2a3c476a43929ca15fdd59a7f13f5",
+      "registration_sha256": "ae1eab6031ec8ce77c82774775301153d68abc85b8b46f5441059d8c3c8808a3",
+      "source": "allow_code_after_function_end_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "b7334ab72d303495b7049eb84ad09c0acd4c282baf26d0244851f3abb6d04ea4",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "de612f3c16b95a516ef8e4751dd333375c5875bae292b13d3899c086ac80e480",
+      "output": "unit/allow_invalid_empty_local_set_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "1ffe3aafa33a35bec754ea3a716784cbe35a137ade4d05e4526c663b45b6ae53",
+      "registration_sha256": "5099869803a96cd5fe75c6e5cdcb661503d8ade7f133e7b0e5a00c3055136ae3",
+      "source": "allow_invalid_empty_local_set_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 16,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "430148c302450980652babd7093748f707c452d75116c727e02600523140977d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 16,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "7e8f95c8f7f01c41b393a474342532e413979978c15cfcef8e0c37d800b7f06d",
+      "output": "unit/allow_u32_limits_flags_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 24,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "43ce58098cad73631e6610081f2b2834a7dbb530ebe775c4d738000c7ffd66db",
+      "registration_sha256": "65ca5939ddb7cca6e1f452e8e79b7dc3a3c7edc70feea2dffbc4634fcc877806",
+      "source": "allow_u32_limits_flags_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 12,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "f379de4fc43165529a4298d846e8a08fe78ade58a6b06940ed62c9c441ca4316",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "642faba91b85eb6e4f46f8a041208fb56aa42435a36d989626622ddbd3973ce3",
+      "output": "unit/allow_zero_blocktype_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "642faba91b85eb6e4f46f8a041208fb56aa42435a36d989626622ddbd3973ce3",
+      "registration_sha256": "1424ce9b5005cb0e385a06c0353ff26af88bf89378765cbde9a19d4a5f918bb7",
+      "source": "allow_zero_blocktype_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "fdffad9448d83268d036ad16668123bb056d171a3cfeadc6ecfcb3e488420cd8",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "80e6920a6cbf94226f38f9d5dd1944f7bfa8dead836d0caa1dc68c99f483b7a0",
+      "output": "unit/forbid_export_mutable_globals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "80e6920a6cbf94226f38f9d5dd1944f7bfa8dead836d0caa1dc68c99f483b7a0",
+      "registration_sha256": "a7348b6ef4781ce58c146128e6c537eedaae8bc70d3ffebc909f707d2592e419",
+      "source": "forbid_export_mutable_globals_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "392a1dc2507fa4c60f5e6bccb30e603fc6af90d71e966ad047a148201b3be329",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "e4d27c3523f50400f97bb60781f22e92999eb3c158f6b195992bec3e2cad7ee5",
+      "output": "unit/max_br_table_elements_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "e4d27c3523f50400f97bb60781f22e92999eb3c158f6b195992bec3e2cad7ee5",
+      "registration_sha256": "9c7c5532a205cfc7cf8d96275e915e2f140eeec676d42acb5355c70e8aca4c8d",
+      "source": "max_br_table_elements_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "9358dbe200ba691bdb868fd50efa591c5df4a5309cd9d6926a472b5f1f59ea20",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "3e547ba43f82d54b678573d22c5f0177a14f019ff31f3b4fca0fa198acde93b5",
+      "output": "unit/max_code_bytes_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "3e547ba43f82d54b678573d22c5f0177a14f019ff31f3b4fca0fa198acde93b5",
+      "registration_sha256": "3a8cdd39a37b56df2cccf3e89a428c86f84e31f3f05a2afc7200abe84bdefdb6",
+      "source": "max_code_bytes_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 18,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "1c8b5e5f4a9b5e219f049cedfedac58d898fa92b9d94c37e6927cb69598b32f1",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 18,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "274db11f98c7466b11e2552a864c6c218bf5ccbe3e971ee0a1ab390ba2536420",
+      "output": "unit/max_func_local_bytes_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 18,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "274db11f98c7466b11e2552a864c6c218bf5ccbe3e971ee0a1ab390ba2536420",
+      "registration_sha256": "f14488edb3715da4908dcac0953beaaf46066a38be9e17a02cd33049d0179c1e",
+      "source": "max_func_local_bytes_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 8,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "04963f5308e2e79748e2bf11071465413e6baa58d1418334d7aad54cf056f9c2",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 8,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "de162ce8a141ad2f7fa408721435eb97bf0f76fb8951bee5f6b4633ed2c5d1ec",
+      "output": "unit/max_linear_memory_init_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 8,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "de162ce8a141ad2f7fa408721435eb97bf0f76fb8951bee5f6b4633ed2c5d1ec",
+      "registration_sha256": "e03c3c8ff69ad68a3487a38a8b207579f803cf9275f3951055b89a1fbaa79bbd",
+      "source": "max_linear_memory_init_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "5461d995634981696f6019dc1dcb3c39c485785029b4cadafa926b049c42f2e6",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "0c85a5a5e41132af90efbe7bdfdde0606b675aa67949a883abd70d58e79022af",
+      "output": "unit/max_local_sets_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "0c85a5a5e41132af90efbe7bdfdde0606b675aa67949a883abd70d58e79022af",
+      "registration_sha256": "8abba0df3a005e9b712937b19a3ac5b506d405b26940202c9306f6f01ed94966",
+      "source": "max_local_sets_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 12,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "8a10d2b5c3e6e8de677ed3bf846cf4c1315fb3b4f364c20002e54e9220d61ba7",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "938c4715484b434ec371b2d01c31deb31fbe9de61594dcb405a037b17970953b",
+      "output": "unit/max_memory_offset_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "938c4715484b434ec371b2d01c31deb31fbe9de61594dcb405a037b17970953b",
+      "registration_sha256": "72826c8d83f759e790e7a7dda09cec4aec8d7dd1e0c4298f8dac7138a7e301a3",
+      "source": "max_memory_offset_tests.cpp"
+    },
+    {
+      "case_count": 5,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "06bcd38ff3769d34ecd5986b8a46beb3b9b72088e079b0d2b73967650c83dcdd",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "e32540cf91e04c56b720af0d0b495a469139ef79b9cf221669ab4e6ed580cf84",
+      "output": "unit/max_mutable_globals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "e32540cf91e04c56b720af0d0b495a469139ef79b9cf221669ab4e6ed580cf84",
+      "registration_sha256": "2ceeb1b36313535f4b87edd01d0f4308363ae508fbb62dde94cfda8f53681072",
+      "source": "max_mutable_globals_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "70dd350858316c2506088353f35e457a16c3a88a76ef752ed6e98cc26ff5a66a",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "3a67cb0bf849fbc2d4a733726a41c8f15a5c4527995aa257cf661c206c5c925a",
+      "output": "unit/max_nested_structures_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "3a67cb0bf849fbc2d4a733726a41c8f15a5c4527995aa257cf661c206c5c925a",
+      "registration_sha256": "a86cc215ffc0a43d3decb76b309e48837adb11863bf7ff3e8562a47d0fdaaf4a",
+      "source": "max_nested_structures_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 3,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "2341d13b60b64dd98998d51b6a770d59c9c3b4e897ae71e6d91546fed2bcedaa",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "historical_port_sha256": "b3ccd2cb7db284d2b65e7ea243e358dda4b15ab47e6230748f7002bf87a3ea8a",
+      "output": "unit/max_pages_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "profile_port_sha256": "b3ccd2cb7db284d2b65e7ea243e358dda4b15ab47e6230748f7002bf87a3ea8a",
+      "registration_sha256": "ea53fcd45ca0133e4172fb910a22122f9c8e83b39fc40582e95a59f64b06dbfa",
+      "source": "max_pages_tests.cpp"
+    },
+    {
+      "case_count": 7,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "7e73fff2af3020e74bb639a62ef2fbc7757324264bad03ce1c6370204fe5da6e",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "77e1f88dea65cc39a6acd281aff20293dcc4122d0035c799d43d3fb8038f87c0",
+      "output": "unit/max_section_elements_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "77e1f88dea65cc39a6acd281aff20293dcc4122d0035c799d43d3fb8038f87c0",
+      "registration_sha256": "8a530a2a148e70cdaa3a4544ed650b1b5e9dd999b19f45e0bfbbcd20fa46feac",
+      "source": "max_section_elements_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "74ab16f2dbe91e68c2ece84fed5a74e5d7d332acb45a546555f8beb693b84b1a",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "bd6d9051769b7a48ef7265a657fdb06990186d30a65581d6589ebc657715c65c",
+      "output": "unit/max_table_elements_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "bd6d9051769b7a48ef7265a657fdb06990186d30a65581d6589ebc657715c65c",
+      "registration_sha256": "359b063f0e20713a6ed39ff0e313fe9e223bd742ea9720e3397190be6959d77e",
+      "source": "max_table_elements_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "82d0f8aab3c994a0473dc24e60a232301b59e17ce6cf6aafb9dc03f1971bea50",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "1cce95fa30d7829c989cacbabe09af2b0e7d792f2329fc47751a9a0e6b6ced8f",
+      "output": "unit/null_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "1cce95fa30d7829c989cacbabe09af2b0e7d792f2329fc47751a9a0e6b6ced8f",
+      "registration_sha256": "492b899ae1340bc508d141694c1fe432d3ac6ddc80fd83c22294d6ce68048be5",
+      "source": "null_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 3,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "4589ad364f9e17e4c6addeb83e152e0d16a6b6f6c5d4f0bb2afd900241a14859",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "historical_port_sha256": "66f86c795c607bd3da1158bdc6b391d5f96b51b0db34a18187719fe0f11d032a",
+      "output": "unit/reentry_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "profile_port_sha256": "66f86c795c607bd3da1158bdc6b391d5f96b51b0db34a18187719fe0f11d032a",
+      "registration_sha256": "cee9532bbd36bd36d3007494f68d7d710c7e7411273135b6723fb8786196e9cb",
+      "source": "reentry_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 7,
+        "CHECK_THROWS_AS": 1,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "03db0ebea0c74a42cb4bc3e2d05c319099a81aaab6c882cbcc7548e84da2be3a",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 7
+      },
+      "historical_port_sha256": "98c74a575e2e17121470a3af722d3a3f87c1021d9d697920a852a3da9fc8b552",
+      "output": "unit/signals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 7
+      },
+      "profile_port_sha256": "98c74a575e2e17121470a3af722d3a3f87c1021d9d697920a852a3da9fc8b552",
+      "registration_sha256": "fbd01cd7eabc89e1329259361c934ca27e5e2339528cf4ac6a451565b08de6b5",
+      "source": "signals_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "5e222add14241e94ab74211e6360c6936632cd5789a8d4b189f16e024f74f630",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "af023f425b225a41520d29d459f236cb17b1cc831b76b0aa6fbf666b32ba7544",
+      "output": "unit/stack_restriction_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "af023f425b225a41520d29d459f236cb17b1cc831b76b0aa6fbf666b32ba7544",
+      "registration_sha256": "66fb44e977ccc98976d5ea4b92da556a25dbcf295fc4c3bdef46dcce8e583a4f",
+      "source": "stack_restriction_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 2,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "c3e8c7ae671fefbf82662c89f5693d5176083dd9046a08412ca217d17d47de83",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2
+      },
+      "historical_port_sha256": "f36aada34f6bdf8596e0705b148ac39b73ce8aeb7395f3ad644c3cd393ef0f8c",
+      "output": "unit/watchdog_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2
+      },
+      "profile_port_sha256": "f36aada34f6bdf8596e0705b148ac39b73ce8aeb7395f3ad644c3cd393ef0f8c",
+      "registration_sha256": "c651047f7903cf148aa9110b5c314f7bfecd152252f6323a46bd261630b82022",
+      "source": "watchdog_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 13,
+        "CHECK_THROWS_AS": 12,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "efed154e042d5f263087b1c3e9911868e39149a4ee61c2650e1b5aa83095aae6",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 13
+      },
+      "historical_port_sha256": "12a0933c9899c62ee862166c531a35e8c89c88cdfdc563be3e20a48eee16f3fa",
+      "output": "unit/implementation_limits_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 13,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 13
+      },
+      "profile_port_sha256": "5c4165d7830c0cf718a706d9cc1c4e197e62e68574fec6f8b5d9dd8b74869439",
+      "registration_sha256": "a014fc95defaade12021797458ba56c4d0ec802b68120a47e1b2aa754eedd2a7",
+      "source": "implementation_limits_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "2d1488b34022c14d4bf20dafa30b1474d9161c3b7ba7c9b414d5bdbcaa999995",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "9e1d584918d1ba9bfd8751fb4d838d293a2ff4f0b06e4cf51c08160f50181ce7",
+      "output": "unit/instantiation_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "9e1d584918d1ba9bfd8751fb4d838d293a2ff4f0b06e4cf51c08160f50181ce7",
+      "registration_sha256": "2a20e84b558a10e25d9e85e7ffbddf9a24c81ffa455042c99f7f1380a5c81717",
+      "source": "instantiation_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "3a4a9d9b1e883f0ccc6db69c24d7811b796834e4282d7e3c0831aa37e4f44569",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "c756f9f4fd2a5170e986d0f0f32a1a2d64a84473880ea9dc7797bf0071cf9120",
+      "output": "unit/backend_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "c756f9f4fd2a5170e986d0f0f32a1a2d64a84473880ea9dc7797bf0071cf9120",
+      "registration_sha256": "a3f20512b752a020ed83ee3144e90f902d3569d3d8e75edb06ad45f8f6eac62a",
+      "source": "backend_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 2,
+        "CHECK_THROWS_AS": 7,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "859236766e638e645765a57eabdf7402cd46c17de6d56c0b6c9aa2aa357cffbc",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 7,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2
+      },
+      "historical_port_sha256": "13efc73acb6179cc2d52683821aab3191f00837e02ca980fea5b2ac1a4503e34",
+      "output": "unit/vector_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 7,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2
+      },
+      "profile_port_sha256": "13efc73acb6179cc2d52683821aab3191f00837e02ca980fea5b2ac1a4503e34",
+      "registration_sha256": "b99b23e34259ac049f6cc23ae78f840822bdd91b738a420f9903c383592d1bf8",
+      "source": "vector_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 206,
+        "CHECK_THROWS_AS": 32,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "db5f9a06f2c442152f2e5edcb062e26f487b1e1ebb791a98d0524c8a253d0471",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 32,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 206
+      },
+      "historical_port_sha256": "5b9664109a32df87abca02aa4fef3c478ad4ddba64f621882b426cc9fe8a5111",
+      "output": "spec/address_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 32,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 206
+      },
+      "profile_port_sha256": "5b9664109a32df87abca02aa4fef3c478ad4ddba64f621882b426cc9fe8a5111",
+      "registration_sha256": "c99d6dc6765664ad3394ad0b066e80b23070e9db01b4abdb7c0fb68e524a8cae",
+      "source": "spec/address_tests.cpp"
+    },
+    {
+      "case_count": 62,
+      "donor_assertions": {
+        "CHECK": 47,
+        "CHECK_THROWS_AS": 38,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "1830c57abefe11a64ae556adcc5820c8a33bfca1dff0dc151d0807f124e203e0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 38,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 47
+      },
+      "historical_port_sha256": "d6f4ada078e89536e4445567dc1874b6e8f464b5db0bcaa1d638bd4b6252d787",
+      "output": "spec/align_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 38,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 47
+      },
+      "profile_port_sha256": "d6f4ada078e89536e4445567dc1874b6e8f464b5db0bcaa1d638bd4b6252d787",
+      "registration_sha256": "e80bb52f782f78095edfd9cbdd90db3e7c7392faeed9d953e3896c42bf1defd0",
+      "source": "spec/align_tests.cpp"
+    },
+    {
+      "case_count": 55,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 48,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "28149f8eb5d1f67a4b9a0feb7f78b785458638f89b9257d44e911125b22b0015",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 48,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "54e8b8058c12bf8c552e6edf51d1064f07422ab2ea99d27b08882c31de83c6d2",
+      "output": "spec/binary_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 40,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 8,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "b9e2ba2933fd958e9e263762f0da48c7bf364cfa1b5ac5cbbf73c32c43fa51f1",
+      "registration_sha256": "94d06ef1d0594802430c2d2e72b92d800e03c9498caa2305f12ae3205abda275",
+      "source": "spec/binary_tests.cpp"
+    },
+    {
+      "case_count": 81,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 56,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "df2af2f617270ce5ed92b8c2d27fbb276682b1724c2726eb2208c6d0c37a075a",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 56,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "8b2d516f2047176727196f786d5c64c19999a0517ca775012bc559759cd57ae4",
+      "output": "spec/binary-leb128_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 56,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "8b2d516f2047176727196f786d5c64c19999a0517ca775012bc559759cd57ae4",
+      "registration_sha256": "0a74c19332d8ea49064e96748d41eaccd2f2e87333f62791338702b0b99471f8",
+      "source": "spec/binary-leb128_tests.cpp"
+    },
+    {
+      "case_count": 128,
+      "donor_assertions": {
+        "CHECK": 41,
+        "CHECK_THROWS_AS": 127,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "0e5f6b539d75d1c7cdd74c8d854bf8b991bfef3f78f71f93921123e0fe4608cb",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 127,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 41
+      },
+      "historical_port_sha256": "f027a69d979b515ed4ae6862f3dc553d8fe874e5783bd2bf4bf3c2675e04fe22",
+      "output": "spec/block_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 127,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 41
+      },
+      "profile_port_sha256": "f027a69d979b515ed4ae6862f3dc553d8fe874e5783bd2bf4bf3c2675e04fe22",
+      "registration_sha256": "f8b01d70328fcd0800d10aa9d31d8e4ef3b4695b87c9870c26e7170f2da0fcd1",
+      "source": "spec/block_tests.cpp"
+    },
+    {
+      "case_count": 21,
+      "donor_assertions": {
+        "CHECK": 63,
+        "CHECK_THROWS_AS": 20,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "98d197a4d58cf430f774f355d2eb985835f7c986916aea51bb97475a7b4a5b18",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 20,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 63
+      },
+      "historical_port_sha256": "d6bd97797eccc744d1b46244514ffc44182e0e96a4ecd43d1683bd1b31775231",
+      "output": "spec/br_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 20,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 63
+      },
+      "profile_port_sha256": "d6bd97797eccc744d1b46244514ffc44182e0e96a4ecd43d1683bd1b31775231",
+      "registration_sha256": "491f1069f028a77cca86ceea25e3f6f12f60f095fbd395a46f1d2a572e6672ae",
+      "source": "spec/br_tests.cpp"
+    },
+    {
+      "case_count": 30,
+      "donor_assertions": {
+        "CHECK": 88,
+        "CHECK_THROWS_AS": 29,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "f291ea72b483f0d616b1e2c547e3f8a00215119409ac0198b0975eea67116d2f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 29,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 88
+      },
+      "historical_port_sha256": "cafb7e265487882c99de8ea9fd0443fcc56ac4bd4c6e10b87002ac74066938b4",
+      "output": "spec/br_if_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 29,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 88
+      },
+      "profile_port_sha256": "cafb7e265487882c99de8ea9fd0443fcc56ac4bd4c6e10b87002ac74066938b4",
+      "registration_sha256": "3503b398020609f2bed119771f1ba69c52ef4630732e1671a1f36f665b22cf74",
+      "source": "spec/br_if_tests.cpp"
+    },
+    {
+      "case_count": 22,
+      "donor_assertions": {
+        "CHECK": 146,
+        "CHECK_THROWS_AS": 21,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "4b377c4a74df3fcb3eca3760e319f197fb1739ba94623bd9581d5b3152d8004d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 21,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 146
+      },
+      "historical_port_sha256": "e504c120b1bf47f5017c77cf07b833a0123377ffc6db4ade815e2f095c39c1ab",
+      "output": "spec/br_table_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 21,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 146
+      },
+      "profile_port_sha256": "e504c120b1bf47f5017c77cf07b833a0123377ffc6db4ade815e2f095c39c1ab",
+      "registration_sha256": "f43d4c32a991f8061708095c616f1c191ac2863b2bd23fca40127bde83860ce5",
+      "source": "spec/br_table_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 3,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "e09abc2562d8cee83c409aaa206e4e5bf24d7ef20fa984aa154b8431a1286eeb",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "historical_port_sha256": "d396b025cb854c75e3ef65d6a0a9f2bde9bf6bb7c015f81c1d8e1364a8d1c3d5",
+      "output": "spec/break-drop_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "profile_port_sha256": "d396b025cb854c75e3ef65d6a0a9f2bde9bf6bb7c015f81c1d8e1364a8d1c3d5",
+      "registration_sha256": "8009d82ed17e51e405b130a538356adbf5b3afc59fa1f1b0b600258e09868125",
+      "source": "spec/break-drop_tests.cpp"
+    },
+    {
+      "case_count": 23,
+      "donor_assertions": {
+        "CHECK": 103,
+        "CHECK_THROWS_AS": 35,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "0798c11046146d209c27e264ec5e54a170d4992ba782aafff4e935d2e8dd22be",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 35,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 103
+      },
+      "historical_port_sha256": "4530d26ea93c04ec3000da12d57efb4b16dee80de51bce65260cc10fa07d7b9f",
+      "output": "spec/call_indirect_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 35,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 103
+      },
+      "profile_port_sha256": "4530d26ea93c04ec3000da12d57efb4b16dee80de51bce65260cc10fa07d7b9f",
+      "registration_sha256": "85a61c03b6e5640a073b49ab74f16f4f0718e411b48a331f896f2466efe62f61",
+      "source": "spec/call_indirect_tests.cpp"
+    },
+    {
+      "case_count": 19,
+      "donor_assertions": {
+        "CHECK": 60,
+        "CHECK_THROWS_AS": 19,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "e4c9d4180a78b02f2759129a9f09f8a841972fbef77d7eb93aeda021933f1e88",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 19,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 60
+      },
+      "historical_port_sha256": "9784049335c918eed80a353616e3971cc5b045874de9aae6d6fa10ab33bbb0d1",
+      "output": "spec/call_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 19,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 60
+      },
+      "profile_port_sha256": "9784049335c918eed80a353616e3971cc5b045874de9aae6d6fa10ab33bbb0d1",
+      "registration_sha256": "d1311528dd241e01c681705821ca97ab589c3994d52f782de8349c2d314ffc64",
+      "source": "spec/call_tests.cpp"
+    },
+    {
+      "case_count": 338,
+      "donor_assertions": {
+        "CHECK": 300,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "89d3f4bd24af4f6629603f251544d7e5a694ef971183c17f92b9f5dc12c3401b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 300
+      },
+      "historical_port_sha256": "824cb0c8a97d1213370321a8813ee51759a61915d176d5772869f24adce85394",
+      "output": "spec/const_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 300
+      },
+      "profile_port_sha256": "824cb0c8a97d1213370321a8813ee51759a61915d176d5772869f24adce85394",
+      "registration_sha256": "d11e0d1f831878673a13558bb2d782d1455dfe8fa07ea8d8f0f3bafa6b5d5ea0",
+      "source": "spec/const_tests.cpp"
+    },
+    {
+      "case_count": 26,
+      "donor_assertions": {
+        "CHECK": 342,
+        "CHECK_THROWS_AS": 92,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "3511f3d3b9c86869e5cd8677dfa84836a437545873d8b9d115f9f1f58a220d61",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 92,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 342
+      },
+      "historical_port_sha256": "6741f472d0ba1a1a2c89c01b9acaab99563ef998a86ecf6c3e5eb0f40908806e",
+      "output": "spec/conversions_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 92,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 342
+      },
+      "profile_port_sha256": "6741f472d0ba1a1a2c89c01b9acaab99563ef998a86ecf6c3e5eb0f40908806e",
+      "registration_sha256": "43ae0cfd23b4e17ef178993523495126f4b9b3c1d1e8aeb3b3fdeceaf11b5ed6",
+      "source": "spec/conversions_tests.cpp"
+    },
+    {
+      "case_count": 10,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 7,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "09129a69ca1df6b90d3ef01243f482112178d5ce7cd6d2b60d0f1d1c5b4c6d86",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 7,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "dee6f8a02f84f5d2c9e0919d13b45a7bddab7c9e6f43f0ed8f704969e4d29214",
+      "output": "spec/custom_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 7,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "dee6f8a02f84f5d2c9e0919d13b45a7bddab7c9e6f43f0ed8f704969e4d29214",
+      "registration_sha256": "b2405195b37f744c61abdcce3f124638f39969f67f815147fb74258d864fed9f",
+      "source": "spec/custom_tests.cpp"
+    },
+    {
+      "case_count": 26,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 16,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "dced8222cb599b5094f7b7c6ec4c7f88bc0c13124d401dc26dbf95c1f75140f7",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 16,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "60e4172085111217a988273577e2b4318cdf31c0e25104978c2232cae6a2909e",
+      "output": "spec/data_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 16,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "60e4172085111217a988273577e2b4318cdf31c0e25104978c2232cae6a2909e",
+      "registration_sha256": "67a1eee701ab8eee1ac8a78dcc736229bfa592ef1e4f5b3f6bae048bca793af6",
+      "source": "spec/data_tests.cpp"
+    },
+    {
+      "case_count": 24,
+      "donor_assertions": {
+        "CHECK": 5,
+        "CHECK_THROWS_AS": 15,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "56f2b8fde0864514b2c224c164e748bf0108d588a22d3c3aa46b2fbfbff01b7d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 15,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "historical_port_sha256": "7c5aa1e216df9b573425c32605265ae230ef96befb71692089b855978dda2ae9",
+      "output": "spec/elem_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 15,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "profile_port_sha256": "7c5aa1e216df9b573425c32605265ae230ef96befb71692089b855978dda2ae9",
+      "registration_sha256": "1273f12c26ffd8d0b91cc04122947c699a2c9eb590ce79d2e27151e8627dd8cc",
+      "source": "spec/elem_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 68,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "2f2c9306f73c1661cb94e320c69e2e97ca08b733d32668de80be2b0412c9858f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 68
+      },
+      "historical_port_sha256": "82d68eb6ceed67367392ae1021204e9faade0ee89c2013d1505f90f1f22bc5b8",
+      "output": "spec/endianness_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 68
+      },
+      "profile_port_sha256": "82d68eb6ceed67367392ae1021204e9faade0ee89c2013d1505f90f1f22bc5b8",
+      "registration_sha256": "a355f26c9a193ee37017367fef9203f32df1c113ccf579796d638f94afbf9b7f",
+      "source": "spec/endianness_tests.cpp"
+    },
+    {
+      "case_count": 12,
+      "donor_assertions": {
+        "CHECK": 2500,
+        "CHECK_THROWS_AS": 11,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a14966c65fb0fe5e06ccbf18540285b838e57c340b9a6ccbdfb4c7c3fdc181ca",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 11,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2500
+      },
+      "historical_port_sha256": "958c746cd7c98f1530ea6ba68ff9e5ca653ee3ae27369785e1bf5c13f8997410",
+      "output": "spec/f32_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 11,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2500
+      },
+      "profile_port_sha256": "958c746cd7c98f1530ea6ba68ff9e5ca653ee3ae27369785e1bf5c13f8997410",
+      "registration_sha256": "d9bcad8513674dc056a26153c54505e5309f4eb256bc580c63da6e3f188bb96d",
+      "source": "spec/f32_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 360,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "e0ca67d6739a028c14965099151810a5ab71c39f608d29297f20c4c21fc43d6f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 360
+      },
+      "historical_port_sha256": "8df9b10e2f36f1d18308382a04e9f818838cabeb152716344169f3e641fe7901",
+      "output": "spec/f32_bitwise_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 360
+      },
+      "profile_port_sha256": "8df9b10e2f36f1d18308382a04e9f818838cabeb152716344169f3e641fe7901",
+      "registration_sha256": "3261c4453d8af52ad8e2647bb1d6276e905d2b83a70005f1033e66f0f8f15a46",
+      "source": "spec/f32_bitwise_tests.cpp"
+    },
+    {
+      "case_count": 7,
+      "donor_assertions": {
+        "CHECK": 2400,
+        "CHECK_THROWS_AS": 6,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "b881fe08179c551a52fd50870b0f41660cd7203ed4d7ae8e3f8b2dc8a70129b6",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2400
+      },
+      "historical_port_sha256": "521723d79efde0769378d7e3310fa6910a9f9208e4f2178e6ab2e29bc781f2d4",
+      "output": "spec/f32_cmp_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2400
+      },
+      "profile_port_sha256": "521723d79efde0769378d7e3310fa6910a9f9208e4f2178e6ab2e29bc781f2d4",
+      "registration_sha256": "b103ddbef59cfad716d6cbbe0750ca9ca6aeb8ebf11674ddc6df897e99fcd84b",
+      "source": "spec/f32_cmp_tests.cpp"
+    },
+    {
+      "case_count": 12,
+      "donor_assertions": {
+        "CHECK": 2500,
+        "CHECK_THROWS_AS": 11,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "73023a9ec5913cc443fc87bdc7e3484a72f292d0c498fd06ed6a8a2137367199",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 11,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2500
+      },
+      "historical_port_sha256": "87e727da293f366967dd3c405efc0425689d8e5f2199c10597fd5e442b0c8415",
+      "output": "spec/f64_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 11,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2500
+      },
+      "profile_port_sha256": "87e727da293f366967dd3c405efc0425689d8e5f2199c10597fd5e442b0c8415",
+      "registration_sha256": "3a181369431d75c5b69bdcd216f47df036c4bc76d767c3cbb6b859fd79d0c666",
+      "source": "spec/f64_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 360,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "d50b5ba99f2ab5154ae6647106805d2b62d7ffda76782484b06cc03eaebcd2d3",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 360
+      },
+      "historical_port_sha256": "0487d312cbdf01dc41e8af29e77ed9d09c746e901539bc8c72de971b176ae61b",
+      "output": "spec/f64_bitwise_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 360
+      },
+      "profile_port_sha256": "0487d312cbdf01dc41e8af29e77ed9d09c746e901539bc8c72de971b176ae61b",
+      "registration_sha256": "d8540989010f1c6579fe5cc21ce7a1b9c451bfb5a6b08f3708f6ece3bd352a3f",
+      "source": "spec/f64_bitwise_tests.cpp"
+    },
+    {
+      "case_count": 7,
+      "donor_assertions": {
+        "CHECK": 2400,
+        "CHECK_THROWS_AS": 6,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "da2cdd1319602dcf3ebb99a8170bd6cf86d0acedb09c58a764ec1f7e0cdd408c",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2400
+      },
+      "historical_port_sha256": "260e070431227e10b7405b88e7a1d8040285785c67d0763276bc9f3335e4bf12",
+      "output": "spec/f64_cmp_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 6,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 2400
+      },
+      "profile_port_sha256": "260e070431227e10b7405b88e7a1d8040285785c67d0763276bc9f3335e4bf12",
+      "registration_sha256": "83ad2e55178e4cc250d4071f2625ab772ef98ae38747387549144dbbe9645fa9",
+      "source": "spec/f64_cmp_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 5,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a5442a73f422713271db2665bc08cdfbc2dfd1c32016d645d13990be173fa5ca",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "historical_port_sha256": "84e84a139f9e563afd6f2841e45ed5d1472eb5a3acd6f858cfcb895b5ebc6c9a",
+      "output": "spec/fac_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "profile_port_sha256": "84e84a139f9e563afd6f2841e45ed5d1472eb5a3acd6f858cfcb895b5ebc6c9a",
+      "registration_sha256": "7641a513bb72eb2e6144fcb5635e1d798a2b79cda71b9da81a3818c237305704",
+      "source": "spec/fac_tests.cpp"
+    },
+    {
+      "case_count": 96,
+      "donor_assertions": {
+        "CHECK": 794,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "ffd17d03057f6cb01abd1aec979a6d0eb24520070b3caea7b8f142c0c6225004",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 794
+      },
+      "historical_port_sha256": "7c83f0494d6552c3223a2649a5e65d2bcc73115026426992fe5bdaa4281bdeb5",
+      "output": "spec/float_exprs_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 794
+      },
+      "profile_port_sha256": "7c83f0494d6552c3223a2649a5e65d2bcc73115026426992fe5bdaa4281bdeb5",
+      "registration_sha256": "4e6d95f502d3ca6121896ad6f8b86212e430f7bc77c53b685a3207abaaf93cd0",
+      "source": "spec/float_exprs_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 83,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "01069105ff316ac20c35e3bf69e9811a577f7c502bec67c5a04182044be064b0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 83
+      },
+      "historical_port_sha256": "b4b6e85d12d809b19da1780825b7a4de41bee3d1a6937d6d19d310cdee1a6297",
+      "output": "spec/float_literals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 83
+      },
+      "profile_port_sha256": "b4b6e85d12d809b19da1780825b7a4de41bee3d1a6937d6d19d310cdee1a6297",
+      "registration_sha256": "45246af9b198e8675972350d345dfd657dbe850c4c13377ea645dff731b25b8c",
+      "source": "spec/float_literals_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 60,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "399edd674624491187b48e53478413c5a9ca8b8f86df02dd9f4d603fa01b42f0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 60
+      },
+      "historical_port_sha256": "c53ed01e492158ca8e4dfe93884671270f25437b18827f8d211a0ce401747e96",
+      "output": "spec/float_memory_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 60
+      },
+      "profile_port_sha256": "c53ed01e492158ca8e4dfe93884671270f25437b18827f8d211a0ce401747e96",
+      "registration_sha256": "e9b21d2a62bbc4ae306db4e1dc4705ca051e708a4ca83b559b08b5d8e13f1d7d",
+      "source": "spec/float_memory_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 440,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "6455d7004a1511951029e3da044e9048c9edf10348c30d354ed91fae6bd6748d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 440
+      },
+      "historical_port_sha256": "0171886e39e62ffe379d5ff6af7c9b65e748e0ef1907e239571e33d5e9163db0",
+      "output": "spec/float_misc_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 440
+      },
+      "profile_port_sha256": "0171886e39e62ffe379d5ff6af7c9b65e748e0ef1907e239571e33d5e9163db0",
+      "registration_sha256": "5ca169e525c87b151e648cf6dfc8465b2e5a843abf7173308ec94dd808a5bd79",
+      "source": "spec/float_misc_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 4,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "5b4e121d56e972279f308772d1784efd9d048116dc02def4554316ab260df796",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "historical_port_sha256": "14453882c616f2f72f63083d829c5b97cae13316f83d50b3f028f21b10d7e855",
+      "output": "spec/forward_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "profile_port_sha256": "14453882c616f2f72f63083d829c5b97cae13316f83d50b3f028f21b10d7e855",
+      "registration_sha256": "a6fe61ac43f3cf330645134fea8671e350bb195853a416d9ac32341ea65629f6",
+      "source": "spec/forward_tests.cpp"
+    },
+    {
+      "case_count": 34,
+      "donor_assertions": {
+        "CHECK": 73,
+        "CHECK_THROWS_AS": 31,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "13023374f28737de4cdf2e6bcbf8fbe562d1b70cebc4e232d2b920714c1690f6",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 31,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 73
+      },
+      "historical_port_sha256": "b03ccc43b12b1acab8184d81600d53678090bf11006bb619f36e83ad108a2036",
+      "output": "spec/func_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 31,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 73
+      },
+      "profile_port_sha256": "b03ccc43b12b1acab8184d81600d53678090bf11006bb619f36e83ad108a2036",
+      "registration_sha256": "cf052d726f5743bd13da0ccea84b243e3dca88136524a1bdbea68f44f02756a0",
+      "source": "spec/func_tests.cpp"
+    },
+    {
+      "case_count": 9,
+      "donor_assertions": {
+        "CHECK": 16,
+        "CHECK_THROWS_AS": 13,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "8048d14382cb41c632783879d4dfa0e732e9a37c6546cb79d5cdaddb32190050",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 13,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 16
+      },
+      "historical_port_sha256": "44d4490d17b1d8a6203c487b79f6f122e461be2516c84bb5e42da3b4422a5aa8",
+      "output": "spec/func_ptrs_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 13,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 16
+      },
+      "profile_port_sha256": "44d4490d17b1d8a6203c487b79f6f122e461be2516c84bb5e42da3b4422a5aa8",
+      "registration_sha256": "3ab6654b63eabd4842b3e16f7e9c40800526787aca426e18aa3cab650724d66b",
+      "source": "spec/func_ptrs_tests.cpp"
+    },
+    {
+      "case_count": 31,
+      "donor_assertions": {
+        "CHECK": 45,
+        "CHECK_THROWS_AS": 28,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "f776df2863ed2d96764d573eded86489120d1a30433a3869feb52645305e86b4",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 28,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 45
+      },
+      "historical_port_sha256": "ede6bc06d322f49f09dce9baa4b0faf7b707a0f1b4efcaa14710846b41d1cb2f",
+      "output": "spec/globals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 28,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 45
+      },
+      "profile_port_sha256": "ede6bc06d322f49f09dce9baa4b0faf7b707a0f1b4efcaa14710846b41d1cb2f",
+      "registration_sha256": "0f3e1d8cac0a57d51c9786daf49568edc5ea0eb57973d8f55fb47a0406f4ed7d",
+      "source": "spec/globals_tests.cpp"
+    },
+    {
+      "case_count": 84,
+      "donor_assertions": {
+        "CHECK": 350,
+        "CHECK_THROWS_AS": 92,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "746caac634d025548a67d5c7e99c5251930d18486aa8aff11051c95fbced1df3",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 92,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 350
+      },
+      "historical_port_sha256": "8934360b90900cc6185a6946a87d4391e0d2f775afddc6205b5c0e0b25e778b0",
+      "output": "spec/i32_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 92,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 350
+      },
+      "profile_port_sha256": "8934360b90900cc6185a6946a87d4391e0d2f775afddc6205b5c0e0b25e778b0",
+      "registration_sha256": "06e1497b5d3977466602ae6c54e4625578fb26f78eedf9c81326a29297b82ac1",
+      "source": "spec/i32_tests.cpp"
+    },
+    {
+      "case_count": 30,
+      "donor_assertions": {
+        "CHECK": 350,
+        "CHECK_THROWS_AS": 38,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "166cd1ba9b595c69cacef8dd501ee7ee64a87e72d6b26ea18dc556c933af2e80",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 38,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 350
+      },
+      "historical_port_sha256": "6d24bf5279532a1e7fe43cd956373269c675495ccddb42feda4923da39ecb42e",
+      "output": "spec/i64_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 38,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 350
+      },
+      "profile_port_sha256": "6d24bf5279532a1e7fe43cd956373269c675495ccddb42feda4923da39ecb42e",
+      "registration_sha256": "c60a147a41996c848844b32a7a3b394f6b7e0c6e8bf9636df0c30a80cbfdc1a1",
+      "source": "spec/i64_tests.cpp"
+    },
+    {
+      "case_count": 53,
+      "donor_assertions": {
+        "CHECK": 87,
+        "CHECK_THROWS_AS": 53,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "be900f645594a1ee3f3204ff59fd8edcfdfe65de87e329e4ca0dfbe82c78d6ce",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 53,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 87
+      },
+      "historical_port_sha256": "106b84a321668f95e2502e79de97db9b55d6f81612cd055a4bc84bee87319206",
+      "output": "spec/if_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 53,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 87
+      },
+      "profile_port_sha256": "106b84a321668f95e2502e79de97db9b55d6f81612cd055a4bc84bee87319206",
+      "registration_sha256": "3332af1b1e9cf98f595dd10085af412c8fc01b85767b1c0c6374cb967d04b44d",
+      "source": "spec/if_tests.cpp"
+    },
+    {
+      "case_count": 19,
+      "donor_assertions": {
+        "CHECK": 75,
+        "CHECK_THROWS_AS": 14,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "25d6592fca29c83742080452e8a867045d67ed93f711aebad66cfdfc02985fd0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 14,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 75
+      },
+      "historical_port_sha256": "573281b7608c137746127fd1df5065035ef6c78761cf4c2cd9cb17f041c46839",
+      "output": "spec/int_exprs_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 14,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 75
+      },
+      "profile_port_sha256": "573281b7608c137746127fd1df5065035ef6c78761cf4c2cd9cb17f041c46839",
+      "registration_sha256": "0467d8c6fa122cff9b1bd12606cfe69a906eb0c2fdb592dfd5e7713c8c03268f",
+      "source": "spec/int_exprs_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 30,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "6ea41decc80a0e632e8232e619b0f0a3a3d49e62c02baa0ef125b00ec4ffec30",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "historical_port_sha256": "d94d0d4495d02dc81bd04b4202a6ec146dfc633b88c761d66a1973d1d254c6f1",
+      "output": "spec/int_literals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 30
+      },
+      "profile_port_sha256": "d94d0d4495d02dc81bd04b4202a6ec146dfc633b88c761d66a1973d1d254c6f1",
+      "registration_sha256": "54acb767d8bb0eee9801d3bf538ff164a833df03fd918a53b7be653b4d897b79",
+      "source": "spec/int_literals_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 25,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "e1d2fd11e513953743517ea5ff1beffe08b057fcfe12493c486fd744f7eef529",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 25
+      },
+      "historical_port_sha256": "b071be6bdc4177dbaecb09cf8ed74e5a190e546fdf22e6bcfee15c7839b2ebfa",
+      "output": "spec/labels_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 25
+      },
+      "profile_port_sha256": "b071be6bdc4177dbaecb09cf8ed74e5a190e546fdf22e6bcfee15c7839b2ebfa",
+      "registration_sha256": "32479ad921a25cedbcfd1f87cba6f224ec3a7e75af79f2ee8ab6fdb4468afd65",
+      "source": "spec/labels_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 95,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "11281e20e85b014c3b6bb74d28556e023c3de37e9690f3eac8360d62fa1fb323",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 95
+      },
+      "historical_port_sha256": "4feb37a41ea1ac7ff1bd9f143994d7dd597b725957a0c7ecb816afc5e5b7c888",
+      "output": "spec/left-to-right_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 95
+      },
+      "profile_port_sha256": "4feb37a41ea1ac7ff1bd9f143994d7dd597b725957a0c7ecb816afc5e5b7c888",
+      "registration_sha256": "0cefc69bce3693947763b60ac8d2f9b9d8c11eaf2ab35f9a92d3edb8c1b82c7c",
+      "source": "spec/left-to-right_tests.cpp"
+    },
+    {
+      "case_count": 47,
+      "donor_assertions": {
+        "CHECK": 37,
+        "CHECK_THROWS_AS": 46,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "f1429c92c026f9a4618b8888eb1f0094f995bf62e3f3e50b99b8126b2323efd0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 46,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 37
+      },
+      "historical_port_sha256": "ba96387aa0191e79a91df4ec6fa3bdc9008f0445d3e474a27ad83fc4034eb624",
+      "output": "spec/load_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 46,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 37
+      },
+      "profile_port_sha256": "ba96387aa0191e79a91df4ec6fa3bdc9008f0445d3e474a27ad83fc4034eb624",
+      "registration_sha256": "df741cef95ecd2f0dcbc0b1b5def6c6a4b0747d4ec7817bf84f4a91c547098e0",
+      "source": "spec/load_tests.cpp"
+    },
+    {
+      "case_count": 17,
+      "donor_assertions": {
+        "CHECK": 19,
+        "CHECK_THROWS_AS": 16,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "91c23b8ed5159bc7d3012b87fcabddb77fa924c44b6870b9f814fa124f395372",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 16,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 19
+      },
+      "historical_port_sha256": "e4a4622e1654857764ef0aee24b530922923848a19ef72b29daaf24991fffd81",
+      "output": "spec/local_get_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 16,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 19
+      },
+      "profile_port_sha256": "e4a4622e1654857764ef0aee24b530922923848a19ef72b29daaf24991fffd81",
+      "registration_sha256": "4fdf9348ef8bd4248c1e696295f9e82d2f523d535cbb58d89fcb1a4c287d8d92",
+      "source": "spec/local_get_tests.cpp"
+    },
+    {
+      "case_count": 34,
+      "donor_assertions": {
+        "CHECK": 19,
+        "CHECK_THROWS_AS": 33,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a02b11156f826c13edf75882a7d722f4392237db8c459c50b5469767dea9b05b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 33,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 19
+      },
+      "historical_port_sha256": "2577cd2dcf57b0cd0ec5397b6a0f9aeb2972e8be5998a63e095887a06f13df6c",
+      "output": "spec/local_set_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 33,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 19
+      },
+      "profile_port_sha256": "2577cd2dcf57b0cd0ec5397b6a0f9aeb2972e8be5998a63e095887a06f13df6c",
+      "registration_sha256": "ca84a90dac36b6bd48d1c8af146b3afe4b74b5c05880c52a737da11711d57b33",
+      "source": "spec/local_set_tests.cpp"
+    },
+    {
+      "case_count": 42,
+      "donor_assertions": {
+        "CHECK": 55,
+        "CHECK_THROWS_AS": 41,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a886b8f5c2b406e2a3f8f1f693343b4582328f92dd88592f181b32e2b257c0e0",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 41,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 55
+      },
+      "historical_port_sha256": "db305964dc78bd1898f793ebc95892bbc2087de7db8837f80e9155dac96ed313",
+      "output": "spec/local_tee_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 41,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 55
+      },
+      "profile_port_sha256": "db305964dc78bd1898f793ebc95892bbc2087de7db8837f80e9155dac96ed313",
+      "registration_sha256": "76774fa12c675382834237ae0c8dc3b74c66788697be3321f8a8ea81bee395f1",
+      "source": "spec/local_tee_tests.cpp"
+    },
+    {
+      "case_count": 13,
+      "donor_assertions": {
+        "CHECK": 66,
+        "CHECK_THROWS_AS": 12,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "76b257e79df2474358bb5982112cade299d1d5c3e77b32dd8a917fe716adc676",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 66
+      },
+      "historical_port_sha256": "1d0c2e1e8ceccb1576507b8a05de8b52f7871b70d05e9738b8c059ce8160ad47",
+      "output": "spec/loop_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 66
+      },
+      "profile_port_sha256": "1d0c2e1e8ceccb1576507b8a05de8b52f7871b70d05e9738b8c059ce8160ad47",
+      "registration_sha256": "bcaeff1fc2b745f5e01ab626345b46c6207930b80acbf9103d7f53f792013d17",
+      "source": "spec/loop_tests.cpp"
+    },
+    {
+      "case_count": 26,
+      "donor_assertions": {
+        "CHECK": 45,
+        "CHECK_THROWS_AS": 18,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "33233ac35a33dbcdb37e096dc6d9a31904da0326a667670df5162a5b6c0b0138",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 18,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 45
+      },
+      "historical_port_sha256": "461c4f3703cda1de2b7643532d0a97016403fec13503cda8584f1c6f4fdbe95d",
+      "output": "spec/memory_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 18,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 45
+      },
+      "profile_port_sha256": "461c4f3703cda1de2b7643532d0a97016403fec13503cda8584f1c6f4fdbe95d",
+      "registration_sha256": "94cf437eb5b7ae94cb9201e85d6bc63c45154cc04216b57028886560d5d93462",
+      "source": "spec/memory_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 4,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "5acabe9be936f87903b16a07b1b9b0aa8496220749003bfb8ff8f04404396453",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "historical_port_sha256": "8c56e13b2044c72bdacac61f1eccbe0ba25569a6a9a752afabd1cd422937de42",
+      "output": "spec/memory_redundancy_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "profile_port_sha256": "8c56e13b2044c72bdacac61f1eccbe0ba25569a6a9a752afabd1cd422937de42",
+      "registration_sha256": "e954aecd822ccdfc5b40891493b5c126e403168c4d27af3b0d4763a402e5218e",
+      "source": "spec/memory_redundancy_tests.cpp"
+    },
+    {
+      "case_count": 10,
+      "donor_assertions": {
+        "CHECK": 77,
+        "CHECK_THROWS_AS": 12,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "2725c033afeedbe62b0af63a0b12e9b40cf4f459112d4c8d296125248ba7400a",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 77
+      },
+      "historical_port_sha256": "b7574ae041ab7704bce0b5015ca3bb8994631458b8ea3eaf56cc4ff29c4903df",
+      "output": "spec/memory_grow_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 12,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 77
+      },
+      "profile_port_sha256": "b7574ae041ab7704bce0b5015ca3bb8994631458b8ea3eaf56cc4ff29c4903df",
+      "registration_sha256": "344938f70a27622d9dd353d01f1dc9fc88fc4c11dc5328242fc0ef6b0eab93e0",
+      "source": "spec/memory_grow_tests.cpp"
+    },
+    {
+      "case_count": 6,
+      "donor_assertions": {
+        "CHECK": 36,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "215a203a9cc79f11304020a71f801c9a35d1b227ac96b185926ca54f2cb76dc8",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 36
+      },
+      "historical_port_sha256": "af4a4d91d07115a452f0025a65641a92c9d23c387cd74dd6d432fb182d608772",
+      "output": "spec/memory_size_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 36
+      },
+      "profile_port_sha256": "af4a4d91d07115a452f0025a65641a92c9d23c387cd74dd6d432fb182d608772",
+      "registration_sha256": "63fbb2c07fcc4e35f3512e0e8275491b5d9470107692b73b4dd897d0bb359310",
+      "source": "spec/memory_size_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 5,
+        "CHECK_THROWS_AS": 166,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "2bf7309c275c369d9d940a9656dc9825ce34b096f5011f179243cf8904c99f0c",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 166,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "historical_port_sha256": "98782b5f8c1c511684f5b3b4374e760a4e544d7d70e3db0f1879ddf41f318358",
+      "output": "spec/memory_trap_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 166,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 5
+      },
+      "profile_port_sha256": "98782b5f8c1c511684f5b3b4374e760a4e544d7d70e3db0f1879ddf41f318358",
+      "registration_sha256": "bd5ab8de58caf03de8c59711c2055093615d1b10b3312d9800c6309f8efbd3f3",
+      "source": "spec/memory_trap_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 478,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "884b4535f9fa990a058c4a187adf062843b8da0ed5bc292364749170aaa6396b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 478
+      },
+      "historical_port_sha256": "7e384db2213e4db0972913173f277c576b369ccd33556e236d9386bf83a3fcc7",
+      "output": "spec/names_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 478
+      },
+      "profile_port_sha256": "7e384db2213e4db0972913173f277c576b369ccd33556e236d9386bf83a3fcc7",
+      "registration_sha256": "332c196d5dce86cde4433fe3d3eb1a18fdb04fda642f3f2644df47b6e0e0ca2f",
+      "source": "spec/names_tests.cpp"
+    },
+    {
+      "case_count": 5,
+      "donor_assertions": {
+        "CHECK": 83,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "ba453698fe5124f88b63d4281d446975ebd56f36f9a9a8879a77b3b4c619561d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 83
+      },
+      "historical_port_sha256": "8b5015795ca0c7ec1622fb2b5327f8e4bcd46c66e88378ab7313f391c3a945ae",
+      "output": "spec/nop_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 83
+      },
+      "profile_port_sha256": "8b5015795ca0c7ec1622fb2b5327f8e4bcd46c66e88378ab7313f391c3a945ae",
+      "registration_sha256": "611d29b3e0883f51d42281d9b40110da8e2e57a9d58a836d6db4d4b4a75be0cf",
+      "source": "spec/nop_tests.cpp"
+    },
+    {
+      "case_count": 21,
+      "donor_assertions": {
+        "CHECK": 63,
+        "CHECK_THROWS_AS": 20,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "315e15e357adb457b3c97ae34606fff0eff197d2feb5b06c0954d5bdb73eda4f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 20,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 63
+      },
+      "historical_port_sha256": "9767cac0c5060ec29f453ce0a070cbe985aa2c8629c3691221c21128bdcdb78b",
+      "output": "spec/return_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 20,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 63
+      },
+      "profile_port_sha256": "9767cac0c5060ec29f453ce0a070cbe985aa2c8629c3691221c21128bdcdb78b",
+      "registration_sha256": "26a1b3c40de5e3a782248482ac09d082db5fd471bd47490d02082ee8cff70836",
+      "source": "spec/return_tests.cpp"
+    },
+    {
+      "case_count": 17,
+      "donor_assertions": {
+        "CHECK": 88,
+        "CHECK_THROWS_AS": 22,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "06fabcd19ec1a3dc07a3255bc43b416083b1f179dc49022755519ff5ed641fff",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 22,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 88
+      },
+      "historical_port_sha256": "0bab001657fbe34c21c1bb6bfdc91adc23c4f09d4704e241c06c13e41ad49c6a",
+      "output": "spec/select_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 22,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 88
+      },
+      "profile_port_sha256": "0bab001657fbe34c21c1bb6bfdc91adc23c4f09d4704e241c06c13e41ad49c6a",
+      "registration_sha256": "db3a7f59cfa1b9dca72a29971b86ee047b3666c69c84eca33c38e674db641d68",
+      "source": "spec/select_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 3,
+        "CHECK_THROWS_AS": 0,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "872f0252355a4d1dda5636970025c8fd3b22d52bcb86f8682effbe876c3befad",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "historical_port_sha256": "719bf8a87e851468e24ead2e918e1f71ccf8ea1919e3e4ec2b4f616718eb4e54",
+      "output": "spec/stack_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 0,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 3
+      },
+      "profile_port_sha256": "719bf8a87e851468e24ead2e918e1f71ccf8ea1919e3e4ec2b4f616718eb4e54",
+      "registration_sha256": "007973f010cc98c8eeedb23e4b0160d30c95061b8a8507ea9088e15728d0833a",
+      "source": "spec/stack_tests.cpp"
+    },
+    {
+      "case_count": 5,
+      "donor_assertions": {
+        "CHECK": 6,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "bb8e417ebe0e6cef86b5941fc570e34cdc7aeeff6f115d8ec621abc6bc90de07",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 6
+      },
+      "historical_port_sha256": "b23781baf52a0476b526920eadde2386ad4bdcb395a761369d6d39c6f71f85e0",
+      "output": "spec/start_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 6
+      },
+      "profile_port_sha256": "b23781baf52a0476b526920eadde2386ad4bdcb395a761369d6d39c6f71f85e0",
+      "registration_sha256": "ae76058a2e2cd7cf43cf9642e2222e0c430582625cbf46db17d76f4beb55cd23",
+      "source": "spec/start_tests.cpp"
+    },
+    {
+      "case_count": 52,
+      "donor_assertions": {
+        "CHECK": 9,
+        "CHECK_THROWS_AS": 51,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "9d4841bb6de418f0b6d8f34f94b991168efe881ac32a14768c6f6d6b2a7d7a3d",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 51,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 9
+      },
+      "historical_port_sha256": "456e9f77061e53ad049263ac5b08df6e37b23d76d60448239abd062a69ab98ab",
+      "output": "spec/store_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 51,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 9
+      },
+      "profile_port_sha256": "456e9f77061e53ad049263ac5b08df6e37b23d76d60448239abd062a69ab98ab",
+      "registration_sha256": "37a749b357e4589f93bd08fbdec3356ce92a77e39cb6d8554356b3f91cc2421c",
+      "source": "spec/store_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 26,
+        "CHECK_THROWS_AS": 1,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "037ea8b0024143216c85cb1aeb45dc2df87424479a787a8ec8c22fc8a51007a2",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 26
+      },
+      "historical_port_sha256": "e8bcfeb2c6f085f8c6fdac2a85368e000fe9b9b653016c53fb34b2de3b7d965e",
+      "output": "spec/switch_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 26
+      },
+      "profile_port_sha256": "e8bcfeb2c6f085f8c6fdac2a85368e000fe9b9b653016c53fb34b2de3b7d965e",
+      "registration_sha256": "fdf37b3264a1e67f5910d808a31fa3fde6e3752fd6651fd65384a00e861b7ea5",
+      "source": "spec/switch_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 32,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "47ec5d6dbe2d56a9f305eb3ae4b689ee89970ae6d7b33ecf4586968c59fff8d1",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 32,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "98f21fda51aeb841e5fc5f48065c77ded003225175c3b4530e8d3699b7a28026",
+      "output": "spec/traps_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 32,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "98f21fda51aeb841e5fc5f48065c77ded003225175c3b4530e8d3699b7a28026",
+      "registration_sha256": "532c15f5812dc68a0c98a112121ac224a358613ec03916c2211c2053815b34e3",
+      "source": "spec/traps_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "0e211359be5f3550c5623255de57aabf9c6871355219a80fbce857869670c139",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "5541a14d2da98683b417c5069e129a0c83fa7b656adbbb5c5040b65dde69ab64",
+      "output": "spec/type_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "5541a14d2da98683b417c5069e129a0c83fa7b656adbbb5c5040b65dde69ab64",
+      "registration_sha256": "f1e5f4f97564dd995feefaa06980602ac4297730f071781cac33f98e93273fc7",
+      "source": "spec/type_tests.cpp"
+    },
+    {
+      "case_count": 164,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 164,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "f9e23761190524e1c393cd98e534a3238608ad869b2065b649c3f025bfc5a7d5",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 164,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "9b4e15fd863f50c3ecb1ea44977169a2907b8688decbbdbe1883d675e1d1bd03",
+      "output": "spec/typecheck_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 164,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "9b4e15fd863f50c3ecb1ea44977169a2907b8688decbbdbe1883d675e1d1bd03",
+      "registration_sha256": "344cadcbe5433c5ebee0cf507faa7040c37c3dc5771b6f97d362f9baf0fc264d",
+      "source": "spec/typecheck_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 4,
+        "CHECK_THROWS_AS": 57,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "9b082e9f83e46e0ed3e4c9ddf60a71d9af206af264622a6e454da6aa981d8256",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 57,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "historical_port_sha256": "873697336e4fff7a3ed48e07b5a0ee765c086c0606b929750b734dccabfe4c90",
+      "output": "spec/unreachable_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 57,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 4
+      },
+      "profile_port_sha256": "873697336e4fff7a3ed48e07b5a0ee765c086c0606b929750b734dccabfe4c90",
+      "registration_sha256": "042d7e65a2ca3a09951027d534a969d5a489d90e1fbf04bea72ad629c41d571a",
+      "source": "spec/unreachable_tests.cpp"
+    },
+    {
+      "case_count": 111,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 111,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "c349f52609e80f69d7de4dbe65b4c3178e8d8a4cd50c39fb1b28bdbb3b8e98cf",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 111,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "d2378a06e9b32b8ca550a36556f751f9ae85477dc5664e9b55127380056ac2a9",
+      "output": "spec/unreached-invalid_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 110,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 1,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "629fd94e4a97a44681d4260f056f2fcf1146d462739f691cf4ab0e6be9631256",
+      "registration_sha256": "02e51938a253d4099fc9c03881ca096ef7619aa7641a7bdc4eb1334311d6e4e5",
+      "source": "spec/unreached-invalid_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 41,
+        "CHECK_THROWS_AS": 8,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "98aef194276cdfaabdb058860b3950cf013683318151b7f2ad398041372d3550",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 8,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 41
+      },
+      "historical_port_sha256": "e84a3c05b16c39b548bb62f5cb8a48b6e3d33c575a9d671413b3421e4f82b1ba",
+      "output": "spec/unwind_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 8,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 41
+      },
+      "profile_port_sha256": "e84a3c05b16c39b548bb62f5cb8a48b6e3d33c575a9d671413b3421e4f82b1ba",
+      "registration_sha256": "9b5bf5ec9cad209cb9a57a4719960f4f0fb6a1bb5d6a474f33716b17ef378c53",
+      "source": "spec/unwind_tests.cpp"
+    },
+    {
+      "case_count": 176,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 176,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "7c86730cebb4a062a95de78cf6c442712d3f9992d5400aac26489a2bede5d92f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "c0d6a9c16044a4e6015cbe05e0740e090684610275f1439d762ff80fb462cf8f",
+      "output": "spec/utf8-custom-section-id_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "c0d6a9c16044a4e6015cbe05e0740e090684610275f1439d762ff80fb462cf8f",
+      "registration_sha256": "1f357a825210759fccffecc2a51cd4fdead670ceb14836c7a2cc0e2f4055fcf1",
+      "source": "spec/utf8-custom-section-id_tests.cpp"
+    },
+    {
+      "case_count": 176,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 176,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "c206105b8fd458c482f0365498f4b5b0d51d18474a3e9ddfb24f8f4dbcf77920",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "4e2e18550d3cdafc415ae0c0f761807c9b038547845489f86ca0b58fcb70b950",
+      "output": "spec/utf8-import-field_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "4e2e18550d3cdafc415ae0c0f761807c9b038547845489f86ca0b58fcb70b950",
+      "registration_sha256": "69b310ca914033a058b8836e17aef40c459baa277a8a9318b73fc36c538ee340",
+      "source": "spec/utf8-import-field_tests.cpp"
+    },
+    {
+      "case_count": 176,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 176,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "fa4d1f4fb12d91d5843303d29f23881f8e73bd05badb0cc2caf6ec6e0c7e1878",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "b1cb54404376a44fb95426d3ee381a19fd7c6a34b5dd0f5dbeb948f873e9d324",
+      "output": "spec/utf8-import-module_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 176,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "b1cb54404376a44fb95426d3ee381a19fd7c6a34b5dd0f5dbeb948f873e9d324",
+      "registration_sha256": "f068d9158b84cc398bb3003784d06c7f60cca631f70c96ff1efd3f5b3611507e",
+      "source": "spec/utf8-import-module_tests.cpp"
+    },
+    {
+      "case_count": 1,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 1,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "a70bc0c912ae6e507429348107131356387bd3f351232ed7325f1363e22a06ac",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "061c48ecc0229e9481f718d229c4ed6dba6d58ab24531369d66293a5a045b833",
+      "output": "spec/e_block_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "061c48ecc0229e9481f718d229c4ed6dba6d58ab24531369d66293a5a045b833",
+      "registration_sha256": "b1d0e792f39c81e2964bfd1f6ee1784bf944a22139e522d459f73b9e2065d8b7",
+      "source": "spec/e_block_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "fbcb354634bc900b9e542bf0436dd86a65362021b82815f78c2e5c602115de05",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "f6461cbc3126233e002a39f075d9c36aeef48c36461b37dcde0062acda48353e",
+      "output": "spec/e_function_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "f6461cbc3126233e002a39f075d9c36aeef48c36461b37dcde0062acda48353e",
+      "registration_sha256": "eb9f5dc5b30d553efdcba9fc29b392656383019451fca6f41a0bd9a88d6877cd",
+      "source": "spec/e_function_tests.cpp"
+    },
+    {
+      "case_count": 2,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "ba78491748f49d7e955a8f71f4767840c768fc8d7409730e26a8c352a1abab3b",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "110ffd7b3b61e8345e37045edee5c50721a9721fc9b41bc27d559e5bfb6caf01",
+      "output": "spec/e_globals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "110ffd7b3b61e8345e37045edee5c50721a9721fc9b41bc27d559e5bfb6caf01",
+      "registration_sha256": "7e9f2f990d066adac3b289be309f8522e6e4622cd97f5fadafc29ddc87e2680e",
+      "source": "spec/e_globals_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 1,
+        "CHECK_THROWS_AS": 2,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "da7e36a7f17545695e11fc9147a5539b1a9d3a93ad3e10058078aa093ced14e9",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 1
+      },
+      "historical_port_sha256": "0c12ece0b2ffdfe645d0ac25c6fb4a8eeaf6bcc8d0b5485b95a813ab242f7b59",
+      "output": "spec/e_locals_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 1
+      },
+      "profile_port_sha256": "0c12ece0b2ffdfe645d0ac25c6fb4a8eeaf6bcc8d0b5485b95a813ab242f7b59",
+      "registration_sha256": "a145bd60a1f9d4add5122b165216020a9cb42b6f646b78128515860b052238b6",
+      "source": "spec/e_locals_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 1,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "b8a995617f88453669f06c7107793cb520a8a52fbef30d90c8589eac85750000",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 1,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "578bb82755ad12cd10d28ac0fcdb21b64f83fcb0596fc463bef3a98399509a8b",
+      "output": "spec/e_memory_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 2,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "b048ef4ecc34be93d47e526a0c6fb8c9022dd2a5c51563af957e25ce895c74e8",
+      "registration_sha256": "703465c5591cf9de9ca6dc804df834e7b82d4d558142486f51c43434acbd70fc",
+      "source": "spec/e_memory_tests.cpp"
+    },
+    {
+      "case_count": 4,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 4,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "bdc2c9a14e6428d77f477681e1402253208c327da78fdb74008430a86290e65f",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "16b32a4058fa521147191136bdd32e3672a8f2285620542ad2191cf86e2c896a",
+      "output": "spec/e_module_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 4,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "16b32a4058fa521147191136bdd32e3672a8f2285620542ad2191cf86e2c896a",
+      "registration_sha256": "643f15e456fc4e7cc163d917d063336f46268cec65965172306494736901d72d",
+      "source": "spec/e_module_tests.cpp"
+    },
+    {
+      "case_count": 3,
+      "donor_assertions": {
+        "CHECK": 0,
+        "CHECK_THROWS_AS": 3,
+        "REQUIRE": 0
+      },
+      "donor_sha256": "c235b4bb7d285fe846e97e93e7472b9e537a4e05e47fcf7d7ceed44ff1d7b2b8",
+      "historical_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "historical_port_sha256": "4bd3a243c7b8a3ab5d558492fc4255fc5a854b5a1f80a61c903ca7b58432cea0",
+      "output": "spec/e_table_tests.cpp",
+      "profile_port_assertions": {
+        "BOOST_CHECK_THROW": 3,
+        "BOOST_REQUIRE": 0,
+        "BOOST_REQUIRE_NO_THROW": 0,
+        "BOOST_TEST": 0
+      },
+      "profile_port_sha256": "4bd3a243c7b8a3ab5d558492fc4255fc5a854b5a1f80a61c903ca7b58432cea0",
+      "registration_sha256": "cc30145e2fe8b389360ad75f56950a8bc4088aba3bcf02165500384a4d9bf6f3",
+      "source": "spec/e_table_tests.cpp"
+    }
+  ],
+  "support_inputs": [
+    {
+      "path": "support/host_functions_tests_0.wasm.hpp",
+      "sha256": "e926440cd22920eeaeff15a24032211edffd594b05d13ecd20afcf7d7fe3c884"
+    },
+    {
+      "path": "support/host_functions_tests_1.wasm.hpp",
+      "sha256": "b569b856b8352caaeed25cd5d94d80c451fa3fefd429c7098fb25b51db90d542"
+    },
+    {
+      "path": "support/implementation_limits.hpp",
+      "sha256": "e70e5498363528d00765f36f3d024fac00a364eedb822cfc068df17ea3fc9fd4"
+    },
+    {
+      "path": "support/reentry.wasm.hpp",
+      "sha256": "014f492f063bd2a0f022323b1eec77c7bed0fa2e1c4b3616337cbf8409fbbd74"
+    },
+    {
+      "path": "support/host.wasm",
+      "sha256": "2d90424c834705f7cdf99d9a973f6a77806c338c91946deddee880b4617b1983"
+    }
+  ],
+  "tool_inputs": [
+    {
+      "path": "port_donor_tests.py",
+      "sha256": "dfd81c54558d3ad920dd001567d140a65fef5ccb5151d71886a533d56be15011"
+    },
+    {
+      "path": "test_port_donor_tests.py",
+      "sha256": "3578f143a8c704664792b89c33ded711890513ed7cfab0b5ce92b87a50ac0a10"
+    },
+    {
+      "path": "PROFILE_ORACLE.md",
+      "sha256": "520fc54496782d55923300e9c738bb1ab18b9200703c89dd186ca176d4e36dc8"
+    }
+  ],
+  "verification_boundary": "Source transformation only; C++ compilation/runtime NOT_RUN by this slice"
+}

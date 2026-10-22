@@ -5,6 +5,62 @@ license by itself; see `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES`.
 
 Audit date: 2026-08-10.
 
+WASM source-lineage/runtime clarification: 2026-10-20. Other audit sections and
+historical qualification records are not re-audited by this clarification.
+
+## Experimental WAMR Replacement
+
+The replacement engine source is maintained in
+`SystasisIO/wasm-micro-runtime` on `forge-runtime-profile-v1`. This experimental
+working tree selects published draft fork candidate
+`f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b` through
+`cmake/ForgeWamrSource.cmake` and a clean `vendor/wamr` checkout. A fast-forward
+push and remote-ref read confirmed this commit in the existing draft branch/PR
+on 2026-10-19. Publication is not a merge or production acceptance.
+Its upstream base is `ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a`.
+The seven existing runtime/compiler patches were transferred as separate
+commits; at transfer commit `7459d1e`, all 22 changed engine files matched the
+previously qualified prepared source byte for byte. Forge now archives the clean pinned fork without
+build-time patch application. See the
+[fork provenance](docs/donors/forge-wamr-fork-v1.md).
+
+The subsequent reviewed commit `65f974b` corrects imported start and
+post-instantiation execution; its dedicated regression matrix is recorded
+in the same provenance note.
+Later reviewed commits add structured exception IDs, raw argument allocation
+classification and aligned runtime/AOT table layouts. Their bounded qualification
+is revision-scoped, not automatic acceptance of subsequent allocation-usage
+changes or products.
+Further reviewed commits correct CLI allocation callbacks, static native frame
+placement and block-type policy, then add budgeted native loading and eager LLVM
+JIT preparation. The candidate also includes native instruction profiling
+through the existing opcode translator, LLVM debug metadata and ORC object
+layer. Earlier execution results, including those for `ed5c12a`, retain their
+original revisions in the owning fork/follow-up notes; they are not
+automatically transferred to later candidates. A local pin, scoped source review or
+successful configure is not full runtime, installed-consumer or product
+qualification. Candidate-specific status is recorded separately in the
+[integration note](docs/donors/forge-wamr-dev-integration-20261018.md) and its
+owning evidence.
+
+Commit `69c107c` adds a sticky, typed FP-guard failure status in the existing
+exec-env, after its previous scalar fields and outside the AOT-visible prefix.
+Nested guards retain the first failure; only the embedder's outer operation may
+clear it. This distinguishes a failed FP transition from ordinary guest control
+flow without changing the public C API. The three-file change passed scoped
+source review and private interpreter probes at that historical checkpoint;
+its then-pending rebuild/delivery gates are not the current qualification state.
+Earlier `12d1f906` framework and product results retain their original source
+identity. The current fork also includes the reviewed Darwin DWARF unwind
+registration change in `f6fe6d5`; current CI and installed-runtime results are
+revision-scoped in the integration note, not complete product acceptance.
+
+WAMR remains under its upstream Apache License 2.0 with LLVM Exceptions,
+preserved in `vendor/wamr/LICENSE`. This dependency record does not relicense
+the existing EOS-derived implementation, converters or test code. Their
+notices remain until a source/dependency audit confirms which replacement
+targets and delivered artifacts no longer contain them.
+
 ## Resource Token Verification
 
 The optional host target `forge_auth_liboauth2` uses the SystasisIO/liboauth2
@@ -94,18 +150,30 @@ for host and guest targets. They are not duplicated inside the SDK.
 
 ## Confirmed Derived Or Adapted Source
 
-### Native EOS VM Port
+### EOS VM Source Lineage And Current Runtime
 
-`libraries/vm/wasm/interpret` is a source-derived C++23 module port of
-AntelopeIO/eos-vm commit `e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f`.
-The port preserves the donor parser, validation, interpreter, host-function
-conversion, guarded allocator, watchdog, deterministic SoftFloat behavior and
-x86_64 JIT implementation while renaming the public API to
-`forge::vm::wasm::interpret` and mapping failures to Forge exceptions.
+The original C++23 module port in `libraries/vm/wasm/interpret` was derived from
+AntelopeIO/eos-vm commit `e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f`. Retained
+host-function/value conversion, neutral allocation/container/signal/watchdog
+utilities and mapped test code still have donor source lineage. Replacing the
+engine does not make those portions FORGE-original or remove their notices.
 
-The derived library is distributed under EOS VM License V1.0, preserved in
-`libraries/vm/wasm/interpret/LICENSE.eos-vm`. Donor tests are mapped mechanically to
-Boost.Test and verified against source and fixture hashes. Test fixtures come
+In the current experimental candidate, the shared WAMR engine owns WASM parsing,
+validation, interpretation, AOT loading and explicitly enabled LLVM JIT
+execution. The retired EOS parser, interpreter/visitor/writer and x86_64
+machine-code backend are not current execution paths. The public `jit` and
+`jit_profile` selectors use the optional upstream WAMR LLVM JIT, not EOS code
+or a silent AOT/interpreter fallback. Ordinary interpreter/AOT runtime builds
+do not require LLVM codegen libraries; compiler and LLVM JIT are optional
+dependency boundaries. These source facts do not imply full migration or
+consumer acceptance.
+
+The EOS-derived portions retain their recorded EOS VM License V1.0 provenance;
+the complete license remains at `libraries/vm/wasm/interpret/LICENSE.eos-vm`,
+with existing notices unchanged. WAMR's separate license is recorded above;
+this clarification does not relicense either source lineage. Donor tests are
+mapped mechanically to Boost.Test and verified against source and fixture
+hashes. Test fixtures come
 from EOSIO/eos-vm-test-wasms commit
 `ffbbb552e6020623d8ae148d81a152c8ef700325`.
 
@@ -117,6 +185,12 @@ The donor Catch2 oracle retains the original test bodies. A hash-checked CI
 preparation step adds the nullable allocator overload and fixes forwarding
 reference classification in the donor host result conversion; no donor test or
 fixture is patched.
+
+The following two paragraphs retain the historical regression record of the
+earlier EOS-derived implementation. Statements about its parser, native writer,
+interpreter primitives or copied JIT tables describe that historical port,
+not current WAMR internals or qualification of the local candidate. The
+historical results are preserved below rather than relabeled as WAMR results.
 
 Forge carries regression-tested correctness fixes over the pinned donor:
 function-type equality checks non-void result types, `vector_to_string` sizes

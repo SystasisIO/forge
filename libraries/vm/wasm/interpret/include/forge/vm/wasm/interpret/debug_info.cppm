@@ -3,6 +3,7 @@ module;
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,8 @@ struct null_debug_info {
    void relocate(const void*) {}
 };
 
-// Maps a contiguous region of code to offsets onto the code section of the original wasm.
+// Native observers pin the immutable full-PC map and executable owner. Stop and
+// join sampling before moving, replacing or destroying the observer.
 class profile_instr_map {
    struct addr_entry {
       uint32_t offset;
@@ -45,14 +47,23 @@ class profile_instr_map {
    profile_instr_map() = default;
    profile_instr_map(const profile_instr_map&) = delete;
    profile_instr_map& operator=(const profile_instr_map&) = delete;
+   profile_instr_map(profile_instr_map&&) noexcept;
+   profile_instr_map& operator=(profile_instr_map&&) noexcept;
+   // Engine-neutral immutable observer. The lookup must be allocation-free and
+   // signal-safe; its context is owner.get(), retained for this object's lifetime.
+   profile_instr_map(std::shared_ptr<const void>, std::uint32_t (*)(const void*, std::uintptr_t) noexcept) noexcept;
 
    // Indicate that the executable code was moved/copied/mmapped/etc to another location
    void relocate(const void* new_base);
 
    // Cannot use most of the standard library as the STL is not async-signal-safe
-   std::uint32_t translate(const void* pc) const;
+   std::uint32_t translate(const void* pc) const noexcept;
 
  private:
+   using native_translate = std::uint32_t (*)(const void*, std::uintptr_t) noexcept;
+   std::shared_ptr<const void> _native_owner;
+   const void* _native_context = nullptr;
+   native_translate _native_translate = nullptr;
    const void* base_address = nullptr;
    std::size_t code_size = 0;
 

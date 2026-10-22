@@ -1,0 +1,806 @@
+diff --git a/core/iwasm/common/wasm_canonical_nan.h b/core/iwasm/common/wasm_canonical_nan.h
+new file mode 100644
+index 0000000..921aeb2
+--- /dev/null
++++ b/core/iwasm/common/wasm_canonical_nan.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception */
++#ifndef WASM_CANONICAL_NAN_H
++#define WASM_CANONICAL_NAN_H
++
++/* Arithmetic results only. Bitwise operations and transport preserve payloads. */
++static inline float
++wasm_canonical_F32(float value)
++{
++    union { float value; uint32 bits; } result = { .value = value };
++    if ((result.bits & 0x7fffffffU) > 0x7f800000U)
++        result.bits = 0x7fc00000U;
++    return result.value;
++}
++
++static inline double
++wasm_canonical_F64(double value)
++{
++    union { double value; uint64 bits; } result = { .value = value };
++    if ((result.bits & 0x7fffffffffffffffULL) > 0x7ff0000000000000ULL)
++        result.bits = 0x7ff8000000000000ULL;
++    return result.value;
++}
++#endif
+diff --git a/core/iwasm/common/wasm_fp_environment.h b/core/iwasm/common/wasm_fp_environment.h
+new file mode 100644
+index 0000000..6fabf41
+--- /dev/null
++++ b/core/iwasm/common/wasm_fp_environment.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception */
++#ifndef WASM_FP_ENVIRONMENT_H
++#define WASM_FP_ENVIRONMENT_H
++#include <fenv.h>
++#if defined(__x86_64__)
++#include <xmmintrin.h>
++#elif !defined(__aarch64__) && !defined(__arm64__)
++#error "The deterministic FP profile needs a qualified host FP environment"
++#endif
++
++typedef struct WASMFPEnvironment {
++    fenv_t saved;
++#if defined(__x86_64__)
++    unsigned int control;
++#else
++    unsigned long long control;
++    unsigned long long status;
++#endif
++} WASMFPEnvironment;
++
++static inline bool
++wasm_fp_leave(const WASMFPEnvironment *env)
++{
++    bool ok = fesetenv(&env->saved) == 0;
++#if defined(__x86_64__)
++    _mm_setcsr(env->control);
++#else
++    __asm__ volatile("msr fpcr, %0" : : "r"(env->control) : "memory");
++    __asm__ volatile("msr fpsr, %0" : : "r"(env->status) : "memory");
++#endif
++    return ok;
++}
++
++static inline bool
++wasm_fp_enter(WASMFPEnvironment *env)
++{
++    if (fegetenv(&env->saved) != 0)
++        return false;
++#if defined(__x86_64__)
++    env->control = _mm_getcsr();
++#else
++    __asm__ volatile("mrs %0, fpcr" : "=r"(env->control));
++    __asm__ volatile("mrs %0, fpsr" : "=r"(env->status));
++#endif
++    if (fesetenv(FE_DFL_ENV) != 0 || fesetround(FE_TONEAREST) != 0) {
++        wasm_fp_leave(env);
++        return false;
++    }
++    /* Disable host traps, flush-to-zero and nonstandard rounding modes. */
++#if defined(__x86_64__)
++    _mm_setcsr(0x1f80U);
++#else
++    __asm__ volatile("msr fpcr, %0" : : "r"(0ULL) : "memory");
++    __asm__ volatile("msr fpsr, %0" : : "r"(0ULL) : "memory");
++#endif
++    return true;
++}
++#endif
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index 6590684..d74b142 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -10,6 +10,7 @@
+ #include "wasm_native.h"
+ #include "wasm_runtime_common.h"
+ #include "wasm_memory.h"
++#include "wasm_fp_environment.h"
+ #if WASM_ENABLE_INTERP != 0
+ #include "../interpreter/wasm_runtime.h"
+ #endif
+@@ -1658,8 +1659,8 @@ wasm_runtime_get_max_mem(uint32 max_memory_pages, uint32 module_init_page_count,
+     return max_memory_pages;
+ }
+ 
+-WASMModuleInstanceCommon *
+-wasm_runtime_instantiate_internal(WASMModuleCommon *module,
++static WASMModuleInstanceCommon *
++instantiate_unguarded(WASMModuleCommon *module,
+                                   WASMModuleInstanceCommon *parent,
+                                   WASMExecEnv *exec_env_main,
+                                   const struct InstantiationArgs2 *args,
+@@ -1682,6 +1683,30 @@ wasm_runtime_instantiate_internal(WASMModuleCommon *module,
+     return NULL;
+ }
+ 
++WASMModuleInstanceCommon *
++wasm_runtime_instantiate_internal(WASMModuleCommon *module,
++                                  WASMModuleInstanceCommon *parent,
++                                  WASMExecEnv *exec_env_main,
++                                  const struct InstantiationArgs2 *args,
++                                  char *error_buf, uint32 error_buf_size)
++{
++    WASMFPEnvironment env;
++    WASMModuleInstanceCommon *result;
++    if (!wasm_fp_enter(&env)) {
++        set_error_buf(error_buf, error_buf_size, "FP environment setup failed");
++        return NULL;
++    }
++    result = instantiate_unguarded(module, parent, exec_env_main, args,
++                                   error_buf, error_buf_size);
++    if (!wasm_fp_leave(&env)) {
++        if (result)
++            wasm_runtime_deinstantiate(result);
++        set_error_buf(error_buf, error_buf_size, "FP environment restore failed");
++        return NULL;
++    }
++    return result;
++}
++
+ void
+ wasm_runtime_instantiation_args_set_defaults(struct InstantiationArgs2 *args)
+ {
+@@ -2764,8 +2789,8 @@ wasm_runtime_finalize_call_function(WASMExecEnv *exec_env,
+ }
+ #endif
+ 
+-bool
+-wasm_runtime_call_wasm(WASMExecEnv *exec_env,
++static bool
++call_wasm_unguarded(WASMExecEnv *exec_env,
+                        WASMFunctionInstanceCommon *function, uint32 argc,
+                        uint32 argv[])
+ {
+@@ -2822,6 +2847,19 @@ wasm_runtime_call_wasm(WASMExecEnv *exec_env,
+     return ret;
+ }
+ 
++bool
++wasm_runtime_call_wasm(WASMExecEnv *exec_env,
++                       WASMFunctionInstanceCommon *function, uint32 argc,
++                       uint32 argv[])
++{
++    WASMFPEnvironment env;
++    bool result;
++    if (!wasm_fp_enter(&env))
++        return false;
++    result = call_wasm_unguarded(exec_env, function, argc, argv);
++    return wasm_fp_leave(&env) && result;
++}
++
+ static void
+ parse_args_to_uint32_array(WASMFuncType *type, wasm_val_t *args,
+                            uint32 *out_argv)
+@@ -4899,8 +4937,8 @@ wasm_runtime_unregister_natives(const char *module_name,
+     return wasm_native_unregister_natives(module_name, native_symbols);
+ }
+ 
+-bool
+-wasm_runtime_invoke_native_raw(WASMExecEnv *exec_env, void *func_ptr,
++static bool
++invoke_native_raw_unguarded(WASMExecEnv *exec_env, void *func_ptr,
+                                const WASMFuncType *func_type,
+                                const char *signature, void *attachment,
+                                uint32 *argv, uint32 argc, uint32 *argv_ret)
+@@ -5187,8 +5225,8 @@ static volatile VoidFuncPtr invokeNative_Void =
+ #define MAX_REG_FLOATS 8
+ #endif
+ 
+-bool
+-wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
++static bool
++invoke_native_unguarded(WASMExecEnv *exec_env, void *func_ptr,
+                            const WASMFuncType *func_type, const char *signature,
+                            void *attachment, uint32 *argv, uint32 argc,
+                            uint32 *argv_ret)
+@@ -5751,8 +5789,8 @@ word_copy(uint32 *dest, uint32 *src, unsigned num)
+         *dest++ = *src++;
+ }
+ 
+-bool
+-wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
++static bool
++invoke_native_unguarded(WASMExecEnv *exec_env, void *func_ptr,
+                            const WASMFuncType *func_type, const char *signature,
+                            void *attachment, uint32 *argv, uint32 argc,
+                            uint32 *argv_ret)
+@@ -6059,8 +6097,8 @@ static V128FuncPtr invokeNative_V128 = (V128FuncPtr)(uintptr_t)invokeNative;
+ #if defined(__GNUC__) || defined(__clang__)
+ __attribute__((no_sanitize_address))
+ #endif
+-bool
+-wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
++static bool
++invoke_native_unguarded(WASMExecEnv *exec_env, void *func_ptr,
+                            const WASMFuncType *func_type, const char *signature,
+                            void *attachment, uint32 *argv, uint32 argc,
+                            uint32 *argv_ret)
+@@ -6403,7 +6441,37 @@ fail:
+                  || defined(BUILD_TARGET_RISCV64_LP64) */
+ 
+ bool
+-wasm_runtime_call_indirect(WASMExecEnv *exec_env, uint32 element_index,
++wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
++                           const WASMFuncType *func_type, const char *signature,
++                           void *attachment, uint32 *argv, uint32 argc,
++                           uint32 *argv_ret)
++{
++    WASMFPEnvironment env;
++    bool result;
++    if (!wasm_fp_enter(&env))
++        return false;
++    result = invoke_native_unguarded(exec_env, func_ptr, func_type, signature,
++                                     attachment, argv, argc, argv_ret);
++    return wasm_fp_leave(&env) && result;
++}
++
++bool
++wasm_runtime_invoke_native_raw(WASMExecEnv *exec_env, void *func_ptr,
++                               const WASMFuncType *func_type, const char *signature,
++                               void *attachment, uint32 *argv, uint32 argc,
++                               uint32 *argv_ret)
++{
++    WASMFPEnvironment env;
++    bool result;
++    if (!wasm_fp_enter(&env))
++        return false;
++    result = invoke_native_raw_unguarded(exec_env, func_ptr, func_type, signature,
++                                         attachment, argv, argc, argv_ret);
++    return wasm_fp_leave(&env) && result;
++}
++
++static bool
++call_indirect_unguarded(WASMExecEnv *exec_env, uint32 element_index,
+                            uint32 argc, uint32 argv[])
+ {
+     bool ret = false;
+@@ -6429,6 +6497,18 @@ wasm_runtime_call_indirect(WASMExecEnv *exec_env, uint32 element_index,
+     return ret;
+ }
+ 
++bool
++wasm_runtime_call_indirect(WASMExecEnv *exec_env, uint32 element_index,
++                           uint32 argc, uint32 argv[])
++{
++    WASMFPEnvironment env;
++    bool result;
++    if (!wasm_fp_enter(&env))
++        return false;
++    result = call_indirect_unguarded(exec_env, element_index, argc, argv);
++    return wasm_fp_leave(&env) && result;
++}
++
+ static void
+ exchange_uint32(uint8 *p_data)
+ {
+diff --git a/core/iwasm/compilation/aot_emit_control.c b/core/iwasm/compilation/aot_emit_control.c
+index dccedb4..c95b81c 100644
+--- a/core/iwasm/compilation/aot_emit_control.c
++++ b/core/iwasm/compilation/aot_emit_control.c
+@@ -941,14 +941,8 @@ check_suspend_flags(AOTCompContext *comp_ctx, AOTFuncContext *func_ctx,
+     LLVMValueRef terminate_addr, terminate_flags, flag, offset, res;
+     LLVMBasicBlockRef terminate_block, non_terminate_block;
+     AOTFuncType *aot_func_type = func_ctx->aot_func->func_type;
+-    bool is_shared_memory =
+-        comp_ctx->comp_data->memories[0].flags & 0x02 ? true : false;
+-
+-    /* Only need to check the suspend flags when memory is shared since
+-       shared memory must be enabled for multi-threading */
+-    if (!is_shared_memory) {
+-        return true;
+-    }
++    /* Host cancellation also applies to single-threaded, ordinary-memory
++       modules. It must not depend on guest shared-memory admission. */
+ 
+     /* Offset of suspend_flags */
+     offset = I32_FIVE;
+@@ -975,6 +969,8 @@ check_suspend_flags(AOTCompContext *comp_ctx, AOTFuncContext *func_ctx,
+     /* Set terminate_flags memory access to volatile, so that the value
+         will always be loaded from memory rather than register */
+     LLVMSetVolatile(terminate_flags, true);
++    LLVMSetOrdering(terminate_flags, LLVMAtomicOrderingAcquire);
++    LLVMSetAlignment(terminate_flags, 4);
+ 
+     if (!(flag = LLVMBuildAnd(comp_ctx->builder, terminate_flags, I32_ONE,
+                               "termination_flag"))) {
+diff --git a/core/iwasm/compilation/aot_emit_conversion.c b/core/iwasm/compilation/aot_emit_conversion.c
+index fa5c2ab..aeedddc 100644
+--- a/core/iwasm/compilation/aot_emit_conversion.c
++++ b/core/iwasm/compilation/aot_emit_conversion.c
+@@ -756,7 +756,7 @@ aot_compile_op_f32_demote_f64(AOTCompContext *comp_ctx,
+         return false;
+     }
+ 
+-    PUSH_F32(res);
++    PUSH_F32(aot_canonicalize_nan(comp_ctx, res, true));
+     return true;
+ fail:
+     return false;
+@@ -865,7 +865,7 @@ aot_compile_op_f64_promote_f32(AOTCompContext *comp_ctx,
+         return false;
+     }
+ 
+-    PUSH_F64(res);
++    PUSH_F64(aot_canonicalize_nan(comp_ctx, res, false));
+ 
+     /* Avoid the promote being optimized away */
+     PUSH_F64(F64_CONST(1.0));
+diff --git a/core/iwasm/compilation/aot_emit_numberic.c b/core/iwasm/compilation/aot_emit_numberic.c
+index d74e748..dd8abb0 100644
+--- a/core/iwasm/compilation/aot_emit_numberic.c
++++ b/core/iwasm/compilation/aot_emit_numberic.c
+@@ -11,6 +11,20 @@
+ 
+ #include <stdarg.h>
+ 
++LLVMValueRef
++aot_canonicalize_nan(AOTCompContext *comp_ctx, LLVMValueRef value, bool is_f32)
++{
++    LLVMTypeRef integer = is_f32 ? I32_TYPE : I64_TYPE;
++    LLVMValueRef bits = LLVMBuildBitCast(comp_ctx->builder, value, integer, "fp_bits");
++    LLVMValueRef magnitude = LLVMBuildAnd(comp_ctx->builder, bits,
++        LLVMConstInt(integer, is_f32 ? 0x7fffffffULL : 0x7fffffffffffffffULL, false), "fp_magnitude");
++    LLVMValueRef nan = LLVMBuildICmp(comp_ctx->builder, LLVMIntUGT, magnitude,
++        LLVMConstInt(integer, is_f32 ? 0x7f800000ULL : 0x7ff0000000000000ULL, false), "is_nan");
++    LLVMValueRef selected = LLVMBuildSelect(comp_ctx->builder, nan,
++        LLVMConstInt(integer, is_f32 ? 0x7fc00000ULL : 0x7ff8000000000000ULL, false), bits, "canonical_nan");
++    return LLVMBuildBitCast(comp_ctx->builder, selected, is_f32 ? F32_TYPE : F64_TYPE, "canonical_fp");
++}
++
+ #define LLVM_BUILD_ICMP(op, left, right, res, name)                           \
+     do {                                                                      \
+         if (!(res =                                                           \
+@@ -135,6 +149,8 @@
+                 aot_set_last_error(err); \
+             return false;                \
+         }                                \
++        if (math_op != FLOAT_ABS && math_op != FLOAT_NEG) \
++            res = aot_canonicalize_nan(comp_ctx, res, is_f32); \
+         PUSH_FLOAT(res);                 \
+     } while (0)
+ 
+@@ -148,6 +164,8 @@
+                 aot_set_last_error(err); \
+             return false;                \
+         }                                \
++        if (canonicalize) \
++            res = aot_canonicalize_nan(comp_ctx, res, is_f32); \
+         PUSH_FLOAT(res);                 \
+     } while (0)
+ 
+@@ -949,6 +967,7 @@ static bool
+ compile_op_float_arithmetic(AOTCompContext *comp_ctx, AOTFuncContext *func_ctx,
+                             FloatArithmetic arith_op, bool is_f32)
+ {
++    const bool canonicalize = true;
+     switch (arith_op) {
+         case FLOAT_ADD:
+             if (is_targeting_soft_float(comp_ctx, is_f32))
+@@ -1130,6 +1149,7 @@ static bool
+ compile_float_copysign(AOTCompContext *comp_ctx, AOTFuncContext *func_ctx,
+                        bool is_f32)
+ {
++    const bool canonicalize = false;
+     LLVMTypeRef ret_type, param_types[2];
+ 
+     param_types[0] = param_types[1] = ret_type = is_f32 ? F32_TYPE : F64_TYPE;
+diff --git a/core/iwasm/compilation/aot_emit_numberic.h b/core/iwasm/compilation/aot_emit_numberic.h
+index 7206315..c9d0179 100644
+--- a/core/iwasm/compilation/aot_emit_numberic.h
++++ b/core/iwasm/compilation/aot_emit_numberic.h
+@@ -12,6 +12,9 @@
+ extern "C" {
+ #endif
+ 
++LLVMValueRef
++aot_canonicalize_nan(AOTCompContext *comp_ctx, LLVMValueRef value, bool is_f32);
++
+ bool
+ aot_compile_op_i32_clz(AOTCompContext *comp_ctx, AOTFuncContext *func_ctx);
+ 
+diff --git a/core/iwasm/interpreter/wasm_interp.h b/core/iwasm/interpreter/wasm_interp.h
+index 1416405..853af86 100644
+--- a/core/iwasm/interpreter/wasm_interp.h
++++ b/core/iwasm/interpreter/wasm_interp.h
+@@ -98,7 +98,8 @@ wasm_interp_interp_frame_size(unsigned all_cell_num)
+ #else
+     frame_size = (uint32)offsetof(WASMInterpFrame, operand) + all_cell_num * 4;
+ #endif
+-    return align_uint(frame_size, 4);
++    /* Frames contain native pointers, even though operands use 32-bit cells. */
++    return align_uint(frame_size, sizeof(void *));
+ }
+ 
+ void
+diff --git a/core/iwasm/interpreter/wasm_interp_classic.c b/core/iwasm/interpreter/wasm_interp_classic.c
+index 612f4c2..78d65b1 100644
+--- a/core/iwasm/interpreter/wasm_interp_classic.c
++++ b/core/iwasm/interpreter/wasm_interp_classic.c
+@@ -10,6 +10,7 @@
+ #include "wasm_loader.h"
+ #include "wasm_memory.h"
+ #include "../common/wasm_exec_env.h"
++#include "../common/wasm_canonical_nan.h"
+ #if WASM_ENABLE_GC != 0
+ #include "../common/gc/gc_object.h"
+ #include "mem_alloc.h"
+@@ -861,6 +862,19 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
+         PUSH_##src_op_type(method(src_val));       \
+     } while (0)
+ 
++#define DEF_OP_FP_NUMERIC(type, kind, op) \
++    do { \
++        type right = POP_##kind(); \
++        type left = POP_##kind(); \
++        PUSH_##kind(wasm_canonical_##kind(left op right)); \
++    } while (0)
++
++#define DEF_OP_FP_MATH(type, kind, method) \
++    do { \
++        type value = POP_##kind(); \
++        PUSH_##kind(wasm_canonical_##kind(method(value))); \
++    } while (0)
++
+ #define TRUNC_FUNCTION(func_name, src_type, dst_type, signed_type)  \
+     static dst_type func_name(src_type src_value, src_type src_min, \
+                               src_type src_max, dst_type dst_min,   \
+@@ -5299,55 +5313,55 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F32_CEIL)
+             {
+-                DEF_OP_MATH(float32, F32, ceilf);
++                DEF_OP_FP_MATH(float32, F32, ceilf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_FLOOR)
+             {
+-                DEF_OP_MATH(float32, F32, floorf);
++                DEF_OP_FP_MATH(float32, F32, floorf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_TRUNC)
+             {
+-                DEF_OP_MATH(float32, F32, truncf);
++                DEF_OP_FP_MATH(float32, F32, truncf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_NEAREST)
+             {
+-                DEF_OP_MATH(float32, F32, rintf);
++                DEF_OP_FP_MATH(float32, F32, rintf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_SQRT)
+             {
+-                DEF_OP_MATH(float32, F32, sqrtf);
++                DEF_OP_FP_MATH(float32, F32, sqrtf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_ADD)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, +);
++                DEF_OP_FP_NUMERIC(float32, F32, +);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_SUB)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, -);
++                DEF_OP_FP_NUMERIC(float32, F32, -);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_MUL)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, *);
++                DEF_OP_FP_NUMERIC(float32, F32, *);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_DIV)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, /);
++                DEF_OP_FP_NUMERIC(float32, F32, /);
+                 HANDLE_OP_END();
+             }
+ 
+@@ -5403,55 +5417,55 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F64_CEIL)
+             {
+-                DEF_OP_MATH(float64, F64, ceil);
++                DEF_OP_FP_MATH(float64, F64, ceil);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_FLOOR)
+             {
+-                DEF_OP_MATH(float64, F64, floor);
++                DEF_OP_FP_MATH(float64, F64, floor);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_TRUNC)
+             {
+-                DEF_OP_MATH(float64, F64, trunc);
++                DEF_OP_FP_MATH(float64, F64, trunc);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_NEAREST)
+             {
+-                DEF_OP_MATH(float64, F64, rint);
++                DEF_OP_FP_MATH(float64, F64, rint);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_SQRT)
+             {
+-                DEF_OP_MATH(float64, F64, sqrt);
++                DEF_OP_FP_MATH(float64, F64, sqrt);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_ADD)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, +);
++                DEF_OP_FP_NUMERIC(float64, F64, +);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_SUB)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, -);
++                DEF_OP_FP_NUMERIC(float64, F64, -);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_MUL)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, *);
++                DEF_OP_FP_NUMERIC(float64, F64, *);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_DIV)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, /);
++                DEF_OP_FP_NUMERIC(float64, F64, /);
+                 HANDLE_OP_END();
+             }
+ 
+@@ -5597,7 +5611,8 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F32_DEMOTE_F64)
+             {
+-                DEF_OP_CONVERT(float32, F32, float64, F64);
++                float64 value = POP_F64();
++                PUSH_F32(wasm_canonical_F32((float32)value));
+                 HANDLE_OP_END();
+             }
+ 
+@@ -5628,7 +5643,8 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F64_PROMOTE_F32)
+             {
+-                DEF_OP_CONVERT(float64, F64, float32, F32);
++                float32 value = POP_F32();
++                PUSH_F64(wasm_canonical_F64((float64)value));
+                 HANDLE_OP_END();
+             }
+ 
+@@ -6788,6 +6804,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+             cell_num_of_local_stack = cur_func->param_cell_num
+                                       + cur_func->local_cell_num
+                                       + max_stack_cell_num;
++            /* Branch blocks contain pointers and cannot start on an odd cell. */
++            cell_num_of_local_stack = align_uint(cell_num_of_local_stack,
++                                                 sizeof(void *) / sizeof(uint32));
+             all_cell_num = cell_num_of_local_stack
+                            + cur_wasm_func->max_block_num
+                                  * (uint32)sizeof(WASMBranchBlock) / 4;
+@@ -6818,7 +6837,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+             frame->sp_boundary = frame->sp_bottom + max_stack_cell_num;
+ 
+             frame_csp = frame->csp_bottom =
+-                (WASMBranchBlock *)frame->sp_boundary;
++                (WASMBranchBlock *)(frame_lp + cell_num_of_local_stack);
+             frame->csp_boundary =
+                 frame->csp_bottom + cur_wasm_func->max_block_num;
+ 
+diff --git a/core/iwasm/interpreter/wasm_interp_fast.c b/core/iwasm/interpreter/wasm_interp_fast.c
+index a4d6fe6..08c5eb9 100644
+--- a/core/iwasm/interpreter/wasm_interp_fast.c
++++ b/core/iwasm/interpreter/wasm_interp_fast.c
+@@ -10,6 +10,7 @@
+ #include "wasm_loader.h"
+ #include "wasm_memory.h"
+ #include "../common/wasm_exec_env.h"
++#include "../common/wasm_canonical_nan.h"
+ #if WASM_ENABLE_GC != 0
+ #include "../common/gc/gc_object.h"
+ #include "mem_alloc.h"
+@@ -719,6 +720,21 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
+         frame_ip += 4;                                                        \
+     } while (0)
+ 
++#define DEF_OP_FP_NUMERIC(type, kind, op) \
++    do { \
++        type right = GET_OPERAND(type, kind, 0); \
++        type left = GET_OPERAND(type, kind, 2); \
++        SET_OPERAND(kind, 4, wasm_canonical_##kind(left op right)); \
++        frame_ip += 6; \
++    } while (0)
++
++#define DEF_OP_FP_MATH(type, kind, method) \
++    do { \
++        type value = GET_OPERAND(type, kind, 0); \
++        SET_OPERAND(kind, 2, wasm_canonical_##kind(method(value))); \
++        frame_ip += 4; \
++    } while (0)
++
+ #define TRUNC_FUNCTION(func_name, src_type, dst_type, signed_type)  \
+     static dst_type func_name(src_type src_value, src_type src_min, \
+                               src_type src_max, dst_type dst_min,   \
+@@ -4596,55 +4612,55 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F32_CEIL)
+             {
+-                DEF_OP_MATH(float32, F32, ceilf);
++                DEF_OP_FP_MATH(float32, F32, ceilf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_FLOOR)
+             {
+-                DEF_OP_MATH(float32, F32, floorf);
++                DEF_OP_FP_MATH(float32, F32, floorf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_TRUNC)
+             {
+-                DEF_OP_MATH(float32, F32, truncf);
++                DEF_OP_FP_MATH(float32, F32, truncf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_NEAREST)
+             {
+-                DEF_OP_MATH(float32, F32, rintf);
++                DEF_OP_FP_MATH(float32, F32, rintf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_SQRT)
+             {
+-                DEF_OP_MATH(float32, F32, sqrtf);
++                DEF_OP_FP_MATH(float32, F32, sqrtf);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_ADD)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, +);
++                DEF_OP_FP_NUMERIC(float32, F32, +);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_SUB)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, -);
++                DEF_OP_FP_NUMERIC(float32, F32, -);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_MUL)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, *);
++                DEF_OP_FP_NUMERIC(float32, F32, *);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F32_DIV)
+             {
+-                DEF_OP_NUMERIC(float32, float32, F32, /);
++                DEF_OP_FP_NUMERIC(float32, F32, /);
+                 HANDLE_OP_END();
+             }
+ 
+@@ -4702,55 +4718,55 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F64_CEIL)
+             {
+-                DEF_OP_MATH(float64, F64, ceil);
++                DEF_OP_FP_MATH(float64, F64, ceil);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_FLOOR)
+             {
+-                DEF_OP_MATH(float64, F64, floor);
++                DEF_OP_FP_MATH(float64, F64, floor);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_TRUNC)
+             {
+-                DEF_OP_MATH(float64, F64, trunc);
++                DEF_OP_FP_MATH(float64, F64, trunc);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_NEAREST)
+             {
+-                DEF_OP_MATH(float64, F64, rint);
++                DEF_OP_FP_MATH(float64, F64, rint);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_SQRT)
+             {
+-                DEF_OP_MATH(float64, F64, sqrt);
++                DEF_OP_FP_MATH(float64, F64, sqrt);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_ADD)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, +);
++                DEF_OP_FP_NUMERIC(float64, F64, +);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_SUB)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, -);
++                DEF_OP_FP_NUMERIC(float64, F64, -);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_MUL)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, *);
++                DEF_OP_FP_NUMERIC(float64, F64, *);
+                 HANDLE_OP_END();
+             }
+ 
+             HANDLE_OP(WASM_OP_F64_DIV)
+             {
+-                DEF_OP_NUMERIC_64(float64, float64, F64, /);
++                DEF_OP_FP_NUMERIC(float64, F64, /);
+                 HANDLE_OP_END();
+             }
+ 
+@@ -4889,7 +4905,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F32_DEMOTE_F64)
+             {
+-                DEF_OP_CONVERT(float32, F32, float64, F64);
++                float64 value = GET_OPERAND(float64, F64, 0);
++                SET_OPERAND(F32, 2, wasm_canonical_F32((float32)value));
++                frame_ip += 4;
+                 HANDLE_OP_END();
+             }
+ 
+@@ -4920,7 +4938,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+             HANDLE_OP(WASM_OP_F64_PROMOTE_F32)
+             {
+-                DEF_OP_CONVERT(float64, F64, float32, F32);
++                float32 value = GET_OPERAND(float32, F32, 0);
++                SET_OPERAND(F64, 2, wasm_canonical_F64((float64)value));
++                frame_ip += 4;
+                 HANDLE_OP_END();
+             }
+ 

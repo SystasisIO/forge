@@ -1,0 +1,79 @@
+{
+  "status": "SCOPED_NATIVE_CHECKPOINT_PASS_PROBE_FIX_PENDING_REVIEW",
+  "fork_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-public-migration-20261016/wamr-fork",
+  "fork_base": "ed5c12ae6bcec88f2863aa7c541b6d829d657a4c",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-experiment-v1",
+  "fork_files": {
+    "core/iwasm/compilation/aot.c": "a8c038b23e4f1a27417613f4b977b4661dc62561ab88a8d1cf3557034c7684c5",
+    "core/iwasm/compilation/aot_compiler.c": "07d79f6ec05449738c904337e4ae3d46eb4f3e3db8234f1391e70affc089265e",
+    "core/iwasm/compilation/aot_llvm.c": "ec22652a328cb2574692f46ed9b798e5c91412be07b1814df524e1c5cf5e489b",
+    "core/iwasm/compilation/aot_llvm.h": "4d9e323b21efc27d25149c02f30675b10bd4e678e165536ccdc8d89157f859b9",
+    "core/iwasm/compilation/aot_llvm_extra.cpp": "d7b16d4b077f383c451feb898a15a45b9c162382c5b30d67a2e5f9fe2a5ec5d7",
+    "core/iwasm/compilation/aot_llvm_extra.h": "ed28ac24d3858a223025f8695025e528e8f1fb1e7444a4eebd490b79b034ed04",
+    "core/iwasm/compilation/aot_orc_extra.cpp": "335e2fa0d55384aa2dc9037a0f7d29aa567c67ed5bf47b80c8ded4b8dddf9e9c",
+    "core/iwasm/compilation/aot_orc_extra.h": "d0881271ec5b33c36c934a20605fecb1945ebf55b112e3c10ac089ad846d7f6a",
+    "core/iwasm/compilation/aot_orc_extra2.cpp": "7e8bd90b9d4d782f1a0ce19e144b509512585d2475b1ec9cb7f8df0d9d067ec7",
+    "core/iwasm/include/aot_comp_option.h": "338fa1fae0cab3337d7faa820b201a8bf45593f75c2ecadc6801a45424174bf1",
+    "core/iwasm/interpreter/wasm_loader.c": "6cae4a56210ba442027f834be7d46507f4d79e73c6c7a41969c721acef14160c",
+    "core/iwasm/interpreter/wasm_loader.h": "4666ffecc8d4d0dd7d3cf5ed547aa40c75ff3e48f7b9fff13410d029aa3037f4"
+  },
+  "common_private_files_frozen_unchanged": {
+    "libraries/vm/wasm/interpret/engine_instance.cpp": "ec28bc4c44920226c02a5558e8b443b9504852345230ef2be3b26a3048601baf",
+    "libraries/vm/wasm/interpret/details/engine_instance.hxx": "8d43bf7e035de8366b5047e4daacb26fcdc51fbac0612dbde72fce54c9677a13"
+  },
+  "public_files_frozen_unchanged": {
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "98fbd186ca37fce773db9d0d8a754a8d29918ff597f4e85e31607c03293dc5e5",
+    "libraries/vm/wasm/interpret/prepared_module_context.cpp": "dc8c4cbd6b84b2ac43f73c5733ff7fad53a105eb9f42600913f80edbb29a6890"
+  },
+  "jit_aspects_and_probes": {
+    "libraries/vm/wasm/interpret/engine_module_jit.cpp": "964f0c824a1c77f8db0ceb3b14a314a265494702b96e5f9de4d46d9690f1e3d9",
+    "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "8db83b19efdf5ec3eb88f870d57767231632542bb97f18c313dc487884423452",
+    "tests/vm_wamr/jit/load_probe.cpp": "c819d692b823e4e68e0928e24a36823067a66d19be31409b5f77ac39cad9d63a",
+    "tests/vm_wamr/jit/native_maps_probe.cpp": "255b7e4ae39cd02a754905254e44dc503db79d44caa90a581eb56269a0d15323",
+    "tests/vm_wamr/jit/README.md": "ea45f53e8b97e31b96ff14d379bb0f5245f872b3a39500431ff884f9e63985fa"
+  },
+  "checks": {
+    "fork_six_tus_syntax_jit_0_and_1": "PASS, LLVM 22.1.8; -fsyntax-only, retained compiler/classic compile_commands retargeted to this fork",
+    "engine_instance_and_engine_module_jit_syntax_0_and_1": "PASS, no object output",
+    "prepared_module_jit_and_load_probe_syntax_0_and_1": "PASS, retained public-sidecar BMI/module map; no BMI rebuild",
+    "native_maps_probe_syntax_jit_1": "Superseded by real Release compile/link of corrected clone fixture and passing native mapper CTest",
+    "warning": "Inherited ASan command line redefines _FORTIFY_SOURCE (builtin 0 vs flag 2); not a runtime test",
+    "whitespace": "git diff --check PASS in fork and owned Forge scope",
+    "native_link_and_execute": "PASS: clone-probes.xml 7/7, real WAMR LLVM JIT on Darwin arm64; default upstream/interpreter behavior separately tested",
+    "public_default_off_rebuild_install": "Coordinator-owned, not claimed by this snapshot",
+    "tls_aot_c_syntax_jit_0_and_1": "PASS: existing platform TLS macro and forced whole-TU C11 fallback via stdin wrapper; -fsyntax-only, exact maintained fork",
+    "unchanged_syntax_evidence": "Unchanged source syntax evidence inherited from v2; load_probe.cpp differs only by the disclosed post-execution comment correction, without relabeling tested binaries",
+    "diagnostic_thread_isolation_execution": "PASS: 64 rounds, two workers and caller; no general parallel compilation claim",
+    "public_runtime": "PASS: public-runtime.xml 5/5 CTests, 81 Boost cases, 1775 assertions; invocation includes actual jit cancellation/deadline/start/export/reset/isolation specializations",
+    "c_runtime_provider": "PASS: three link maps, exactly one each full_init/load_ex/unload/destroy from libforge_vm_wasm_interpret.a(wasm_runtime_common.c.o); no isolated compiler runtime",
+    "feature_layout": "PASS: 75 WAMR source commands, one effective feature definition set; JIT1/FAST0/LAZY0/GC0/usage1/THREAD_MGR1/MEMORY_PROFILING1",
+    "native_probe_failure_history": "Preserved first 6/7 failure and diagnostic IR: recovery mutated factory module; fixed via clone plus exact source-IR immutability assertion; maps>=3/permission/negative/cleanup checks unchanged"
+  },
+  "pending": [
+    "Independent review of native_maps_probe.cpp clone isolation fix; fork production source unchanged from reviewed ed5c12a",
+    "Full 32KiB/depth1024 live-native-frame envelope, additional JIT-specific host-error priority/pre-start zero-host-effects fixtures remain outside this executed checkpoint",
+    "Linux/x86, hardened Darwin and general concurrent compilation qualification NOT_RUN here",
+    "Installed full product/consumer migration not qualified by these local native/public tests",
+    "LLVM IR/optimizer/object-buffer heap remains explicitly outside the agreed preparation ceiling; no universal OOM claim"
+  ],
+  "supersedes_snapshot": {
+    "path": "tests/vm_wamr/jit/source-freeze-orc-v2.json",
+    "sha256": "334af80c0c2c7028f9f6ce5a5f2f2181f32b89d883f3601d7af05b2c0aba72fc",
+    "unchanged_preexisting_files": 18,
+    "changed_owned_files": [
+      "tests/vm_wamr/jit/native_maps_probe.cpp",
+      "tests/vm_wamr/jit/README.md",
+      "tests/vm_wamr/jit/load_probe.cpp"
+    ]
+  },
+  "coordinator_probe_hashes": {
+    "tests/vm_wamr/jit/error_thread_probe.cpp": "3baa62745f5b921ec0304d0f358e1b063127d960ece06c76e3d3eb470fd15392"
+  },
+  "evidence_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-migration-20261016-r3/native-jit-ed5c12a",
+  "comment_only_after_execution": {
+    "path": "tests/vm_wamr/jit/load_probe.cpp",
+    "qualified_binary_source_sha256": "090261f12c62bf8fcfaea1b71159f0a270cc8d2428dfc13c8817c4c604393004",
+    "frozen_source_sha256": "c819d692b823e4e68e0928e24a36823067a66d19be31409b5f77ac39cad9d63a",
+    "change": "Two comment lines only; no executable code changed. No rebuild performed after coordinator released primary slot. final-binary-hashes.json retains the actually tested source hash."
+  }
+}

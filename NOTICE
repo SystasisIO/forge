@@ -22,6 +22,11 @@ source-file hashes are recorded in `vendor/libsodium/MANIFEST.md`.
 distributed under EOS VM License V1.0. The complete license is preserved in
 `libraries/vm/wasm/interpret/LICENSE.eos-vm`.
 
+The experimental replacement vendors WebAssembly Micro Runtime (WAMR) from
+the SystasisIO/wasm-micro-runtime fork. Its upstream license is Apache License
+2.0 with LLVM Exceptions, preserved in `vendor/wamr/LICENSE`. Fork provenance
+and the pinned revision are recorded in `docs/donors/forge-wamr-fork-v1.md`.
+
 `guest/libraries/runtime/details/allocator.hxx` is derived from AntelopeIO/cdt and
 EOSIO/eosio.cdt under the MIT License. Forge Contract SDK release archives also
 redistribute an unmodified LLVM/Clang/lld/libc++/compiler-rt toolchain under the

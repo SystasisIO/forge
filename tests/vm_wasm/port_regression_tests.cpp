@@ -4,9 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
-#include <sys/mman.h>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -29,10 +27,6 @@ static_assert(!std::is_copy_assignable_v<wasm::wasm_allocator>);
 static_assert(!std::is_move_constructible_v<wasm::wasm_allocator>);
 static_assert(!std::is_move_assignable_v<wasm::wasm_allocator>);
 static_assert(std::is_nothrow_destructible_v<wasm::wasm_allocator>);
-static_assert(!std::is_copy_constructible_v<wasm::growable_allocator>);
-static_assert(!std::is_copy_assignable_v<wasm::growable_allocator>);
-static_assert(!std::is_move_constructible_v<wasm::growable_allocator>);
-static_assert(!std::is_move_assignable_v<wasm::growable_allocator>);
 static_assert(!std::is_copy_constructible_v<wasm::stack_allocator>);
 static_assert(!std::is_copy_assignable_v<wasm::stack_allocator>);
 static_assert(std::is_nothrow_move_constructible_v<wasm::stack_allocator>);
@@ -129,7 +123,13 @@ template <typename Implementation, typename Exception> void check_zero_call_dept
    using runtime = wasm::backend<std::nullptr_t, Implementation, zero_call_depth_options>;
    auto instance = runtime{code, static_cast<wasm::wasm_allocator*>(nullptr), zero_call_depth_options{}};
 
-   BOOST_CHECK_THROW(instance.call_with_return("env", "run"), Exception);
+   const auto expected_code = [](const Exception& error) {
+      return error.code() == wasm::exceptions::make_error_code(wasm::exceptions::code::interpreter);
+   };
+   BOOST_TEST(instance.get_context().initialized());
+   BOOST_CHECK_EXCEPTION(instance.call_with_return("env", "run"), Exception, expected_code);
+   BOOST_CHECK_EXCEPTION(instance.get_context().call(nullptr, 0U, {}), Exception, expected_code);
+   BOOST_TEST(instance.get_context().initialized());
 }
 
 template <typename Implementation> void check_numeric_function_index() {
@@ -259,13 +259,30 @@ TEST_CASE("wasm allocator reset preserves reusable execution-lane ownership", "[
    BOOST_TEST(memory.get_base_ptr<std::uint8_t>()[0] == 0);
 }
 
+TEST_CASE("expression values preserve signed integers and floating point bits on copy", "[expr_value]") {
+   static_assert(std::is_aggregate_v<wasm::expr_value>);
+   static_assert(std::is_trivially_copyable_v<wasm::expr_value>);
+
+   const auto signed32 = wasm::expr_value{.i32 = -42};
+   const auto signed32_copy = signed32;
+   BOOST_TEST(signed32_copy.i32 == -42);
+
+   const auto signed64 = wasm::expr_value{.i64 = std::numeric_limits<std::int64_t>::min()};
+   const auto signed64_copy = signed64;
+   BOOST_TEST(signed64_copy.i64 == std::numeric_limits<std::int64_t>::min());
+
+   const auto float32 = wasm::expr_value{.f32 = UINT32_C(0x7fc01234)};
+   const auto float32_copy = float32;
+   BOOST_TEST(float32_copy.f32 == UINT32_C(0x7fc01234));
+
+   const auto float64 = wasm::expr_value{.f64 = UINT64_C(0x8000000000000000)};
+   const auto float64_copy = float64;
+   BOOST_TEST(float64_copy.f64 == UINT64_C(0x8000000000000000));
+}
+
 TEST_CASE("function type equality includes non-void result types", "[func_type]") {
-   auto lhs_allocator = wasm::growable_allocator{64};
-   auto rhs_allocator = wasm::growable_allocator{64};
-   auto lhs_parameters = wasm::guarded_vector<wasm::value_type>{lhs_allocator, 1};
-   auto rhs_parameters = wasm::guarded_vector<wasm::value_type>{rhs_allocator, 1};
-   lhs_parameters[0] = wasm::i32;
-   rhs_parameters[0] = wasm::i32;
+   auto lhs_parameters = std::vector<wasm::value_type>{wasm::i32};
+   auto rhs_parameters = std::vector<wasm::value_type>{wasm::i32};
 
    const auto lhs = wasm::func_type{wasm::func, std::move(lhs_parameters), 1, wasm::i32};
    const auto rhs = wasm::func_type{wasm::func, std::move(rhs_parameters), 1, wasm::i64};
@@ -370,12 +387,8 @@ TEST_CASE("default span proxies copy and write back without an alignment divisor
 }
 
 TEST_CASE("function type equality ignores absent result types", "[func_type]") {
-   auto lhs_allocator = wasm::growable_allocator{64};
-   auto rhs_allocator = wasm::growable_allocator{64};
-   auto lhs_parameters = wasm::guarded_vector<wasm::value_type>{lhs_allocator, 1};
-   auto rhs_parameters = wasm::guarded_vector<wasm::value_type>{rhs_allocator, 1};
-   lhs_parameters[0] = wasm::i32;
-   rhs_parameters[0] = wasm::i32;
+   auto lhs_parameters = std::vector<wasm::value_type>{wasm::i32};
+   auto rhs_parameters = std::vector<wasm::value_type>{wasm::i32};
 
    const auto lhs = wasm::func_type{wasm::func, std::move(lhs_parameters), 0, wasm::i32};
    const auto rhs = wasm::func_type{wasm::func, std::move(rhs_parameters), 0, wasm::i64};
@@ -390,8 +403,8 @@ TEST_CASE("vector to string sizes its destination", "[vector_to_string]") {
 }
 
 TEST_CASE("managed vectors preserve values across growth", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    values.push_back(7U);
    values.emplace_back(9U);
@@ -412,8 +425,8 @@ TEST_CASE("managed vectors preserve values across growth", "[managed_vector]") {
 }
 
 TEST_CASE("managed vector back returns the last appended element", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    static_assert(std::is_same_v<decltype(values.back()), std::uint32_t&>);
    BOOST_CHECK_THROW(values.back(), wasm::exceptions::vector_out_of_bounds);
@@ -432,8 +445,8 @@ TEST_CASE("managed vector back returns the last appended element", "[managed_vec
 }
 
 TEST_CASE("managed vector rejects empty pops without changing its index", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    BOOST_CHECK_THROW(values.pop_back(), wasm::exceptions::vector_out_of_bounds);
 
@@ -446,8 +459,8 @@ TEST_CASE("managed vector rejects empty pops without changing its index", "[mana
 }
 
 TEST_CASE("managed vector copy preserves the next insertion position", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
    auto source = std::array<std::uint32_t, 2>{7U, 9U};
 
    values.copy(source.data(), 0);
@@ -463,28 +476,6 @@ TEST_CASE("managed vector copy preserves the next insertion position", "[managed
    BOOST_TEST(values[0] == 7U);
    BOOST_TEST(values[1] == 9U);
    BOOST_TEST(values[2] == 11U);
-}
-
-TEST_CASE("code protection failures surface as allocation errors", "[allocator]") {
-   const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-   auto allocator = wasm::growable_allocator{};
-   allocator.use_fixed_memory(page_size);
-   auto* code = allocator.start_code();
-   static_cast<void>(allocator.alloc<std::byte>(1));
-   allocator.end_code<false>(code);
-   const auto span = allocator.get_code_span();
-
-   BOOST_REQUIRE(!span.empty());
-   BOOST_REQUIRE(::munmap(span.data(), span.size()) == 0);
-   BOOST_CHECK_THROW(allocator.disable_code(), wasm::exceptions::allocation);
-}
-
-TEST_CASE("zero-sized allocations do not require mapped storage", "[allocator]") {
-   auto allocator = wasm::growable_allocator{};
-
-   BOOST_TEST(allocator.alloc<std::byte>(0) == nullptr);
-   allocator.use_fixed_memory(static_cast<std::size_t>(::sysconf(_SC_PAGESIZE)));
-   BOOST_TEST(allocator.alloc<std::uint64_t>(0) == nullptr);
 }
 
 TEST_CASE("alternate stack allocation reports mapping failure", "[stack_allocator]") {
@@ -866,5 +857,139 @@ TEST_CASE("jit rejects out-of-range numeric function indexes", "[execution_conte
 
 TEST_CASE("jit resolves an empty export name", "[execution_context]") {
    check_empty_export_name<wasm::jit>();
+}
+#endif
+
+namespace {
+#include "host_functions_support.hpp"
+}
+
+TEST_CASE("memoryless donor converter uses real host objects without changing the source interface",
+          "[host_functions]") {
+   auto operands = wasm::operand_stack{};
+   const auto source = wasm::execution_interface{nullptr, 0, &operands};
+   auto converted = host_function_test_interface(source);
+   BOOST_CHECK(source.get_memory() == nullptr);
+   BOOST_TEST(source.memory_size == 0U);
+   BOOST_CHECK(converted.get_memory() == host_function_test_memory(nullptr));
+   BOOST_CHECK(converted.os == &operands);
+   BOOST_TEST(converted.memory_size == 65536U);
+   auto* pointer = static_cast<char*>(converted.get_memory()) + 4;
+   auto& reference = *pointer;
+   reference = 'x';
+   BOOST_TEST(host_function_test_memory(nullptr)[4] == 'x');
+   BOOST_CHECK(&reference == pointer);
+   BOOST_CHECK_THROW(source.validate_pointer<char>(4U, 1U), wasm::exceptions::memory);
+}
+
+TEST_CASE("donor converter preserves real WASM memory and operand storage", "[host_functions]") {
+   auto memory = std::array<char, 16>{};
+   auto operands = wasm::operand_stack{};
+   const auto source = wasm::execution_interface{memory.data(), memory.size(), &operands};
+   const auto converted = host_function_test_interface(source);
+   BOOST_CHECK(converted.get_memory() == memory.data());
+   BOOST_CHECK(host_function_test_memory(memory.data()) == memory.data());
+   BOOST_TEST(converted.memory_size == memory.size());
+   BOOST_CHECK(converted.os == &operands);
+}
+
+namespace {
+bool is_memory_error(const wasm::exceptions::memory& error) {
+   return error.code() == wasm::exceptions::make_error_code(wasm::exceptions::code::memory);
+}
+
+struct memoryless_pointer_host {
+   void pointer(void*) {
+      ++pointer_calls;
+   }
+   void number(std::uint32_t value) {
+      ++number_calls;
+      observed = value;
+   }
+   unsigned pointer_calls = 0;
+   unsigned number_calls = 0;
+   std::uint32_t observed = 0;
+};
+
+using memoryless_pointer_functions = wasm::registered_host_functions<memoryless_pointer_host>;
+
+void register_memoryless_pointer_functions() {
+   static const auto registered = [] {
+      memoryless_pointer_functions::add<&memoryless_pointer_host::pointer>("env", "pointer");
+      memoryless_pointer_functions::add<&memoryless_pointer_host::number>("env", "number");
+      return true;
+   }();
+   static_cast<void>(registered);
+}
+
+template <typename Implementation> void check_memoryless_pointer_calls() {
+   register_memoryless_pointer_functions();
+   auto code =
+       wasm::wasm_code{
+           0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x01, 0x7f, 0x00, 0x60,
+           0x00, 0x00, // (i32)->(), ()->()
+           0x02, 0x1c, 0x02, 0x03, 0x65, 0x6e, 0x76, 0x07, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x00,
+           0x00, 0x03, 0x65, 0x6e, 0x76, 0x06, 0x6e, 0x75, 0x6d, 0x62, 0x65, 0x72, 0x00, 0x00, // imports, no memory
+           0x03, 0x04, 0x03, 0x01, 0x01, 0x01, 0x07, 0x18, 0x03, 0x04, 0x69, 0x6e, 0x63, 0x30, 0x00, 0x02, // inc0
+           0x04, 0x69, 0x6e, 0x63, 0x34, 0x00, 0x03,                                                       // inc4
+           0x06, 0x73, 0x63, 0x61, 0x6c, 0x61, 0x72, 0x00, 0x04,                                           // scalar
+           0x0a, 0x16, 0x03, 0x06, 0x00, 0x41, 0x00, 0x10, 0x00, 0x0b,                                     // pointer(0)
+           0x06, 0x00, 0x41, 0x04, 0x10, 0x00, 0x0b,                                                       // pointer(4)
+           0x06, 0x00, 0x41, 0x2a, 0x10, 0x01, 0x0b                                                        // number(42)
+       };
+   using backend = wasm::backend<memoryless_pointer_functions, Implementation>;
+   for (const auto* name : {"inc0", "inc4"}) {
+      auto host = memoryless_pointer_host{};
+      auto instance = backend{code, host, nullptr};
+      BOOST_CHECK(instance.get_context().linear_memory() == nullptr);
+      BOOST_CHECK_EXCEPTION(instance.call(host, "env", name), wasm::exceptions::memory, is_memory_error);
+      BOOST_TEST(host.pointer_calls == 0U);
+      BOOST_TEST(host.number_calls == 0U);
+   }
+   auto host = memoryless_pointer_host{};
+   auto instance = backend{code, host, nullptr};
+   BOOST_CHECK_NO_THROW(instance.call(host, "env", "scalar"));
+   BOOST_TEST(host.pointer_calls == 0U);
+   BOOST_TEST(host.number_calls == 1U);
+   BOOST_TEST(host.observed == 42U);
+   BOOST_CHECK(instance.get_context().linear_memory() == nullptr);
+}
+} // namespace
+
+TEST_CASE("default pointer conversions reject absent memory before arithmetic", "[host_functions]") {
+   auto operands = wasm::operand_stack{};
+   auto converter =
+       wasm::type_converter<wasm::standalone_function_t>{nullptr, wasm::execution_interface{nullptr, 0, &operands}};
+   for (const auto offset : {0U, 4U}) {
+      const auto value = wasm::operand_stack_elem{wasm::i32_const_t{offset}};
+      BOOST_CHECK_EXCEPTION(converter.access(offset), wasm::exceptions::memory, is_memory_error);
+      BOOST_CHECK_EXCEPTION(converter.as_value<void*>(value), wasm::exceptions::memory, is_memory_error);
+   }
+   BOOST_CHECK_EXCEPTION(converter.as_result(static_cast<void*>(nullptr)), wasm::exceptions::memory, is_memory_error);
+}
+
+TEST_CASE("default pointer conversions preserve real and zero-size backed views", "[host_functions]") {
+   auto memory = std::array<char, 8>{};
+   auto operands = wasm::operand_stack{};
+   auto converter = wasm::type_converter<wasm::standalone_function_t>{
+       nullptr, wasm::execution_interface{memory.data(), memory.size(), &operands}};
+   for (const auto offset : {0U, 4U}) {
+      const auto value = wasm::operand_stack_elem{wasm::i32_const_t{offset}};
+      BOOST_CHECK(converter.access(offset) == memory.data() + offset);
+      BOOST_CHECK(converter.as_value<void*>(value) == memory.data() + offset);
+      BOOST_TEST(converter.as_result(static_cast<void*>(memory.data() + offset)).data.ui == offset);
+   }
+   auto empty = wasm::type_converter<wasm::standalone_function_t>{
+       nullptr, wasm::execution_interface{memory.data(), 0, &operands}};
+   BOOST_CHECK(empty.access() == memory.data());
+}
+
+TEST_CASE("interpreter refuses memoryless pointer imports before host side effects", "[host_functions]") {
+   check_memoryless_pointer_calls<wasm::interpreter>();
+}
+
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT && !defined(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
+TEST_CASE("jit refuses memoryless pointer imports before host side effects", "[host_functions]") {
+   check_memoryless_pointer_calls<wasm::jit>();
 }
 #endif

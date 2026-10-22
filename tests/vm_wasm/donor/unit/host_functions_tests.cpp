@@ -92,10 +92,10 @@ void c_style_host_function_4(const state_t& ss) {
 
 
 namespace {
-
+#include "host_functions_support.hpp"
 template<typename Host>
 struct cnv : type_converter<Host> {
-   using type_converter<Host>::type_converter;
+   cnv(Host* host, execution_interface interface) : type_converter<Host>(host, host_function_test_interface(interface)) {}
    using type_converter<Host>::from_wasm;
    using type_converter<Host>::to_wasm;
    template<typename T>
@@ -236,7 +236,7 @@ void check_put_ptr(B& bkend, const std::string& name) {
    for(auto fun : fun_prefixes) {
       fun += "put_" + name;
       int offset = next_ptr_offset();
-      const T value = const_cast<T>(bkend.get_context().linear_memory() + offset);
+      const T value = const_cast<T>(host_function_test_memory(bkend.get_context().linear_memory()) + offset);
       bkend.call("env", fun, value);
       BOOST_TEST(static_cast<bool>(global_test_value<T> == value));
    }
@@ -247,7 +247,7 @@ void check_put_ref(B& bkend, const std::string& name) {
    for(auto fun : fun_prefixes) {
       fun += "put_" + name;
       int offset = next_ptr_offset();
-      const auto value = &const_cast<T>(*(bkend.get_context().linear_memory() + offset));
+      const auto value = &const_cast<T>(*(host_function_test_memory(bkend.get_context().linear_memory()) + offset));
       bkend.call("env", fun, value);
       BOOST_TEST(static_cast<bool>(global_test_value<T>.val == value));
    }
@@ -269,7 +269,7 @@ void check_get_ptr(B& bkend, const std::string& name) {
    for(auto fun : fun_prefixes) {
       fun += "get_" + name;
       int offset = next_ptr_offset();
-      global_test_value<T> = const_cast<T>(bkend.get_context().linear_memory() + offset);
+      global_test_value<T> = const_cast<T>(host_function_test_memory(bkend.get_context().linear_memory()) + offset);
       BOOST_TEST(static_cast<bool>(bkend.call_with_return("env", fun)->to_ui32() == offset));
    }
 }
@@ -279,7 +279,7 @@ void check_get_ref(B& bkend, const std::string& name) {
    for(auto fun : fun_prefixes) {
       fun += "get_" + name;
       int offset = next_ptr_offset();
-      global_test_value<T> = const_cast<T>(*(bkend.get_context().linear_memory() + offset));
+      global_test_value<T> = const_cast<T>(*(host_function_test_memory(bkend.get_context().linear_memory()) + offset));
       BOOST_TEST(static_cast<bool>(bkend.call_with_return("env", fun)->to_ui32() == offset));
    }
 }

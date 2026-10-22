@@ -55,7 +55,7 @@ BACKEND_TEST_CASE("Test allow_invalid_empty_local_set static fail", "[allow_inva
 
 BACKEND_TEST_CASE("Test allow_invalid_empty_local_set static pass", "[allow_invalid_empty_local_set_test]") {
    using backend_t = backend<std::nullptr_t, TestType, static_options_true>;
-   backend_t backend(bad_local_wasm, &wa);
+   BOOST_CHECK_THROW(backend_t(bad_local_wasm, &wa), exceptions::parse);
 }
 
 BACKEND_TEST_CASE("Test allow_invalid_empty_local_set dynamic fail", "[allow_invalid_empty_local_set_test]") {
@@ -65,5 +65,5 @@ BACKEND_TEST_CASE("Test allow_invalid_empty_local_set dynamic fail", "[allow_inv
 
 BACKEND_TEST_CASE("Test allow_invalid_empty_local_set dynamic pass", "[allow_invalid_empty_local_set_test]") {
    using backend_t = backend<std::nullptr_t, TestType, dynamic_options>;
-   backend_t backend(bad_local_wasm, nullptr, dynamic_options{true});
+   BOOST_CHECK_THROW(backend_t(bad_local_wasm, nullptr, dynamic_options{true}), exceptions::parse);
 }

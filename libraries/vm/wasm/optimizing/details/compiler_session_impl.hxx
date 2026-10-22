@@ -11,6 +11,55 @@ struct compiler_session::impl {
       std::uint64_t resident_bytes = 0;
       std::size_t tickets = 0;
    };
+   struct resident_charge {
+      std::shared_ptr<accounting> account;
+      std::uint64_t bytes = 0;
+      std::uint64_t workspace_bytes = 0;
+      explicit resident_charge(std::shared_ptr<accounting>);
+      ~resident_charge();
+   };
+   // Caller-owned token metadata is charged to the existing session account
+   // before allocation and refunded after its final control block is freed.
+   template <typename T> struct resident_allocator {
+      using value_type = T;
+      std::shared_ptr<accounting> account;
+      std::uint64_t ceiling;
+      std::uint64_t* allocation_bytes = nullptr; // Used only by allocate during synchronous token construction.
+      resident_allocator(std::shared_ptr<accounting> value, std::uint64_t limit, std::uint64_t* bytes = nullptr)
+          : account(std::move(value)), ceiling(limit), allocation_bytes(bytes) {}
+      template <typename U>
+      resident_allocator(const resident_allocator<U>& value) noexcept
+          : account(value.account), ceiling(value.ceiling), allocation_bytes(value.allocation_bytes) {}
+      T* allocate(std::size_t count) {
+         if (count > static_cast<std::size_t>(-1) / sizeof(T))
+            throw std::bad_alloc{};
+         const auto bytes = count * sizeof(T);
+         {
+            const auto lock = std::scoped_lock{account->mutex};
+            if (account->resident_bytes > ceiling || bytes > ceiling - account->resident_bytes)
+               throw std::bad_alloc{};
+            account->resident_bytes += bytes;
+         }
+         try {
+            auto* result = std::allocator<T>{}.allocate(count);
+            if (allocation_bytes)
+               *allocation_bytes = bytes;
+            return result;
+         } catch (...) {
+            const auto lock = std::scoped_lock{account->mutex};
+            account->resident_bytes -= bytes;
+            throw;
+         }
+      }
+      void deallocate(T* pointer, std::size_t count) noexcept {
+         std::allocator<T>{}.deallocate(pointer, count);
+         const auto lock = std::scoped_lock{account->mutex};
+         account->resident_bytes -= count * sizeof(T);
+      }
+      template <typename U> bool operator==(const resident_allocator<U>& value) const noexcept {
+         return account == value.account && ceiling == value.ceiling;
+      }
+   };
    struct child;
    enum class initialization_phase { cold, initializing, ready, failed };
    struct initialization {
@@ -51,6 +100,7 @@ struct compiler_session::impl {
       // The SAME record owns a prepared result across compute's post-work
       // cancellation checkpoint; no mapping is hidden in a canceled result.
       std::optional<artifact> prepared;
+      std::optional<artifact> cleanup; // Failed native load stays reachable until explicit physical drain.
       std::uint64_t charged_bytes = 0;
       std::uint64_t resident_bytes = 0;
    };
@@ -82,7 +132,8 @@ struct compiler_session::impl {
    boost::asio::awaitable<std::vector<std::uint8_t>> exchange(std::shared_ptr<job>, std::vector<std::uint8_t>,
                                                               std::stop_token);
    boost::asio::awaitable<std::optional<artifact>> load(std::shared_ptr<job>, std::stop_token);
-   boost::asio::awaitable<artifact> prepare(std::shared_ptr<job>, std::vector<std::uint8_t>, std::stop_token);
+   boost::asio::awaitable<artifact> prepare(std::shared_ptr<job>, std::vector<std::uint8_t>, std::stop_token,
+                                            artifact::origin);
    boost::asio::awaitable<void> persist(std::shared_ptr<job>, std::stop_token);
    void initialize_cache(const target_profile&, asio::compute::context&);
    void scan_cache(const target_profile&, asio::compute::context&);
@@ -95,9 +146,10 @@ struct compiler_session::impl {
    void close_cache() noexcept;
    void finish(const std::shared_ptr<job>&, std::optional<completion>, std::exception_ptr);
    void release_job(const std::shared_ptr<job>&);
-   bool reserve_resident(std::uint64_t);
+   bool reserve_resident(std::uint64_t& planned_bytes, std::uint64_t owned_bytes, bool inherited);
    bool evict_one();
    void release_resident(std::uint64_t) noexcept;
+   void clear_ready();
 
    asio::runtime& runtime;
    asio::compute::executor compute;
@@ -112,8 +164,11 @@ struct compiler_session::impl {
    std::uint64_t generation = 0;
    std::uint64_t next_job = 1;
    std::uint64_t workspace_bytes = 0;
+   std::uint64_t base_resident_bytes = 0;
+   std::uint64_t base_inflight_bytes = 0;
    std::exception_ptr cancelled_error;
    std::exception_ptr allocation_error;
+   std::exception_ptr cleanup_error;
    bool stopped = false;
    bool quiescent = true;
    bool shutdown_active = false;

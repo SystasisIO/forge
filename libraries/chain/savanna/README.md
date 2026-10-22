@@ -37,6 +37,12 @@ Crypto Asymmetric, Crypto BLS, Crypto Digest, Raw and Variant dependencies.
 - `forge.chain.savanna.finality_witness_limits`: scalar limits, hard ceilings and
   their Describe metadata only; no protocol, checkpoint or replay dependency.
   `finality_witness` re-exports these same declarations for existing consumers.
+- `forge.chain.savanna.producer_opportunity`: the protocol-bearing producer-slot
+  record and its unchanged Describe field order, without replay or checkpoint
+  dependencies. `finality_witness` re-exports the same record; existing imports
+  and C++ names remain valid. Consumers of only this record can use the narrow
+  module. Its new named-module attachment requires rebuilding compiled module
+  interfaces and dependent archives together, not mixing old and new binaries.
 
 The same `forge_chain_savanna` target also provides the protocol-bound modules
 `policy_state`, `extensions`, `genesis`, `header_state`, `candidate`,

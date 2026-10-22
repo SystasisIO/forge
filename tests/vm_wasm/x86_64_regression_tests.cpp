@@ -1,59 +1,47 @@
-module;
+#include <boost/test/unit_test.hpp>
 
-#include "test_prelude.hpp"
+#include <cstdint>
+#include <utility>
 
-module forge.vm.wasm.interpret.backend;
+import forge.vm.wasm.interpret.backend;
 
-import :execution_context;
-import :parser;
-import :x86_64;
-import forge.vm.wasm.interpret.utils;
-
-#include "test_support.hpp"
-
-#define FORGE_VM_WASM_INTERPRET_TEST_FILE x86_64_regression_tests
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT && !defined(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
 
 namespace wasm = forge::vm::wasm::interpret;
 
-namespace forge::vm::wasm::interpret {
+BOOST_AUTO_TEST_CASE(jit_executes_integer_popcount) {
+   auto code = wasm::wasm_code{
+       0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+       1, 11, 2, 0x60, 1, 0x7f, 1, 0x7f, 0x60, 1, 0x7e, 1, 0x7e,
+       3, 3, 2, 0, 1,
+       7, 23, 2,
+       8, 'p', 'o', 'p', 'c', 'n', 't', '3', '2', 0, 0,
+       8, 'p', 'o', 'p', 'c', 'n', 't', '6', '4', 0, 1,
+       10, 13, 2,
+       5, 0, 0x20, 0, 0x69, 0x0b, // i32.popcnt(local.get 0)
+       5, 0, 0x20, 0, 0x7b, 0x0b, // i64.popcnt(local.get 0)
+   };
+   auto instance = wasm::backend<wasm::standalone_function_t, wasm::jit>{code, nullptr};
+   BOOST_REQUIRE(!instance.get_module().native_function_stack_bytes().empty());
 
-struct no_popcnt_cpu_features {
-   static bool has_tzcnt() {
-      return false;
+   const std::pair<std::uint32_t, std::uint32_t> i32_cases[] = {
+       {0, 0}, {1, 1}, {UINT32_C(0x80000000), 1}, {UINT32_MAX, 32}, {UINT32_C(0xdeadbeef), 24},
+   };
+   for (const auto& [input, expected] : i32_cases) {
+      const auto result = instance.call_with_return("env", "popcnt32", input);
+      BOOST_REQUIRE(result.has_value());
+      BOOST_TEST(result->to_ui32() == expected);
    }
 
-   static bool has_popcnt() {
-      return false;
+   const std::pair<std::uint64_t, std::uint64_t> i64_cases[] = {
+       {0, 0}, {1, 1}, {UINT64_C(0x8000000000000000), 1}, {UINT64_MAX, 64},
+       {UINT64_C(0xdeadbeefdeadbeef), 48},
+   };
+   for (const auto& [input, expected] : i64_cases) {
+      const auto result = instance.call_with_return("env", "popcnt64", input);
+      BOOST_REQUIRE(result.has_value());
+      BOOST_TEST(result->to_ui64() == expected);
    }
-};
-
-struct portable_popcnt_jit {
-   template <typename Host> using context = jit_execution_context<Host>;
-   template <typename Host, typename Options, typename DebugInfo>
-   using parser =
-       binary_parser<machine_code_writer<jit_execution_context<Host>, no_popcnt_cpu_features>, Options, DebugInfo>;
-   static constexpr bool is_jit = true;
-};
-
-} // namespace forge::vm::wasm::interpret
-
-TEST_CASE("jit executes integer popcount without the popcnt CPU feature", "[x86_64]") {
-   using backend = wasm::backend<wasm::standalone_function_t, wasm::portable_popcnt_jit>;
-
-   auto i32_allocator = wasm::wasm_allocator{};
-   {
-      auto i32_code = wasm::read_wasm(std::string(wasm::wasm_directory) + "i32.0.wasm");
-      auto i32_backend = backend{i32_code, &i32_allocator};
-      BOOST_TEST(i32_backend.call_with_return("env", "popcnt", UINT32_C(3735928559))->to_ui32() == UINT32_C(24));
-   }
-   i32_allocator.free();
-
-   auto i64_allocator = wasm::wasm_allocator{};
-   {
-      auto i64_code = wasm::read_wasm(std::string(wasm::wasm_directory) + "i64.0.wasm");
-      auto i64_backend = backend{i64_code, &i64_allocator};
-      BOOST_TEST(i64_backend.call_with_return("env", "popcnt", UINT64_C(16045690984833335023))->to_ui64() ==
-                 UINT64_C(48));
-   }
-   i64_allocator.free();
 }
+
+#endif

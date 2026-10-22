@@ -1,0 +1,154 @@
+diff --git a/core/iwasm/interpreter/wasm.h b/core/iwasm/interpreter/wasm.h
+index c60349d..e9dc326 100644
+--- a/core/iwasm/interpreter/wasm.h
++++ b/core/iwasm/interpreter/wasm.h
+@@ -706,6 +706,12 @@ struct WASMFunction {
+ 
+     uint32 max_stack_cell_num;
+     uint32 max_block_num;
++    /* Forge admission observations, before interpreter-specific lowering. */
++    uint32 forge_body_bytes;
++    uint32 forge_local_sets;
++    uint32 forge_operand_cells;
++    uint32 forge_br_table_elements;
++    uint64 forge_memory_offset;
+     uint32 code_size;
+     uint8 *code;
+ #if WASM_ENABLE_FAST_INTERP != 0
+@@ -916,6 +922,8 @@ struct WASMModule {
+     uint32 type_count;
+     uint32 import_count;
+     uint32 function_count;
++    uint64 forge_legacy_depth;
++    uint64 forge_max_legacy_depth;
+     uint32 table_count;
+     uint32 memory_count;
+ #if WASM_ENABLE_TAGS != 0
+diff --git a/core/iwasm/interpreter/wasm_loader.c b/core/iwasm/interpreter/wasm_loader.c
+index 0900223..952360a 100644
+--- a/core/iwasm/interpreter/wasm_loader.c
++++ b/core/iwasm/interpreter/wasm_loader.c
+@@ -3865,6 +3865,7 @@ load_function_section(const uint8 *buf, const uint8 *buf_end,
+     uint64 total_size;
+     uint32 code_count = 0, code_size, type_index, i, j, k, local_type_index;
+     uint32 local_count, local_set_count, sub_local_count, local_cell_num;
++    uint32 forge_body_bytes;
+     uint8 type;
+     WASMFunction *func;
+ #if WASM_ENABLE_GC != 0
+@@ -3924,6 +3925,7 @@ load_function_section(const uint8 *buf, const uint8 *buf_end,
+             }
+ 
+             /* Resolve local set count */
++            forge_body_bytes = code_size;
+             p_code_end = p_code + code_size;
+ #if WASM_ENABLE_BRANCH_HINTS != 0
+             uint8 *p_body_start = (uint8 *)p_code;
+@@ -4005,6 +4007,8 @@ load_function_section(const uint8 *buf, const uint8 *buf_end,
+             /* Set function type, local count, code size and code body */
+             func->func_type = (WASMFuncType *)module->types[type_index];
+             func->local_count = local_count;
++            func->forge_body_bytes = forge_body_bytes;
++            func->forge_local_sets = local_set_count;
+             if (local_count > 0)
+                 func->local_types = (uint8 *)func + sizeof(WASMFunction);
+             func->code_size = code_size;
+@@ -8487,6 +8491,7 @@ typedef struct BranchBlock {
+      * pop any type of value directly without decreasing stack top pointer
+      * and stack cell num. */
+     bool is_stack_polymorphic;
++    bool forge_parent_unreachable;
+ } BranchBlock;
+ 
+ typedef struct WASMLoaderContext {
+@@ -8497,6 +8502,9 @@ typedef struct WASMLoaderContext {
+     uint32 frame_ref_size;
+     uint32 stack_cell_num;
+     uint32 max_stack_cell_num;
++    uint32 forge_operand_cells;
++    uint64 forge_legacy_depth;
++    uint64 forge_max_legacy_depth;
+ 
+ #if WASM_ENABLE_GC != 0
+     /* frame reftype map stack */
+@@ -8965,6 +8973,13 @@ wasm_loader_push_frame_ref(WASMLoaderContext *ctx, uint8 type, char *error_buf,
+         *ctx->frame_ref++ = type;
+     ctx->stack_cell_num += type_cell_num;
+ 
++    if (ctx->csp_num > 0) {
++        const BranchBlock *block = ctx->frame_csp - 1;
++        if (!block->is_stack_polymorphic && !block->forge_parent_unreachable
++            && ctx->stack_cell_num > ctx->forge_operand_cells)
++            ctx->forge_operand_cells = ctx->stack_cell_num;
++    }
++
+     if (ctx->stack_cell_num > ctx->max_stack_cell_num) {
+         ctx->max_stack_cell_num = ctx->stack_cell_num;
+         if (ctx->max_stack_cell_num > UINT16_MAX) {
+@@ -9342,6 +9357,11 @@ wasm_loader_push_frame_csp(WASMLoaderContext *ctx, uint8 label_type,
+ {
+     CHECK_CSP_PUSH();
+     memset(ctx->frame_csp, 0, sizeof(BranchBlock));
++    if (ctx->csp_num > 0) {
++        const BranchBlock *parent = ctx->frame_csp - 1;
++        ctx->frame_csp->forge_parent_unreachable =
++            parent->is_stack_polymorphic || parent->forge_parent_unreachable;
++    }
+     ctx->frame_csp->label_type = label_type;
+     ctx->frame_csp->block_type = block_type;
+     ctx->frame_csp->start_addr = start_addr;
+@@ -11972,10 +11992,26 @@ re_scan:
+     }
+ #endif
+ 
++    loader_ctx->forge_legacy_depth = module->forge_legacy_depth;
++    loader_ctx->forge_max_legacy_depth = module->forge_max_legacy_depth;
+     PUSH_CSP(LABEL_TYPE_FUNCTION, func_block_type, p);
+ 
+     while (p < p_end) {
+         opcode = *p++;
++        /* Preserve the old optional counter, including else and function end.
++           Fast-interpreter rescans restart from the module's incoming state. */
++        if (opcode == WASM_OP_BLOCK || opcode == WASM_OP_LOOP
++            || opcode == WASM_OP_IF || opcode == WASM_OP_ELSE) {
++            loader_ctx->forge_legacy_depth++;
++            if (loader_ctx->forge_legacy_depth > loader_ctx->forge_max_legacy_depth)
++                loader_ctx->forge_max_legacy_depth = loader_ctx->forge_legacy_depth;
++        }
++        else if (opcode == WASM_OP_END) {
++            if (loader_ctx->forge_legacy_depth == 0)
++                loader_ctx->forge_legacy_depth = 1;
++            else
++                loader_ctx->forge_legacy_depth--;
++        }
+ #if WASM_ENABLE_FAST_INTERP != 0
+         p_org = p;
+         disable_emit = false;
+@@ -12780,6 +12816,8 @@ re_scan:
+ #endif
+ 
+                 pb_read_leb_uint32(p, p_end, count);
++                if (count > func->forge_br_table_elements)
++                    func->forge_br_table_elements = count;
+ #if WASM_ENABLE_FAST_INTERP != 0
+                 emit_uint32(loader_ctx, count);
+ #endif
+@@ -14392,6 +14430,8 @@ re_scan:
+                 CHECK_MEMORY();
+                 pb_read_leb_memarg(p, p_end, align);          /* align */
+                 pb_read_leb_mem_offset(p, p_end, mem_offset); /* offset */
++                if (mem_offset > func->forge_memory_offset)
++                    func->forge_memory_offset = mem_offset;
+                 if (!check_memory_access_align(opcode, align, error_buf,
+                                                error_buf_size)) {
+                     goto fail;
+@@ -17090,6 +17130,9 @@ re_scan:
+     func->max_stack_cell_num = loader_ctx->max_stack_cell_num;
+ #endif
+     func->max_block_num = loader_ctx->max_csp_num;
++    func->forge_operand_cells = loader_ctx->forge_operand_cells;
++    module->forge_legacy_depth = loader_ctx->forge_legacy_depth;
++    module->forge_max_legacy_depth = loader_ctx->forge_max_legacy_depth;
+     return_value = true;
+ 
+ fail:

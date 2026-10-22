@@ -273,6 +273,59 @@ failures after work quiescence remain host-runtime failures, not ordinary work
 cancellation. This is not a global out-of-memory or executor-availability guarantee;
 there is no allocator fallback, swallowed delivery error or forced abort path.
 
+### Retain Admission Across Async Phases
+
+Use `executor::retain(task_options)` for an independently owned resource whose
+synchronous setup and mandatory cleanup surround asynchronous work:
+
+```cpp
+auto owner = co_await compute.retain({.name = "resource"});
+co_await owner.execute([](forge::asio::compute::context& context) {
+   context.throw_if_stop_requested();
+   // Perform synchronous setup; keep its resource in caller-owned storage.
+});
+// Await independent asynchronous work without occupying a compute worker.
+co_await owner.drain([](forge::asio::compute::context& context) {
+   // Mandatory cleanup runs even when context.stop_requested() is true.
+});
+owner.release();
+```
+
+`continuation` is move-only. It owns one original admission slot while idle or
+active; each phase reuses that slot. Total capacity remains `worker_threads +
+max_pending_tasks`. Holding four capabilities with one worker and sufficient
+remaining admission capacity does not prevent unrelated compute work. It does
+not resize the pool or change a consuming application's concurrency setting.
+
+`execute(work)` retains ordinary cancellation behavior; stopped pools reject it.
+`drain(work)` permits mandatory cleanup after pool stop and while shutdown waits
+for the capability. It disables associated waiter cancellation, still exposes
+the capability's parent/pool stop in the work context, and never hides successful
+cleanup with an automatic post-work cancellation error. Its cancellation-isolated
+coroutine uses the existing awaiting executor and does not change the caller's
+filters, pending cancellation or throw-on-cancellation setting.
+Protection starts when the drain awaitable is entered: an already-canceled caller
+must isolate entry, since Asio can refuse to enter a child awaitable. Construction
+alone starts no work. A callback-thrown error is preserved. A failed drain retains
+the same capability for explicit retry.
+
+Only one phase can be outstanding per capability; overlap throws `invalid_state`.
+Both methods wait for callback AND callable-capture destruction before terminal
+delivery. Already-created phase awaitables pin admission even if their original
+handle is released. Final idle destruction/release returns the slot without
+blocking; releasing an in-flight handle cannot release its phase's physical owner.
+No callable or external resource is automatically retried or cleaned by release.
+
+Keep capability and pool alive until explicit cleanup completes, then release the
+capability BEFORE joining `pool.shutdown()`. Shutdown waits outstanding retained
+owners even when idle. Dropping the pool first can block indefinitely waiting for
+the caller's own capability. Normal pool admission is not reopened by drain.
+
+`metrics.retained` reports live retained capabilities including active ones.
+Retain/release do not increment `submitted/completed`; each accepted synchronous
+phase does. Pending/running still report actual queue/worker occupancy, not idle
+capabilities. Existing execute/submit-only workloads keep their metrics semantics.
+
 ### Serialize Async Ownership With A Gate
 
 `gate` is a neutral FIFO admission primitive. Its move-only ticket releases
@@ -643,9 +696,12 @@ request idempotently and asynchronously waits for both blocking and awaitable
 running counts to reach zero. `stop()` provides the equivalent blocking
 host-side boundary.
 
-`compute::pool::request_stop()` rejects waiting/new submissions, cancels pending
-jobs and requests cooperative stop from running jobs. `shutdown()` awaits every
-running callable, runs worker stop hooks and joins the underlying
+`compute::pool::request_stop()` rejects waiting/new ordinary submissions, cancels
+ordinary pending jobs and requests cooperative stop from running jobs. Retained
+continuations remain admitted; mandatory drain phases remain schedulable through
+the same bounded queue after stop. `shutdown()` awaits every running callable and
+outstanding retained capability (including idle ownership), runs worker stop hooks
+and joins the underlying
 `boost::asio::thread_pool`. The App owner stops plugins first, requests task
 scheduler stop, drains compute while already-running scheduler continuations
 can finish, then drains the scheduler and finally stops the Asio runtime.

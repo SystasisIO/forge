@@ -13,6 +13,11 @@ Documents below explain cross-library architecture decisions.
 
 | Document | Purpose |
 | --- | --- |
+| [iterations/forge-vm-wasm-wamr-v1.md](iterations/forge-vm-wasm-wamr-v1.md) | Experimental replacement of EOS VM/OC with WAMR: strict API, determinism and functional-parity gates; not production acceptance. |
+| [releases/unreleased-wasm-family-boundaries.md](releases/unreleased-wasm-family-boundaries.md) | Approved compiler/execution ownership under vm/wasm, mechanical rename and remaining WAMR migration gates. |
+| [donors/forge-wamr-initialization-qualification-v1.md](donors/forge-wamr-initialization-qualification-v1.md) | Deferred guest initialization, cancellation and library-produced WAMR AOT qualification. |
+| [donors/forge-wamr-bindings-qualification-v1.md](donors/forge-wamr-bindings-qualification-v1.md) | Module-local host bindings, partial metadata limits, caller memory caps and open public API/OC integration gates. |
+| [donors/forge-wamr-limits-depth-qualification-v1.md](donors/forge-wamr-limits-depth-qualification-v1.md) | Instruction/frame metrics, logical call depth, exported-import ABI and a blocking public-capacity mismatch. |
 | [releases/unreleased-chain-signer.md](releases/unreleased-chain-signer.md) | Proposed Chain signer pre-stabilization source migration; no version or release assigned. |
 | [releases/8.29.1.md](releases/8.29.1.md) | Forge 8.29.1 Linux portability, standard X.509 fingerprints, and verified protocol byte-array limits. |
 | [releases/8.29.0.md](releases/8.29.0.md) | Forge 8.29.0 Admin HTTP integration, plugin and snapshot contracts, canonical Raw bool streams, and portable verified Chain reads. |
@@ -61,8 +66,6 @@ Documents below explain cross-library architecture decisions.
 | [iterations/forge-contract-sdk-toolchain-v1.md](iterations/forge-contract-sdk-toolchain-v1.md) | Accepted baseline for the wasm32 contract SDK, vanilla Clang toolchain, legacy EOSIO compatibility and modern C++23 contract surface. |
 | [iterations/forge-contract-tooling-family-v1.md](iterations/forge-contract-tooling-family-v1.md) | Accepted clean-breaking move of host ABI, validation, manifest and testing libraries from `forge.contract.*` to the empty `forge.tooling.*` family. |
 | [iterations/forge-vm-wasm-backend-family-v1.md](iterations/forge-vm-wasm-backend-family-v1.md) | Accepted clean-breaking target/module/namespace split between the current EOS VM interpret lane and the future EOS VM OC optimizing backend. |
-| [iterations/forge-vm-wasm-optimizing-v1.md](iterations/forge-vm-wasm-optimizing-v1.md) | Proposed EOS VM OC port: LLVM, isolated compiler, native execution, bounded cache, package boundaries and acceptance. |
-| [donors/spine-wasm-optimizing-integration-v1.md](donors/spine-wasm-optimizing-integration-v1.md) | First-consumer integration plan and source traceability for SpineOS execution, lifecycle, configuration and Linux acceptance. |
 | [donors/forge-contract-dual-target-graph-v1.md](donors/forge-contract-dual-target-graph-v1.md) | Bazel, Cargo, CDT and CMake donor boundaries for immutable dual-target contract-library descriptors. |
 | [iterations/forge-chain-remote-state-v1.md](iterations/forge-chain-remote-state-v1.md) | Accepted direction for transport-neutral typed contract-state reads and chain transaction submission over Forge API. |
 | [donors/forge-chain-remote-state-v1.md](donors/forge-chain-remote-state-v1.md) | Spring/CDT donor boundaries for guest tables, remote state reads and transaction submission. |
@@ -104,6 +107,9 @@ Each library guide must be useful without reading source first:
 - [compression](../libraries/compression/README.md)
 - [chain](../libraries/chain/README.md)
 - [chain_api](../libraries/chain/api/README.md)
+- [vm_wasm_interpret](../libraries/vm/wasm/interpret/README.md)
+- [vm_wasm_execution](../libraries/vm/wasm/execution/README.md)
+- [vm_wasm_compiler](../libraries/vm/wasm/compiler/README.md) (experimental, private)
 - [db_core](../libraries/db/core/README.md)
 - [db_object](../libraries/db/object/README.md)
 - [db_blob](../libraries/db/blob/README.md)

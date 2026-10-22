@@ -1,0 +1,61 @@
+{
+  "status": "SOURCE_FREEZE_FOR_REVIEW_NOT_EXECUTION_QUALIFIED",
+  "fork_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-public-migration-20261016/wamr-fork",
+  "fork_base": "156dbd0b6edea3d64b7e21d305913943b60b5f91",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-experiment-v1",
+  "fork_files": {
+    "core/iwasm/compilation/aot.c": "a8c038b23e4f1a27417613f4b977b4661dc62561ab88a8d1cf3557034c7684c5",
+    "core/iwasm/compilation/aot_compiler.c": "07d79f6ec05449738c904337e4ae3d46eb4f3e3db8234f1391e70affc089265e",
+    "core/iwasm/compilation/aot_llvm.c": "ec22652a328cb2574692f46ed9b798e5c91412be07b1814df524e1c5cf5e489b",
+    "core/iwasm/compilation/aot_llvm.h": "4d9e323b21efc27d25149c02f30675b10bd4e678e165536ccdc8d89157f859b9",
+    "core/iwasm/compilation/aot_llvm_extra.cpp": "d7b16d4b077f383c451feb898a15a45b9c162382c5b30d67a2e5f9fe2a5ec5d7",
+    "core/iwasm/compilation/aot_llvm_extra.h": "ed28ac24d3858a223025f8695025e528e8f1fb1e7444a4eebd490b79b034ed04",
+    "core/iwasm/compilation/aot_orc_extra.cpp": "335e2fa0d55384aa2dc9037a0f7d29aa567c67ed5bf47b80c8ded4b8dddf9e9c",
+    "core/iwasm/compilation/aot_orc_extra.h": "d0881271ec5b33c36c934a20605fecb1945ebf55b112e3c10ac089ad846d7f6a",
+    "core/iwasm/compilation/aot_orc_extra2.cpp": "7e8bd90b9d4d782f1a0ce19e144b509512585d2475b1ec9cb7f8df0d9d067ec7",
+    "core/iwasm/include/aot_comp_option.h": "338fa1fae0cab3337d7faa820b201a8bf45593f75c2ecadc6801a45424174bf1",
+    "core/iwasm/interpreter/wasm_loader.c": "6cae4a56210ba442027f834be7d46507f4d79e73c6c7a41969c721acef14160c",
+    "core/iwasm/interpreter/wasm_loader.h": "4666ffecc8d4d0dd7d3cf5ed547aa40c75ff3e48f7b9fff13410d029aa3037f4"
+  },
+  "common_private_files_frozen_unchanged": {
+    "libraries/vm/wasm/interpret/engine_instance.cpp": "ec28bc4c44920226c02a5558e8b443b9504852345230ef2be3b26a3048601baf",
+    "libraries/vm/wasm/interpret/details/engine_instance.hxx": "8d43bf7e035de8366b5047e4daacb26fcdc51fbac0612dbde72fce54c9677a13"
+  },
+  "public_files_frozen_unchanged": {
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "98fbd186ca37fce773db9d0d8a754a8d29918ff597f4e85e31607c03293dc5e5",
+    "libraries/vm/wasm/interpret/prepared_module_context.cpp": "dc8c4cbd6b84b2ac43f73c5733ff7fad53a105eb9f42600913f80edbb29a6890"
+  },
+  "jit_aspects_and_probes": {
+    "libraries/vm/wasm/interpret/engine_module_jit.cpp": "964f0c824a1c77f8db0ceb3b14a314a265494702b96e5f9de4d46d9690f1e3d9",
+    "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "8db83b19efdf5ec3eb88f870d57767231632542bb97f18c313dc487884423452",
+    "tests/vm_wamr/jit/load_probe.cpp": "090261f12c62bf8fcfaea1b71159f0a270cc8d2428dfc13c8817c4c604393004",
+    "tests/vm_wamr/jit/native_maps_probe.cpp": "3e37648976f66dbc905248451606d5e7175f7c9d35ec857767a758fd37c530dd",
+    "tests/vm_wamr/jit/README.md": "d3196c50f3bdb32ddfc001db064cfbb177b6c0ac7d91bc445402288fa9846351"
+  },
+  "checks": {
+    "fork_six_tus_syntax_jit_0_and_1": "PASS, LLVM 22.1.8; -fsyntax-only, retained compiler/classic compile_commands retargeted to this fork",
+    "engine_instance_and_engine_module_jit_syntax_0_and_1": "PASS, no object output",
+    "prepared_module_jit_and_load_probe_syntax_0_and_1": "PASS, retained public-sidecar BMI/module map; no BMI rebuild",
+    "native_maps_probe_syntax_jit_1": "PASS, no object output",
+    "warning": "Inherited ASan command line redefines _FORTIFY_SOURCE (builtin 0 vs flag 2); not a runtime test",
+    "whitespace": "git diff --check PASS in fork and owned Forge scope",
+    "native_link_and_execute": "NOT_RUN: awaiting coordinator build slot and review",
+    "public_default_off_rebuild_install": "Coordinator-owned, not claimed by this snapshot",
+    "tls_aot_c_syntax_jit_0_and_1": "PASS: existing platform TLS macro and forced whole-TU C11 fallback via stdin wrapper; -fsyntax-only, exact maintained fork",
+    "unchanged_syntax_evidence": "Other syntax checks inherited from v1 with byte-identical source hashes; no rebuild/runtime result relabeled",
+    "diagnostic_thread_isolation_execution": "NOT_RUN: TLS storage fix only; no new concurrent runtime profile"
+  },
+  "pending": [
+    "Independent source review before fork publication/pin; no commits/pushes performed by sidecar",
+    "Coordinator registers optional native_maps_probe against same runtime and private LLVM target, serial external timeout",
+    "Native code/RO/RW + denial/recovery/cleanup proof, actual WASM JIT compile/bridge, one-C-provider link map NOT_RUN",
+    "Concurrent caller-thread diagnostic isolation remains NOT_RUN; aot.c now uses platform TLS with C11 fallback, no new concurrency profile",
+    "No universal LLVM heap/OOM cap claim; IR/optimizer/object buffers excluded from native preparation contract",
+    "Native heavy frames, cancellation/start/host-effect precedence and platform/product qualification remain explicit gates"
+  ],
+  "supersedes_snapshot": {
+    "path": "tests/vm_wamr/jit/source-freeze-orc-v1.json",
+    "sha256": "ae42cc5b287b6c27cd4a6d3f443f1654e0e964bf0108487ac5ca0f33b95df4dc",
+    "unchanged_preexisting_files": 19
+  }
+}

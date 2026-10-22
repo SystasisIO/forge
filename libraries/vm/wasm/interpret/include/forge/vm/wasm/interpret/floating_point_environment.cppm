@@ -6,8 +6,7 @@ export module forge.vm.wasm.interpret.floating_point_environment;
 
 export namespace forge::vm::wasm::interpret {
 
-// Own this scope outside the signal/trap boundary. Nested invocation scopes
-// restore the caller's exact SoftFloat state, including accumulated flags.
+// SoftFloat scope only; native guest FP state belongs to the shared WAMR boundary.
 class floating_point_environment {
  public:
    floating_point_environment() noexcept;

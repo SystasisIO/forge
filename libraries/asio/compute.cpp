@@ -33,6 +33,8 @@ module;
 #include <functional>
 #include <latch>
 #include <list>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -213,7 +215,8 @@ bool operation_state::complete_exception(std::exception_ptr error) {
 }
 
 boost::asio::awaitable<void> operation_state::execute(reservation reservation_value, std::string name,
-                                                      std::function<void(context&)>& work) {
+                                                      std::function<void(context&)>& work,
+                                                      std::shared_ptr<continuation_state> continuation, bool drain) {
    auto self = shared_from_this();
    auto owner = impl_->owner.lock();
    if (!owner) {
@@ -249,7 +252,8 @@ boost::asio::awaitable<void> operation_state::execute(reservation reservation_va
    auto token = boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable);
    co_await boost::asio::async_initiate<decltype(token), void(std::exception_ptr)>(
        [self, owner = std::move(owner), reservation_value = std::move(reservation_value), name = std::move(name),
-        executor = std::move(completion_executor), guard = std::move(completion_guard), &work](auto handler) mutable {
+        executor = std::move(completion_executor), guard = std::move(completion_guard), &work,
+        continuation = std::move(continuation), drain](auto handler) mutable {
           // A completion may run on another IO thread before initiation returns.
           // Do not access the initiation object's coroutine-frame captures after
           // publication: keep these owners on this initiating stack instead.
@@ -257,6 +261,7 @@ boost::asio::awaitable<void> operation_state::execute(reservation reservation_va
           auto pool = std::move(owner);
           auto admission = std::move(reservation_value);
           auto work_name = std::move(name);
+          auto retained = std::move(continuation);
           auto* invocation = &work;
           // The token above binds a disconnected slot. Extract its target via
           // the public binder API: the underlying awaitable handler and the
@@ -283,7 +288,11 @@ boost::asio::awaitable<void> operation_state::execute(reservation reservation_va
              completion = boost::asio::any_completion_handler<void(std::exception_ptr)>{std::move(dispatch)};
              operation->install_completion(std::move(completion));
              installed = true;
-             pool->submit(std::move(admission), std::move(work_name), operation, std::move(*invocation));
+             if (retained)
+                pool->submit_continuation(std::move(retained), std::move(work_name), operation, std::move(*invocation),
+                                          drain);
+             else
+                pool->submit(std::move(admission), std::move(work_name), operation, std::move(*invocation));
           } catch (...) {
              if (operation->completed()) {
                 // A terminal completion's executor failed. Do not misreport it
@@ -302,7 +311,7 @@ boost::asio::awaitable<void> operation_state::execute(reservation reservation_va
           }
        },
        token);
-   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+   if (!drain && cancellation.cancelled() != boost::asio::cancellation_type::none) {
       throw exceptions::canceled{"compute execution was canceled"};
    }
 }
@@ -406,6 +415,47 @@ void reservation::consume() noexcept {
    owner_.reset();
 }
 
+struct continuation_state::impl {
+   impl(std::shared_ptr<pool_state> pool, reservation admission, std::string work_name)
+       : owner{std::move(pool)}, retained{std::move(admission)}, name{std::move(work_name)} {}
+   std::shared_ptr<pool_state> owner;
+   reservation retained;
+   std::string name;
+   forge::asio::detail::stop_state stop;
+   std::atomic_bool active{false};
+};
+
+continuation_state::continuation_state(std::shared_ptr<pool_state> owner, reservation admission, std::string name)
+    : impl_{std::make_unique<impl>(std::move(owner), std::move(admission), std::move(name))} {}
+continuation_state::~continuation_state() = default;
+std::shared_ptr<pool_state> continuation_state::owner() const noexcept {
+   return impl_->owner;
+}
+std::uint64_t continuation_state::id() const noexcept {
+   return impl_->retained.id();
+}
+const std::string& continuation_state::name() const noexcept {
+   return impl_->name;
+}
+std::stop_token continuation_state::stop_token() const noexcept {
+   return impl_->stop.token();
+}
+void continuation_state::request_stop() noexcept {
+   static_cast<void>(impl_->stop.request_stop());
+}
+bool continuation_state::begin_phase() noexcept {
+   return !impl_->active.exchange(true, std::memory_order_acq_rel);
+}
+void continuation_state::end_phase() noexcept {
+   impl_->active.store(false, std::memory_order_release);
+}
+void continuation_state::link_parent(std::stop_token parent) {
+   impl_->stop.link(std::move(parent), [weak = weak_from_this()] {
+      if (auto self = weak.lock())
+         self->request_stop();
+   });
+}
+
 struct pool_state::impl {
    struct job {
       std::uint64_t id = 0;
@@ -415,6 +465,8 @@ struct pool_state::impl {
       std::chrono::steady_clock::time_point queued_at;
       std::exception_ptr dispatch_error;
       bool canceled_before_start = false;
+      std::shared_ptr<continuation_state> continuation;
+      bool drain = false;
    };
 
    explicit impl(configuration input)
@@ -469,11 +521,11 @@ struct pool_state::impl {
    }
 
    [[nodiscard]] std::size_t occupied_locked() const noexcept {
-      return reservations.size() + pending.size() + running_operations.size() + retiring;
+      return reservations.size() + pending.size() + running_operations.size() + retiring - retained_phases;
    }
 
    [[nodiscard]] bool drained_locked() const noexcept {
-      return pending.empty() && running_operations.empty() && retiring == 0;
+      return pending.empty() && running_operations.empty() && retiring == 0 && retained.empty();
    }
 
    std::list<std::shared_ptr<admission_waiter>> grant_waiters_locked() {
@@ -499,7 +551,9 @@ struct pool_state::impl {
    }
 
    void start_jobs_locked(const std::shared_ptr<pool_state>& owner, std::list<job>& failed) {
-      while (!stopping && running_operations.size() < worker_threads && !pending.empty()) {
+      while (running_operations.size() < worker_threads && !pending.empty()) {
+         if (stopping && !pending.front().drain)
+            break;
          const auto next = pending.begin();
          running_operations.splice(running_operations.end(), pending, next);
          try {
@@ -521,6 +575,7 @@ struct pool_state::impl {
          auto& current = retired.front();
          // User capture destruction may reenter the pool; never hold its lock.
          current.work = {};
+         auto continuation = std::move(current.continuation);
          auto operation = current.operation;
          auto error = current.dispatch_error;
          auto granted = std::list<std::shared_ptr<admission_waiter>>{};
@@ -528,6 +583,8 @@ struct pool_state::impl {
          {
             const auto lock = std::scoped_lock{mutex};
             --retiring;
+            if (continuation)
+               --retained_phases;
             if (current.canceled_before_start) {
                ++current_metrics.canceled;
             } else {
@@ -540,6 +597,8 @@ struct pool_state::impl {
             }
          }
          retired.pop_front();
+         if (continuation)
+            continuation->end_phase();
          operation->complete_exception(std::move(error));
          for (const auto& waiter : granted) {
             waiter->wake();
@@ -559,10 +618,20 @@ struct pool_state::impl {
       auto error = std::exception_ptr{};
 
       try {
+         if (current.drain) {
+            auto stopped = false;
+            {
+               const auto lock = std::scoped_lock{mutex};
+               stopped = stopping;
+            }
+            if (stopped)
+               current.operation->request_stop_only();
+         }
          auto work_context = context{current.operation->stop_token()};
-         work_context.throw_if_stop_requested();
+         if (!current.drain)
+            work_context.throw_if_stop_requested();
          current.work(work_context);
-         if (current.operation->stop_requested()) {
+         if (!current.drain && current.operation->stop_requested()) {
             throw exceptions::canceled{"compute operation was canceled"};
          }
       } catch (const exceptions::canceled&) {
@@ -582,6 +651,8 @@ struct pool_state::impl {
       {
          const auto lock = std::scoped_lock{mutex};
          retired.splice(retired.end(), running_operations, position);
+         if (current.continuation)
+            --retained_phases;
          if (canceled) {
             ++current_metrics.canceled;
          } else if (failed) {
@@ -602,6 +673,8 @@ struct pool_state::impl {
 
       // Completion delivery is a standard Asio post, and may fail only AFTER
       // the accepted work and all callable captures have become quiescent.
+      if (current.continuation)
+         current.continuation->end_phase();
       if (error) {
          operation->complete_exception(std::move(error));
       } else {
@@ -721,6 +794,9 @@ struct pool_state::impl {
    std::condition_variable drained_cv;
    std::list<std::shared_ptr<admission_waiter>> admission_waiters;
    std::unordered_set<std::uint64_t> reservations;
+   // Weak membership coordinates stop/drain without a pool/capability cycle.
+   std::map<std::uint64_t, std::weak_ptr<continuation_state>> retained;
+   std::size_t retained_phases = 0;
    std::list<job> pending;
    std::list<job> running_operations;
    std::size_t retiring = 0;
@@ -847,16 +923,80 @@ std::optional<reservation> pool_state::try_reserve(std::stop_token parent) {
 
 void pool_state::release_reservation(std::uint64_t id) noexcept {
    auto granted = std::list<std::shared_ptr<admission_waiter>>{};
+   auto drain = std::vector<std::shared_ptr<forge::asio::detail::async_waiter>>{};
    {
       const auto lock = std::scoped_lock{impl_->mutex};
       if (impl_->reservations.erase(id) == 0) {
          return;
       }
+      impl_->retained.erase(id);
       granted = impl_->grant_waiters_locked();
+      if (impl_->drained_locked())
+         drain.swap(impl_->drain_waiters);
    }
    for (const auto& waiter : granted) {
       waiter->wake();
    }
+   for (const auto& waiter : drain)
+      waiter->wake();
+   impl_->drained_cv.notify_all();
+}
+
+std::uint64_t pool_state::next_operation_id() noexcept {
+   return impl_->next_id.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::shared_ptr<continuation_state> pool_state::retain(reservation admission, std::string name,
+                                                       std::stop_token parent) {
+   auto value = std::make_shared<continuation_state>(shared_from_this(), std::move(admission), std::move(name));
+   value->link_parent(std::move(parent));
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      if (impl_->stopping) {
+         ++impl_->current_metrics.rejected;
+         throw exceptions::rejected{"compute pool is stopped"};
+      }
+      impl_->retained.emplace(value->id(), value);
+   }
+   return value;
+}
+
+void pool_state::submit_continuation(std::shared_ptr<continuation_state> continuation, std::string name,
+                                     std::shared_ptr<operation_state> operation, std::function<void(context&)>&& work,
+                                     bool drain) {
+   auto incoming = std::list<impl::job>{};
+   incoming.push_back(impl::job{.id = operation->id(),
+                                .name = std::move(name),
+                                .operation = operation,
+                                .queued_at = std::chrono::steady_clock::now(),
+                                .continuation = continuation,
+                                .drain = drain});
+   incoming.front().work.swap(work);
+   auto failed = std::list<impl::job>{};
+   auto owner = shared_from_this();
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      if (impl_->stopping && !drain) {
+         ++impl_->current_metrics.rejected;
+         throw exceptions::rejected{"compute pool is stopped"};
+      }
+      if (!impl_->retained.contains(continuation->id()))
+         throw exceptions::invalid_state{"compute continuation admission is unavailable"};
+      if (!continuation->begin_phase())
+         throw exceptions::invalid_state{"compute continuation already has an outstanding phase"};
+      ++impl_->retained_phases;
+      ++impl_->current_metrics.submitted;
+      if (!drain && operation->stop_requested()) {
+         incoming.front().dispatch_error = operation->cancellation_error();
+         incoming.front().canceled_before_start = true;
+         ++impl_->retiring;
+         failed.splice(failed.end(), incoming);
+      } else {
+         impl_->pending.splice(impl_->pending.end(), incoming);
+         impl_->start_jobs_locked(owner, failed);
+      }
+   }
+   impl_->retire_jobs(owner, std::move(failed));
 }
 
 void pool_state::submit(reservation reservation_value, std::string name, std::shared_ptr<operation_state> operation,
@@ -902,7 +1042,7 @@ bool pool_state::cancel(std::uint64_t id) noexcept {
    {
       const auto lock = std::scoped_lock{impl_->mutex};
       const auto found = std::ranges::find_if(impl_->pending, [id](const impl::job& value) { return value.id == id; });
-      if (found != impl_->pending.end()) {
+      if (found != impl_->pending.end() && !found->drain) {
          found->dispatch_error = found->operation->cancellation_error();
          found->canceled_before_start = true;
          retired.splice(retired.end(), impl_->pending, found);
@@ -910,6 +1050,7 @@ bool pool_state::cancel(std::uint64_t id) noexcept {
          impl_->current_metrics.pending = impl_->pending.size();
       } else {
          found_running =
+             found != impl_->pending.end() ||
              std::ranges::any_of(impl_->running_operations, [id](const impl::job& value) { return value.id == id; });
       }
    }
@@ -922,6 +1063,7 @@ void pool_state::request_stop() noexcept {
    auto waiting = std::list<std::shared_ptr<admission_waiter>>{};
    auto pending = std::list<impl::job>{};
    auto drain = std::vector<std::shared_ptr<forge::asio::detail::async_waiter>>{};
+   auto stop_limit = std::uint64_t{};
    {
       const auto lock = std::scoped_lock{impl_->mutex};
       if (impl_->stopping) {
@@ -929,6 +1071,7 @@ void pool_state::request_stop() noexcept {
       }
       impl_->stopping = true;
       impl_->current_metrics.stopped = true;
+      stop_limit = impl_->next_id.load(std::memory_order_relaxed);
 
       for (auto& waiter : impl_->admission_waiters) {
          waiter->state = admission_state::rejected;
@@ -938,9 +1081,14 @@ void pool_state::request_stop() noexcept {
       impl_->admission_waiters.clear();
       impl_->current_metrics.waiting = 0;
 
-      pending.splice(pending.end(), impl_->pending);
+      for (auto current = impl_->pending.begin(); current != impl_->pending.end();) {
+         const auto next = std::next(current);
+         if (!current->drain)
+            pending.splice(pending.end(), impl_->pending, current);
+         current = next;
+      }
       impl_->retiring += pending.size();
-      impl_->current_metrics.pending = 0;
+      impl_->current_metrics.pending = impl_->pending.size();
 
       if (impl_->drained_locked()) {
          drain.swap(impl_->drain_waiters);
@@ -956,7 +1104,7 @@ void pool_state::request_stop() noexcept {
       value.canceled_before_start = true;
    }
    // Finite snapshot walk without allocating or invoking stop callbacks under
-   // the pool mutex. No new running jobs are admitted once stopping is set.
+   // the pool mutex. Later mandatory drains cannot extend this snapshot walk.
    auto previous = std::uint64_t{0};
    for (;;) {
       auto operation = std::shared_ptr<operation_state>{};
@@ -964,7 +1112,7 @@ void pool_state::request_stop() noexcept {
       {
          const auto lock = std::scoped_lock{impl_->mutex};
          for (const auto& value : impl_->running_operations) {
-            if (value.id > previous && (next == 0 || value.id < next)) {
+            if (value.id > previous && value.id < stop_limit && (next == 0 || value.id < next)) {
                next = value.id;
                operation = value.operation;
             }
@@ -976,13 +1124,29 @@ void pool_state::request_stop() noexcept {
       operation->request_stop_only();
       previous = next;
    }
+   previous = 0;
+   for (;;) {
+      auto retained = std::shared_ptr<continuation_state>{};
+      {
+         const auto lock = std::scoped_lock{impl_->mutex};
+         auto current = impl_->retained.upper_bound(previous);
+         for (; current != impl_->retained.end(); ++current) {
+            previous = current->first;
+            retained = current->second.lock();
+            if (retained)
+               break;
+         }
+      }
+      if (!retained)
+         break;
+      retained->request_stop();
+   }
    impl_->retire_jobs(shared_from_this(), std::move(pending));
    for (const auto& waiter : drain) {
       waiter->wake();
    }
 
-   // Running operations own themselves through the native jobs. Requesting stop
-   // through their operation handles is handled by shutdown below.
+   // Native jobs and retained admissions stay owned through physical retirement.
    impl_->drained_cv.notify_all();
 }
 
@@ -1012,10 +1176,44 @@ pool_state::metrics_snapshot pool_state::snapshot() const {
    value.pending = impl_->pending.size();
    value.running = impl_->running_operations.size();
    value.stopped = impl_->stopping;
+   value.retained = impl_->retained.size();
    return value;
 }
 
 } // namespace detail
+
+continuation::continuation(std::shared_ptr<detail::continuation_state> state) : state_{std::move(state)} {}
+boost::asio::awaitable<void> continuation::drain_phase_owned(std::shared_ptr<detail::continuation_state> state,
+                                                             std::shared_ptr<detail::operation_state> result,
+                                                             std::function<void(context&)> invoke) {
+   co_await result->execute({}, state->name(), invoke, state, true);
+}
+bool continuation::valid() const noexcept {
+   return state_ != nullptr;
+}
+std::uint64_t continuation::id() const noexcept {
+   return state_ ? state_->id() : 0;
+}
+bool continuation::stop_requested() const noexcept {
+   return stop_token().stop_requested();
+}
+std::stop_token continuation::stop_token() const noexcept {
+   return state_ ? state_->stop_token() : std::stop_token{};
+}
+void continuation::release() noexcept {
+   state_.reset();
+}
+
+boost::asio::awaitable<continuation> executor::retain(task_options options) const {
+   require_valid();
+   return retain_owned(state_, std::move(options));
+}
+
+boost::asio::awaitable<continuation> executor::retain_owned(std::shared_ptr<detail::pool_state> owner,
+                                                            task_options options) {
+   auto admission = co_await owner->reserve(options.parent_stop_token);
+   co_return continuation{owner->retain(std::move(admission), std::move(options.name), options.parent_stop_token)};
+}
 
 pool::pool() : pool(options{}) {}
 

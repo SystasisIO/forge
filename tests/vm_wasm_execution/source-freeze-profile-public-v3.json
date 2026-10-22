@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "version": 3,
+  "date": "2026-10-18",
+  "kind": "public-profile-test-deterministic-in-flight-cancellation-freeze",
+  "status": "FROZEN_SOURCE_NOT_BUILT; independent review and parent-only compilation pending",
+  "wamr_pin": "12d1f906668cde93c03e7d864e71ee1e10dfb194",
+  "no_new_production_or_fork_pin": true,
+  "previous_freeze": {
+    "path": "tests/vm_wasm_execution/source-freeze-profile-public-v2.json",
+    "sha256": "9aaef12c93b1eda9e6d14bcab5b6dbd4fc340c34161b6b28e7b60dfcaa0afa20"
+  },
+  "historical_freezes": [
+    {
+      "path": "tests/vm_wasm_execution/source-freeze-profile-public-v1.json",
+      "sha256": "9cb4678ac6010f471472224c149b4afaa9545545829e0d4774294f69acbaeb9a"
+    },
+    {
+      "path": "tests/vm_wasm_execution/source-freeze-profile-public-v2.json",
+      "sha256": "9aaef12c93b1eda9e6d14bcab5b6dbd4fc340c34161b6b28e7b60dfcaa0afa20"
+    }
+  ],
+  "source_sha256": {
+    "libraries/vm/wasm/interpret/debug_info.cpp": "03e154b3ea2ff8f0553d1093f7bbce6a7eac616bae0b3f83a9ab412b80b43c1d",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_info.cppm": "e2aeffbd68842cfaf637bc1543e4217b694959b10b045ffd6e6a0f41488d823e",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/backend.cppm": "08dfdc2273aac81984e29aa55b36fcfe9bfc8bc474f61dec29c0a2cab1d9ae58",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/runtime_backend.cppm": "eabac73f111309eae423cdcc34cb58a617a106f52ed5a3ecde75c71cab68b610",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "29c8f3ff411e8b42d44de8f948f5161d9ae779e8d411534aa2e8bdea6ee830de",
+    "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "9df490d7975bd4fb73fe9fc0936e799822238dcd2b89342ee90b76bda809f61b",
+    "libraries/vm/wasm/interpret/prepared_module_context.cpp": "bd87d4de19d4ef2582d3d2582d937b946a6e793ed2494c8d20d26bf07afdc3ff",
+    "libraries/vm/wasm/interpret/details/engine_module.hxx": "a6a4da55a803f0684fce11fd7a4770a1b9a5c5f111dbcef9235fa6fe07e70288",
+    "libraries/vm/wasm/interpret/engine_module_jit.cpp": "05595d1ab8f1098c7cfbcc02cfed774d26cbcdc81ac9b25dfc768fb55063b922",
+    "tests/vm_wasm_execution/profile_public_tests.cpp": "79969ffeb109cacc8a2108b36da1526e5cdae46b2a52ca198e13827eb98c2dfc",
+    "tests/vm_wasm_execution/CMakeLists.txt": "67a9f9b46dd84ded20df467f896b6a26a23e22f96ba0944d0ddc2f7abb2aba58"
+  },
+  "baseline": {
+    "kind": "CURRENT_POST_FORMAT_R1_PRE_CANCEL_FIX",
+    "before_source_sha256": {
+      "libraries/vm/wasm/interpret/debug_info.cpp": "03e154b3ea2ff8f0553d1093f7bbce6a7eac616bae0b3f83a9ab412b80b43c1d",
+      "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_info.cppm": "e2aeffbd68842cfaf637bc1543e4217b694959b10b045ffd6e6a0f41488d823e",
+      "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/backend.cppm": "08dfdc2273aac81984e29aa55b36fcfe9bfc8bc474f61dec29c0a2cab1d9ae58",
+      "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/runtime_backend.cppm": "eabac73f111309eae423cdcc34cb58a617a106f52ed5a3ecde75c71cab68b610",
+      "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "29c8f3ff411e8b42d44de8f948f5161d9ae779e8d411534aa2e8bdea6ee830de",
+      "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "9df490d7975bd4fb73fe9fc0936e799822238dcd2b89342ee90b76bda809f61b",
+      "libraries/vm/wasm/interpret/prepared_module_context.cpp": "bd87d4de19d4ef2582d3d2582d937b946a6e793ed2494c8d20d26bf07afdc3ff",
+      "libraries/vm/wasm/interpret/details/engine_module.hxx": "a6a4da55a803f0684fce11fd7a4770a1b9a5c5f111dbcef9235fa6fe07e70288",
+      "libraries/vm/wasm/interpret/engine_module_jit.cpp": "05595d1ab8f1098c7cfbcc02cfed774d26cbcdc81ac9b25dfc768fb55063b922",
+      "tests/vm_wasm_execution/profile_public_tests.cpp": "85ed5a6ae86307cc99bc5ba5fb2d9f561073e9baea76ebc349ea860062c136c6",
+      "tests/vm_wasm_execution/CMakeLists.txt": "67a9f9b46dd84ded20df467f896b6a26a23e22f96ba0944d0ddc2f7abb2aba58"
+    },
+    "format_manifest": {
+      "path": "../../artifacts/wamr-dev-integration-20261018-r5/format-r1/manifest.json",
+      "sha256": "b6610962d1132399280592b7625ed08b1fba9208b8844400d8d6b91eaafe5394"
+    },
+    "failure_xml": {
+      "path": "../../artifacts/wamr-dev-integration-20261018-r5/runtime-matrix-r2.xml",
+      "sha256": "65226cd54c8956bf263049c6b35db417e60add93a3170c665d26047656c0845e"
+    },
+    "original_failure": "R2 public profile cancellation case at old line 454: canceled expected but not raised.",
+    "diagnosis": "Finite mix(4000000) and a separate 10ms sleeper had no guest-entry-before-stop ordering. Guest completion could win; no measured timing or production defect is inferred."
+  },
+  "artifacts": [
+    {
+      "path": "../../artifacts/wamr-dev-integration-20261018-r5/profile-cancel-r3/before/profile_public_tests.cpp",
+      "sha256": "85ed5a6ae86307cc99bc5ba5fb2d9f561073e9baea76ebc349ea860062c136c6"
+    },
+    {
+      "path": "../../artifacts/wamr-dev-integration-20261018-r5/profile-cancel-r3/cancellation-test.patch",
+      "sha256": "a0abde2f040c90efde4e5a68a0d9872fc4767c1bf615233ae12164d9e7de6380"
+    },
+    {
+      "path": "../../artifacts/wamr-dev-integration-20261018-r5/profile-cancel-r3/README.md",
+      "sha256": "0e5bf4aec08c7054216ac3b225e6b8cb67236e03b2dfa75003bc44e44b68cd66"
+    }
+  ],
+  "delta": {
+    "modified_source": "tests/vm_wasm_execution/profile_public_tests.cpp",
+    "test": "profile_public_canceled_execution_keeps_the_map_and_reuses_native_code",
+    "fixture_extension": "Opt-in void env.entered import plus cancel export: host entry then an infinite guest branch loop; default fixture branch preserves other cases' WASM shape.",
+    "stop_ordering": "Initially false token; actual native guest calls the host hook, which records one entry and synchronously calls the existing stop_source.request_stop(). No synthetic exception is thrown by the hook.",
+    "failure_teardown": "No canceler thread/barrier/wait/join remains. The existing 5-second watchdog bounds invocation; wrong failure/timeout cannot satisfy the exact canceled assertion. Existing CTest timeout remains 120 seconds.",
+    "preserved_assertions": "Typed canceled; mix(130) reuse; existing real native-PC other(4000000) sampling and original-file-offset checks.",
+    "additional_assertions": "Exactly one host entry, stop requested, same module owner and no extra hook entry during reuse/sampling.",
+    "no_timing_workaround": "No added sleep, count increase, pre-cancel or retry-until-pass.",
+    "unchanged_scope": "All source text outside the fixture and this one case matches the saved before-test exactly; sampler, signal masks and all other test bodies unchanged.",
+    "production_and_cmake": "All ten non-test source entries match the current-source pre-edit baseline exactly; no production/fork/CMake edits."
+  },
+  "checks": {
+    "clang_format_22_dry_run_werror": "PASS",
+    "whitespace": "PASS",
+    "exact_delta_reverse_apply_check": "PASS_CHECK_ONLY_NO_APPLICATION",
+    "outside_fixture_and_case_unchanged": true,
+    "other_ten_source_entries_unchanged": true,
+    "compile": "NOT_RUN; parent-only target compilation",
+    "runtime": "NOT_RUN; do not qualify a stale binary",
+    "independent_review": "PENDING"
+  },
+  "independent_package_scope": {
+    "manifest": "tests/package_vm_wasm_optimizing_component/source-freeze-package-v3.json",
+    "canonical_profile_test_is_an_input": false,
+    "policy": "Package files released/frozen for parent installed build; this cancellation slice neither changes them nor depends on package runtime results."
+  },
+  "parent_compile_command": "cmake --build build/wamr-dev-r4 --target test_forge_vm_wasm_profile_public -j1",
+  "runtime_command_after_parent_compile": "build/wamr-dev-r4/tests/vm_wasm_execution/test_forge_vm_wasm_profile_public --run_test=profile_public_canceled_execution_keeps_the_map_and_reuses_native_code --catch_system_errors=no --report_level=detailed",
+  "subsequent_single_suite_command": "ctest --test-dir build/wamr-dev-r4 --parallel 1 -R '^test_forge_vm_wasm_profile_public$' --output-on-failure",
+  "no_commit_push_or_build": true
+}

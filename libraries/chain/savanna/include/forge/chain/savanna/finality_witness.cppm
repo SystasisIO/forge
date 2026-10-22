@@ -17,6 +17,7 @@ export import forge.chain.protocol.block;
 export import forge.chain.savanna.admission;
 export import forge.chain.savanna.checkpoint;
 export import forge.chain.savanna.finality_witness_limits;
+export import forge.chain.savanna.producer_opportunity;
 
 export namespace forge::chain::savanna {
 
@@ -51,15 +52,6 @@ struct finality_trust_anchor {
    block_id block;
 
    bool operator==(const finality_trust_anchor&) const = default;
-};
-
-struct producer_opportunity {
-   block_timestamp timestamp;
-   forge::chain::protocol::account_name expected_producer;
-   std::optional<block_id> produced_block;
-   std::optional<block_num> produced_block_num;
-
-   bool operator==(const producer_opportunity&) const = default;
 };
 
 struct finality_replay {
@@ -119,7 +111,6 @@ BOOST_DESCRIBE_STRUCT(finality_witness, (), (chain, trusted_bootstrap, records))
 BOOST_DESCRIBE_STRUCT(finality_genesis_bootstrap, (), (configuration, commitment))
 BOOST_DESCRIBE_STRUCT(finality_checkpoint_bootstrap, (), (chain, value))
 BOOST_DESCRIBE_STRUCT(finality_trust_anchor, (), (chain, block))
-BOOST_DESCRIBE_STRUCT(producer_opportunity, (), (timestamp, expected_producer, produced_block, produced_block_num))
 BOOST_DESCRIBE_STRUCT(finality_replay, (), (anchors, producer_opportunities, finalized_block_num, validated_block_num))
 BOOST_DESCRIBE_STRUCT(finality_trust_advance, (), (checkpoint, replay))
 

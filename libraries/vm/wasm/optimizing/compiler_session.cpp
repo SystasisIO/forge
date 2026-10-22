@@ -14,6 +14,7 @@ module;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stop_token>
 #include <utility>
 #include <variant>
@@ -99,6 +100,10 @@ boost::asio::awaitable<void> compiler_session::initialize(target_profile expecte
 std::optional<artifact> compiler_session::ready(const crypto::digest::sha256& identity,
                                                 const compile_configuration& expected) const {
    return _impl->ready(identity, expected);
+}
+compiler_session::memory_usage compiler_session::usage() const {
+   const auto lock = std::scoped_lock{_impl->account->mutex};
+   return {_impl->account->resident_bytes, _impl->account->inflight_bytes};
 }
 compiler_session::enqueue_result compiler_session::enqueue(const crypto::digest::sha256& hint,
                                                            compile_request&& request, asio::task::priority priority) {

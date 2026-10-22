@@ -1,6 +1,8 @@
 add_library(
    forge_vm_wasm_optimizing STATIC
    artifact.cpp
+   artifact_impl.cpp
+   artifact_preparation.cpp
    compiler_protocol.cpp
    compile_request.cpp
    executor.cpp
@@ -9,6 +11,15 @@ add_library(
    native_image.cpp
    native_stack.cpp
 )
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../../../cmake/ForgeWamrSource.cmake")
+forge_prepare_wamr(_forge_wamr_source _forge_wamr_identity)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+   "${CMAKE_CURRENT_SOURCE_DIR}/../interpret/include/forge/vm/wasm/interpret/capacity_profile.cppm")
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/../interpret/include/forge/vm/wasm/interpret/capacity_profile.cppm"
+   _forge_wamr_capacity_identity)
+target_compile_definitions(forge_vm_wasm_optimizing PRIVATE
+   FORGE_WAMR_SOURCE_IDENTITY="${_forge_wamr_identity}"
+   FORGE_WAMR_CAPACITY_IDENTITY="${_forge_wamr_capacity_identity}")
 forge_target_modules_at(forge_vm_wasm_optimizing vm/wasm/optimizing)
 target_include_directories(forge_vm_wasm_optimizing PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 target_link_libraries(
@@ -34,6 +45,7 @@ if(NOT "compiler_session" IN_LIST FORGE_vm_wasm_optimizing_DISABLED_MODULES)
       compiler_session_impl_child.cpp
       compiler_session_impl_process.cpp
       compiler_session_impl_worker.cpp
+      compiler_session_probe.cpp
       compiler_session_ticket_state.cpp
    )
    target_link_libraries(forge_vm_wasm_optimizing PRIVATE Boost::process forge_core forge_crypto_core forge_codec_hex)

@@ -5,6 +5,7 @@ module;
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -12,14 +13,22 @@ export module forge.vm.wasm.optimizing.artifact;
 
 export import forge.vm.wasm.optimizing.compile_request;
 export import forge.vm.wasm.optimizing.invocation_abi;
+export import forge.vm.wasm.interpret.prepared_module;
 
 export namespace forge::vm::wasm::optimizing {
 
 enum class section_kind : std::uint8_t { code, readonly_data };
 enum class relocation_kind : std::uint8_t {
-   absolute64, relative32,
-   aarch64_call26, aarch64_jump26, aarch64_page21, aarch64_add12,
-   aarch64_load_store8, aarch64_load_store16, aarch64_load_store32, aarch64_load_store64
+   absolute64,
+   relative32,
+   aarch64_call26,
+   aarch64_jump26,
+   aarch64_page21,
+   aarch64_add12,
+   aarch64_load_store8,
+   aarch64_load_store16,
+   aarch64_load_store32,
+   aarch64_load_store64
 };
 
 struct image_section {
@@ -93,32 +102,43 @@ struct artifact_payload {
    std::vector<memory_initial_segment> data;
    std::vector<std::uint32_t> table;
    std::uint32_t start = UINT32_MAX;
+   // WAMR artifacts retain original source for common-profile admission.
+   // Legacy OC sections/relocations are never executable in this format.
+   std::vector<std::uint8_t> source;
+   std::vector<std::uint8_t> aot;
 };
 BOOST_DESCRIBE_STRUCT(artifact_payload, (),
                       (wasm, configuration, sections, relocations, types, functions, exports, globals, memory, data,
-                       table, start))
+                       table, start, source, aot))
 
 // Copies pin the same checked values and the same immutable native mapping.
 // Borrowed views remain valid while any copy of this artifact is alive.
 class artifact {
  public:
-   static constexpr std::uint32_t current_version = 1;
+   static constexpr std::uint32_t current_version = 2;
 
-   static artifact from_payload(artifact_payload payload);
+   // Host-side trust assertion, deliberately NOT encoded. Checksums cannot
+   // authenticate a native artifact supplied by an untrusted source.
+   enum class origin { untrusted, isolated_compiler, owned_cache };
+
+   static artifact from_payload(artifact_payload payload, origin authority = origin::untrusted);
    static artifact decode(std::span<const std::uint8_t> bytes, const crypto::digest::sha256& expected_identity,
-                          std::uint64_t max_encoded_bytes);
+                          std::uint64_t max_encoded_bytes, origin authority = origin::untrusted);
    std::vector<std::uint8_t> encode() const;
 
    const crypto::digest::sha256& identity() const noexcept;
    const artifact_payload& image() const noexcept;
    std::span<const compiled_export> exports() const noexcept;
    std::uint64_t byte_size() const noexcept;
-   // Exact prospective value of byte_size() after successful prepare(): owned
-   // metadata/encoding plus the existing planner's full mapping reservation
-   // and exact-sized native function table. Does not mmap/protect/publish;
-   // may allocate temporary planner storage and throw existing validation or
-   // budget errors. Not a host/page-compatibility or process-RSS guarantee.
+   using preparation_limits = interpret::prepared_module::preparation::limits;
+   // Explicit standalone local resource policy, not an artifact-size estimate.
+   // Sessions use their own caller-supplied budgets instead.
+   static constexpr preparation_limits standalone_preparation_policy{64ULL * 1024 * 1024, 256ULL * 1024 * 1024};
+   static preparation_limits default_preparation_limits() noexcept;
+   // Conservative reservation: existing owned storage plus resident ceiling.
+   // No loading/allocation; successful preparation reports byte_size() <= upper.
    std::uint64_t prepared_byte_size() const;
+   std::uint64_t prepared_byte_size(preparation_limits) const;
 
    // Advisory shared-pin snapshot only. Use with external cache/index
    // exclusion; this is not synchronization, an eviction lease or permission
@@ -132,10 +152,21 @@ class artifact {
    // A failed preparation
    // publishes nothing; retry is explicit and controlled by the session.
    void prepare() const;
+   // The external charge must not own this artifact or the preparation owner.
+   // It is retained through final physical storage/control-block deallocation.
+   // Repeated calls check stop/resident ceiling and cannot replace a charge.
+   // Quota/OOM/protection refusal maps to compile_limit; stop to cancelled.
+   void prepare(preparation_limits, std::stop_token = {}, std::shared_ptr<void> resident_charge = {}) const;
+   // Explicit cold retry after a failed prepare. False retains the failed
+   // preparation owner and its complete charge; caller must retain the artifact.
+   // True permits dropping this failed artifact, not reusing a failed engine.
+   bool retry_cleanup() const;
    bool is_prepared() const noexcept;
    std::span<const std::byte> native_code() const;
    std::span<const native_function> functions() const;
-   entry_function entry(std::uint32_t index) const;
+   // Pins this artifact's storage, resident charge and common runtime owner
+   // after explicit, provenance-checked prepare. Counts as an eviction pin.
+   std::shared_ptr<interpret::prepared_module> runtime_module() const;
 
  private:
    struct impl;

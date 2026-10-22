@@ -1,0 +1,173 @@
+diff --git a/core/iwasm/aot/aot_runtime.c b/core/iwasm/aot/aot_runtime.c
+index b7ca89b..d822c91 100644
+--- a/core/iwasm/aot/aot_runtime.c
++++ b/core/iwasm/aot/aot_runtime.c
+@@ -1875,6 +1875,17 @@ fail:
+     return ret;
+ }
+ 
++bool
++aot_initialize(AOTModuleInstance *module_inst)
++{
++    if (!module_inst->e->common.initialization_pending) {
++        aot_set_exception(module_inst, "initialization is not pending");
++        return false;
++    }
++    module_inst->e->common.initialization_pending = false;
++    return execute_post_instantiate_functions(module_inst, false, NULL);
++}
++
+ static bool
+ check_linked_symbol(AOTModule *module, char *error_buf, uint32 error_buf_size)
+ {
+@@ -2306,7 +2317,10 @@ aot_instantiate(AOTModule *module, AOTModuleInstance *parent,
+     }
+ #endif
+ 
+-    if (!execute_post_instantiate_functions(module_inst, is_sub_inst,
++    if (args->defer_start && !is_sub_inst) {
++        module_inst->e->common.initialization_pending = true;
++    }
++    else if (!execute_post_instantiate_functions(module_inst, is_sub_inst,
+                                             exec_env_main)) {
+         set_error_buf(error_buf, error_buf_size, module_inst->cur_exception);
+         goto fail;
+diff --git a/core/iwasm/aot/aot_runtime.h b/core/iwasm/aot/aot_runtime.h
+index 687c75e..07cb083 100644
+--- a/core/iwasm/aot/aot_runtime.h
++++ b/core/iwasm/aot/aot_runtime.h
+@@ -562,6 +562,9 @@ aot_instantiate(AOTModule *module, AOTModuleInstance *parent,
+  * @param module_inst the AOT module instance to destroy
+  * @param is_sub_inst the flag of sub instance
+  */
++bool
++aot_initialize(AOTModuleInstance *module_inst);
++
+ void
+ aot_deinstantiate(AOTModuleInstance *module_inst, bool is_sub_inst);
+ 
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index d74b142..5aadff1 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -1787,6 +1787,31 @@ wasm_runtime_instantiation_args_set_custom_data(struct InstantiationArgs2 *p,
+     p->custom_data = custom_data;
+ }
+ 
++void
++wasm_runtime_instantiation_args_set_defer_start(struct InstantiationArgs2 *p,
++                                               bool defer_start)
++{
++    p->defer_start = defer_start;
++}
++
++bool
++wasm_runtime_initialize(WASMModuleInstanceCommon *module_inst)
++{
++    WASMFPEnvironment env;
++    bool result = false;
++    if (!module_inst || !wasm_fp_enter(&env))
++        return false;
++#if WASM_ENABLE_INTERP != 0
++    if (module_inst->module_type == Wasm_Module_Bytecode)
++        result = wasm_initialize((WASMModuleInstance *)module_inst);
++#endif
++#if WASM_ENABLE_AOT != 0
++    if (module_inst->module_type == Wasm_Module_AoT)
++        result = aot_initialize((AOTModuleInstance *)module_inst);
++#endif
++    return wasm_fp_leave(&env) && result;
++}
++
+ #if WASM_ENABLE_LIBC_WASI != 0
+ void
+ wasm_runtime_instantiation_args_set_wasi_arg(struct InstantiationArgs2 *p,
+diff --git a/core/iwasm/common/wasm_runtime_common.h b/core/iwasm/common/wasm_runtime_common.h
+index b6056eb..0a31064 100644
+--- a/core/iwasm/common/wasm_runtime_common.h
++++ b/core/iwasm/common/wasm_runtime_common.h
+@@ -618,6 +618,7 @@ wasm_runtime_get_exec_env_tls(void);
+ struct InstantiationArgs2 {
+     InstantiationArgs v1;
+     void *custom_data;
++    bool defer_start;
+ #if WASM_ENABLE_LIBC_WASI != 0
+     WASIArguments wasi;
+ #endif
+diff --git a/core/iwasm/include/wasm_export.h b/core/iwasm/include/wasm_export.h
+index 97ba239..916648f 100644
+--- a/core/iwasm/include/wasm_export.h
++++ b/core/iwasm/include/wasm_export.h
+@@ -784,6 +784,16 @@ WASM_RUNTIME_API_EXTERN void
+ wasm_runtime_instantiation_args_set_custom_data(struct InstantiationArgs2 *p,
+                                                 void *custom_data);
+ 
++/* Defer guest initialization until wasm_runtime_initialize. The caller must
++ * initialize once before calling any guest export and exclusively own the
++ * instance throughout initialization. Failed initialization is not retryable. */
++WASM_RUNTIME_API_EXTERN void
++wasm_runtime_instantiation_args_set_defer_start(struct InstantiationArgs2 *p,
++                                               bool defer_start);
++
++WASM_RUNTIME_API_EXTERN bool
++wasm_runtime_initialize(wasm_module_inst_t module_inst);
++
+ WASM_RUNTIME_API_EXTERN void
+ wasm_runtime_instantiation_args_set_wasi_arg(struct InstantiationArgs2 *p,
+                                              char *argv[], int argc);
+diff --git a/core/iwasm/interpreter/wasm_runtime.c b/core/iwasm/interpreter/wasm_runtime.c
+index b46ae19..4cddf67 100644
+--- a/core/iwasm/interpreter/wasm_runtime.c
++++ b/core/iwasm/interpreter/wasm_runtime.c
+@@ -1780,6 +1780,17 @@ fail:
+     return ret;
+ }
+ 
++bool
++wasm_initialize(WASMModuleInstance *module_inst)
++{
++    if (!module_inst->e->common.initialization_pending) {
++        wasm_set_exception(module_inst, "initialization is not pending");
++        return false;
++    }
++    module_inst->e->common.initialization_pending = false;
++    return execute_post_instantiate_functions(module_inst, false, NULL);
++}
++
+ static bool
+ execute_malloc_function(WASMModuleInstance *module_inst, WASMExecEnv *exec_env,
+                         WASMFunctionInstance *malloc_func,
+@@ -3338,7 +3349,10 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
+                 &module_inst->e->functions[module->start_function];
+     }
+ 
+-    if (!execute_post_instantiate_functions(module_inst, is_sub_inst,
++    if (args->defer_start && !is_sub_inst) {
++        module_inst->e->common.initialization_pending = true;
++    }
++    else if (!execute_post_instantiate_functions(module_inst, is_sub_inst,
+                                             exec_env_main)) {
+         set_error_buf(error_buf, error_buf_size, module_inst->cur_exception);
+         goto fail;
+diff --git a/core/iwasm/interpreter/wasm_runtime.h b/core/iwasm/interpreter/wasm_runtime.h
+index 98913e9..84843d6 100644
+--- a/core/iwasm/interpreter/wasm_runtime.h
++++ b/core/iwasm/interpreter/wasm_runtime.h
+@@ -314,6 +314,7 @@ typedef struct CApiFuncImport {
+ 
+ /* The common part of WASMModuleInstanceExtra and AOTModuleInstanceExtra */
+ typedef struct WASMModuleInstanceExtraCommon {
++    bool initialization_pending;
+ #if WASM_ENABLE_MODULE_INST_CONTEXT != 0
+     void *contexts[WASM_MAX_INSTANCE_CONTEXTS];
+ #endif
+@@ -339,6 +340,9 @@ typedef struct WASMModuleInstanceExtraCommon {
+ #endif
+ } WASMModuleInstanceExtraCommon;
+ 
++bool
++wasm_initialize(WASMModuleInstance *module_inst);
++
+ /* Extra info of WASM module instance for interpreter/jit mode */
+ typedef struct WASMModuleInstanceExtra {
+     WASMModuleInstanceExtraCommon common;

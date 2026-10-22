@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-18",
+  "status": "FROZEN_SOURCE_NOT_BUILT; shared reviewed fork pin and independent review required",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-dev-integration-v1",
+  "source_sha256": {
+    "libraries/vm/wasm/interpret/debug_info.cpp": "6746fb25572111cfbf8eaff5080406ce826a795efb06bd61171406abf2cebc0e",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_info.cppm": "8afbd1025b71fb93f97caf5c248a04d2997d806cd73229bb7c2481a98ccdf4c8",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/backend.cppm": "5af7f24558272559ebc4d87301df87d4a53c2346ced6bf52b6100bd2dc0601a0",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/runtime_backend.cppm": "aab7b06a37b9e71e6e2ee5c617758957328451ffaa22f83ac9d00a3b91318621",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "f0f1dfc0e2d3c771b07234e7364eeecb32e4564f1f038e0ab4f2f96ccabeb88b",
+    "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "89e5275ab62fadd325af23657d487a6e592d3041335d3232037b0d1d293d42c3",
+    "libraries/vm/wasm/interpret/prepared_module_context.cpp": "971b2aab17ba715d065e410803c9de86464b6339afcf9c8945c4bdbc6dc27994",
+    "libraries/vm/wasm/interpret/details/engine_module.hxx": "858b21e79f48d6b6af34968169adb2f66e16c92ac0188fef1931704558c65ebc",
+    "libraries/vm/wasm/interpret/engine_module_jit.cpp": "05d1a5bb803615f68cbb6e4d678dddf420a0a4bb4d36fb4d2a66be244b0f972c",
+    "tests/vm_wasm_execution/profile_public_tests.cpp": "e8cbfcca76a4faec19ae64ceec403a9835248ac9ab0b91568ee26ace7fbec4f4",
+    "tests/vm_wasm_execution/CMakeLists.txt": "67a9f9b46dd84ded20df467f896b6a26a23e22f96ba0944d0ddc2f7abb2aba58"
+  },
+  "private_fork_contract": {
+    "feature_guard": "WASM_LOADER_HAS_LLVM_JIT_INSTRUCTION_PROFILE",
+    "opt_in": "wasm_loader_compile_llvm_jit_profile_ex(WASMModule*, const WASMLoadBudget*, uint64, char*, uint32)",
+    "ordinary": "wasm_loader_compile_llvm_jit_ex remains unchanged and is used for profiling=false",
+    "map_header": "aot_jit_profile.h",
+    "map_view": "aot_jit_profile_intervals",
+    "signal_lookup": "aot_jit_profile_translate",
+    "empty_module": "0 defined functions succeeds without enabling metadata; all PCs are unknown",
+    "identity": "engine_module records the selected profiling boolean and rejects a different repeat compile mode; context/share use execution_mode::jit_profile distinctly"
+  },
+  "ownership": {
+    "map": "The only native interval vector remains owned by WAMR AOTCompContext; Forge does not copy, parse or relocate it",
+    "observer": "Aliasing shared_ptr<const void> holds prepared_module::impl while exposing its engine pointer to the lookup; no new control block",
+    "complete_pin": "The complete impl, not just engine, retains bindings' PMR resource/callback context through final unload",
+    "sampler": "Production adds no sampler; the consumer must retain the observer object until signal delivery is stopped/joined",
+    "const_reference": "backend::get_debug() keeps its const-reference contract and requires the backend object to remain alive",
+    "value_observer": "prepared_module::get_debug() returns a move-only value pin which may outlive its module/backend wrapper",
+    "accounting": "Existing preparation owner accounts WAMR profile storage and maps; no new quota or LLVM transient compiler-heap promise"
+  },
+  "public_api_review": {
+    "preserved": "backend<..., jit_profile, ..., profile_instr_map>::get_debug(), profile_instr_map::translate, legacy builder/set/relocate; default DebugInfo remains null_debug_info",
+    "additions": "execution_mode::jit_profile; prepared_module::get_debug(); move operations and engine-neutral shared-owner/lookup constructor on profile_instr_map; translate is noexcept",
+    "constructor_rationale": "The existing builder describes a contiguous incremental map and cannot bind disjoint absolute ORC intervals with gaps without the same owner/lookup plumbing or a second interval representation. The two-argument constructor is the minimal neutral binding and exports no WAMR/LLVM/private engine type. The real consumer entry is the prepared_module factory",
+    "relocation": "Legacy builder relocation remains; relocating an immutable native observer raises the typed profile exception",
+    "unknown": "UINT32_MAX; the native path delegates full uintptr_t PCs to WAMR and never floors across gaps"
+  },
+  "test_source": {
+    "jit_enabled_cases": 9,
+    "scope": [
+      "legacy builder move and moved-from unknown",
+      "real SIGPROF samples, two functions, multiple original-file instruction offsets, immutable padded source",
+      "two independent live native objects reject each other's sampled PCs and survive independent teardown",
+      "actual mapped-interval end transitions to unknown, foreign host/source/null/max PCs unknown",
+      "share and repeated context initialization reuse the same prepared native object/map",
+      "value observer moved to sampling thread, sampler-ready barrier, backend destruction, late-phase sample reset, handler lookup after destruction, sampler stop before final pin release",
+      "complete impl/bindings PMR pin and cross-thread final unload with preparation storage returned to baseline",
+      "real execution cancellation followed by native reuse and instruction samples",
+      "plain JIT remains unprofiled and rejects a profile-required context",
+      "empty profiled module succeeds with an unknown map",
+      "pre-canceled preparation publishes nothing, refunds storage, and a fresh owner executes successfully"
+    ],
+    "early_compilation_failures": "Halley owns fork OOM/cancel-before-finalize fault tests; this public test does not replace that gate",
+    "jit_disabled": "Only refusal/compatibility tests run; not a positive profiling qualification"
+  },
+  "cmake": {
+    "new_production_sources": [],
+    "test_target": "test_forge_vm_wasm_profile_public",
+    "test_sources": ["main.cpp", "profile_public_tests.cpp"],
+    "test_links": ["forge_vm_wasm_interpret", "Boost::included_unit_test_framework"],
+    "test_timeout_seconds": 120,
+    "run_serial": true,
+    "coordinator_requested_addition": "target_sources(test_forge_vm_wasm_execution PRIVATE export_name_tests.cpp)"
+  },
+  "checks": {
+    "git_diff_check": "PASS",
+    "full_structure_check": "FAILED outside this slice: libraries/chain/savanna/include/forge/chain/savanna/finality_witness_limits.cppm: unclassified Savanna production source",
+    "compile": "NOT_RUN; coordinator requires the new reviewed shared pin first",
+    "ctest": "NOT_RUN",
+    "independent_profile_review": "PENDING"
+  },
+  "commands_after_pin_and_build_slot_release": [
+    "cmake --build build/wamr-dev-r4 --target test_forge_vm_wasm_profile_public test_forge_vm_wasm_execution -j2",
+    "ctest --test-dir build/wamr-dev-r4 -R '^test_forge_vm_wasm_profile_public$' --output-on-failure --parallel 1 --repeat until-fail:3",
+    "ctest --test-dir build/wamr-dev-r4 -R '^test_forge_vm_wasm_execution$' --output-on-failure --parallel 1"
+  ],
+  "untouched": [
+    "libraries/vm/wasm/interpret/prepared_module.cpp",
+    "tests/vm_wasm/prepared_validation_tests.cpp and tests/vm_wasm/CMakeLists.txt",
+    "tests/vm_wasm_optimizing/CMakeLists.txt",
+    "WAMR fork sources and vendor pin",
+    "root/shared CMake and profile configuration",
+    "NUL export/import production regions"
+  ],
+  "no_commit_push_or_build": true
+}

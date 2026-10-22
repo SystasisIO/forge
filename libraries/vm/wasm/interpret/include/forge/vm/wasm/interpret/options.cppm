@@ -72,19 +72,6 @@ struct options {
    friend bool operator==(const options&, const options&) = default;
 };
 
-BOOST_DESCRIBE_STRUCT(options, (),
-                      (max_mutable_global_bytes, max_table_elements, max_section_elements, max_type_section_elements,
-                       max_import_section_elements, max_function_section_elements, max_global_section_elements,
-                       max_export_section_elements, max_element_section_elements, max_data_section_elements,
-                       max_element_segment_elements, max_data_segment_bytes, max_linear_memory_init,
-                       max_func_local_bytes, max_local_sets, max_nested_structures, max_br_table_elements,
-                       max_symbol_bytes, max_memory_offset, max_code_bytes, max_pages, max_call_depth,
-                       forbid_export_mutable_globals, allow_code_after_function_end, allow_u32_limits_flags,
-                       allow_invalid_empty_local_set, allow_zero_blocktype, max_func_local_bytes_flags,
-                       max_control_depth, max_legacy_nested_structures, parse_custom_section_name,
-                       check_mutable_global_bytes, check_func_local_bytes, check_control_depth,
-                       check_legacy_nested_structures))
-
 struct default_options {};
 
 struct compatibility_options {
@@ -113,5 +100,73 @@ struct compatibility_options {
    static constexpr bool allow_invalid_empty_local_set = true;
    static constexpr bool allow_zero_blocktype = true;
 };
+
+// Snapshot configured traits, not engine capacity. Admission owns profile checks.
+template <typename Options> options resolve_options(const Options& source) {
+   const auto defaults = options{};
+   auto result = defaults;
+#define FORGE_RESOLVE_OPTION(field, fallback)                                                                          \
+   if constexpr (requires { source.field; })                                                                           \
+      result.field = source.field;                                                                                     \
+   else                                                                                                                \
+      result.field = fallback;
+   FORGE_RESOLVE_OPTION(max_mutable_global_bytes, defaults.max_mutable_global_bytes)
+   FORGE_RESOLVE_OPTION(max_table_elements, defaults.max_table_elements)
+   FORGE_RESOLVE_OPTION(max_section_elements, defaults.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_type_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_import_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_function_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_global_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_export_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_element_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_data_section_elements, result.max_section_elements)
+   FORGE_RESOLVE_OPTION(max_element_segment_elements, defaults.max_element_segment_elements)
+   FORGE_RESOLVE_OPTION(max_data_segment_bytes, defaults.max_data_segment_bytes)
+   FORGE_RESOLVE_OPTION(max_linear_memory_init, defaults.max_linear_memory_init)
+   FORGE_RESOLVE_OPTION(max_func_local_bytes, defaults.max_func_local_bytes)
+   FORGE_RESOLVE_OPTION(max_local_sets, defaults.max_local_sets)
+   FORGE_RESOLVE_OPTION(max_nested_structures, defaults.max_nested_structures)
+   FORGE_RESOLVE_OPTION(max_br_table_elements, defaults.max_br_table_elements)
+   FORGE_RESOLVE_OPTION(max_symbol_bytes, defaults.max_symbol_bytes)
+   FORGE_RESOLVE_OPTION(max_memory_offset, defaults.max_memory_offset)
+   FORGE_RESOLVE_OPTION(max_code_bytes, defaults.max_code_bytes)
+   FORGE_RESOLVE_OPTION(max_pages, defaults.max_pages)
+   FORGE_RESOLVE_OPTION(max_call_depth, defaults.max_call_depth)
+   FORGE_RESOLVE_OPTION(forbid_export_mutable_globals, defaults.forbid_export_mutable_globals)
+   FORGE_RESOLVE_OPTION(allow_code_after_function_end, defaults.allow_code_after_function_end)
+   FORGE_RESOLVE_OPTION(allow_u32_limits_flags, defaults.allow_u32_limits_flags)
+   FORGE_RESOLVE_OPTION(allow_invalid_empty_local_set, defaults.allow_invalid_empty_local_set)
+   FORGE_RESOLVE_OPTION(allow_zero_blocktype, defaults.allow_zero_blocktype)
+   FORGE_RESOLVE_OPTION(max_func_local_bytes_flags, defaults.max_func_local_bytes_flags)
+   FORGE_RESOLVE_OPTION(max_control_depth, defaults.max_control_depth)
+   FORGE_RESOLVE_OPTION(max_legacy_nested_structures, defaults.max_legacy_nested_structures)
+   FORGE_RESOLVE_OPTION(parse_custom_section_name, defaults.parse_custom_section_name)
+#undef FORGE_RESOLVE_OPTION
+#define FORGE_RESOLVE_CHECKER(checker, limit)                                                                          \
+   if constexpr (requires { source.limit; }) {                                                                         \
+      if constexpr (requires { source.checker; })                                                                      \
+         result.checker = source.checker;                                                                              \
+   } else                                                                                                              \
+      result.checker = false;
+   FORGE_RESOLVE_CHECKER(check_mutable_global_bytes, max_mutable_global_bytes)
+   FORGE_RESOLVE_CHECKER(check_func_local_bytes, max_func_local_bytes)
+   FORGE_RESOLVE_CHECKER(check_control_depth, max_control_depth)
+   FORGE_RESOLVE_CHECKER(check_legacy_nested_structures, max_legacy_nested_structures)
+#undef FORGE_RESOLVE_CHECKER
+   return result;
+}
+
+BOOST_DESCRIBE_STRUCT(options, (),
+                      (max_mutable_global_bytes, max_table_elements, max_section_elements, max_type_section_elements,
+                       max_import_section_elements, max_function_section_elements, max_global_section_elements,
+                       max_export_section_elements, max_element_section_elements, max_data_section_elements,
+                       max_element_segment_elements, max_data_segment_bytes, max_linear_memory_init,
+                       max_func_local_bytes, max_local_sets, max_nested_structures, max_br_table_elements,
+                       max_symbol_bytes, max_memory_offset, max_code_bytes, max_pages, max_call_depth,
+                       forbid_export_mutable_globals, allow_code_after_function_end, allow_u32_limits_flags,
+                       allow_invalid_empty_local_set, allow_zero_blocktype, max_func_local_bytes_flags,
+                       max_control_depth, max_legacy_nested_structures, parse_custom_section_name,
+                       check_mutable_global_bytes, check_func_local_bytes, check_control_depth,
+                       check_legacy_nested_structures))
 
 } // namespace forge::vm::wasm::interpret

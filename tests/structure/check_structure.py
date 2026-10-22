@@ -26,21 +26,21 @@ PRIVATE_DECLARATION = re.compile(r"^\s*(?:class|struct|enum(?:\s+class)?)\s+([A-
 VM_WASM_INTERPRET_EXPORT = re.compile(r"\bFORGE_VM_WASM_INTERPRET_EXPORT\b")
 UNQUALIFIED_C_MEMORY = re.compile(r"(?<![:\w])(?:memcpy|memmove|memset|memcmp)\s*\(")
 LEGACY_VM_WASM_SOURCE_IDENTITIES = (
-   (re.compile(r"\bforge_vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM target identity"),
-   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM component identity"),
+   (re.compile(r"\bforge_vm_wasm(?!_(?:interpret|optimizing|compiler|execution)(?:_|\b))"), "legacy VM target identity"),
+   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!_(?:interpret|optimizing|compiler|execution)(?:_|\b))"), "legacy VM component identity"),
    (re.compile(r"\bForge::vm_wasm_softfloat_internal\b"), "legacy SoftFloat export identity"),
    (re.compile(r"forge/internal/vm_wasm/softfloat"), "legacy SoftFloat install path"),
-   (re.compile(r"forge\.vm\.wasm(?!(?:\.interpret|\.optimizing)(?:\b|:))"), "legacy VM module identity"),
-   (re.compile(r"forge::vm::wasm(?!(?:\:\:interpret|\:\:optimizing)(?:\b|::))"), "legacy VM namespace identity"),
-   (re.compile(r"forge/vm/wasm/(?!(?:interpret|optimizing)/)"), "legacy VM public include identity"),
-   (re.compile(r"\bFORGE_VM_WASM(?!(?:_INTERPRET|_OPTIMIZING)(?:_|\b))"), "legacy VM macro identity"),
+   (re.compile(r"forge\.vm\.wasm(?!\.(?:interpret|optimizing|compiler|execution)(?:\b|:))"), "legacy VM module identity"),
+   (re.compile(r"forge::vm::wasm(?!::(?:interpret|optimizing|compiler|execution)(?:\b|::))"), "legacy VM namespace identity"),
+   (re.compile(r"forge/vm/wasm/(?!(?:interpret|optimizing|compiler|execution)/)"), "legacy VM public include identity"),
+   (re.compile(r"\bFORGE_VM_WASM(?!_(?:INTERPRET|OPTIMIZING|COMPILER|EXECUTION)(?:_|\b))"), "legacy VM macro identity"),
 )
 LEGACY_VM_WASM_CMAKE_IDENTITIES = (
-   (re.compile(r"\bforge_vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM target identity"),
-   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM component identity"),
+   (re.compile(r"\bforge_vm_wasm(?!_(?:interpret|optimizing|compiler|execution)(?:_|\b))"), "legacy VM target identity"),
+   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!_(?:interpret|optimizing|compiler|execution)(?:_|\b))"), "legacy VM component identity"),
    (re.compile(r"forge/internal/vm_wasm/softfloat"), "legacy SoftFloat install path"),
    (re.compile(r"libraries/vm/wasm/include"), "legacy VM include root"),
-   (re.compile(r"\bFORGE_VM_WASM(?!(?:_INTERPRET|_OPTIMIZING)(?:_|\b))"), "legacy VM macro identity"),
+   (re.compile(r"\bFORGE_VM_WASM(?!_(?:INTERPRET|OPTIMIZING|COMPILER|EXECUTION)(?:_|\b))"), "legacy VM macro identity"),
 )
 LEGACY_CONTRACT_TOOLING_SOURCE_IDENTITIES = (
    (re.compile(r"\bforge_contract_(?:abi|attributes|validation|manifest|testing)\b"), "legacy Contract Tooling target identity"),
@@ -1368,7 +1368,9 @@ def check_vm_wasm_interpret_boundaries(root: Path, errors: list[str]) -> None:
    if root_cmake.is_file() and stale_include_registration in root_cmake.read_text(errors="ignore"):
       errors.append(f"CMakeLists.txt: stale {stale_include_registration} registration")
 
-   unexpected_family_entries = {path.name for path in family.iterdir()} - {"interpret", "optimizing"}
+   unexpected_family_entries = {path.name for path in family.iterdir()} - {
+      "interpret", "optimizing", "compiler", "execution"
+   }
    if unexpected_family_entries:
       errors.append(
          f"{family.relative_to(root)}: empty vm::wasm family root contains: "
@@ -1389,8 +1391,7 @@ def check_vm_wasm_interpret_boundaries(root: Path, errors: list[str]) -> None:
       if re.search(r"(?:FILE_SET|install\s*\()[^)]*details", cmake, re.DOTALL):
          errors.append(f"{details.relative_to(root)}: private VM headers must not be installed or exported")
 
-   # Private pairs use the shared layout/pairing checks. Only publishing them is
-   # forbidden; a details/ directory is not itself an installed/public surface.
+   # Private pairs are valid; publishing their source paths is not.
    private_path = re.compile(r"(?:\bdetails(?:[/\\]|\b)|\.[Hh][Xx][Xx]\b)")
    whole_root = re.compile(r'(?:\blibraries/vm/wasm/interpret|\$\{CMAKE_CURRENT_SOURCE_DIR\})(?:[/\\])?(?=["\s>]|$)')
    for cmake in (root_cmake, component / "CMakeLists.txt"):
@@ -1475,7 +1476,9 @@ def check_vm_wasm_interpret_identities(root: Path, files: list[Path], errors: li
 
 def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: list[str]) -> None:
    family = root / "libraries" / "tooling"
-   expected_family_entries = {"CMakeLists.txt", "README.md", "abi", "attributes", "validation", "manifest", "testing", "wasm_compiler"}
+   expected_family_entries = {
+      "CMakeLists.txt", "README.md", "abi", "attributes", "validation", "manifest", "testing", "wasm_compiler"
+   }
    if not family.is_dir():
       errors.append("libraries/tooling: Contract Tooling family root is missing")
       return
@@ -1773,6 +1776,7 @@ def check_chain_savanna_boundaries(root: Path, errors: list[str]) -> None:
       "include/forge/chain/savanna/checkpoint.cppm",
       "include/forge/chain/savanna/admission.cppm",
       "include/forge/chain/savanna/finality_witness.cppm",
+      "include/forge/chain/savanna/producer_opportunity.cppm",
       "policy_state.cpp",
       "extensions.cpp",
       "genesis.cpp",
@@ -2607,27 +2611,69 @@ def check_auth_chain_signer_boundaries(root: Path, errors: list[str]) -> None:
             )
 
 
-def check_execution_wasm_boundaries(root: Path, errors: list[str]) -> None:
-   family = root / "libraries/execution"
-   if not family.exists():
+def cmake_without_optional_jit(source: str) -> str:
+   # Recognize only the explicit opt-in guard, not arbitrary Boolean conditions.
+   guards = []
+   runtime_only = []
+   command = re.compile(r"^\s*(if|elseif|else|endif)\s*\((.*?)\)\s*(?:#.*)?$", re.IGNORECASE)
+   for line in source.splitlines():
+      match = command.match(line)
+      if match:
+         name, condition = match.group(1).lower(), match.group(2).strip()
+         if name == "if":
+            guards.append(condition == "FORGE_ENABLE_VM_WASM_LLVM_JIT")
+         elif name in ("else", "elseif") and guards:
+            guards[-1] = name == "elseif" and condition == "FORGE_ENABLE_VM_WASM_LLVM_JIT"
+         elif name == "endif" and guards:
+            guards.pop()
+      if not any(guards):
+         runtime_only.append(line)
+   return "\n".join(runtime_only)
+
+
+def check_vm_wasm_execution_boundaries(root: Path, errors: list[str]) -> None:
+   leaf = root / "libraries/vm/wasm/execution"
+   if not leaf.exists():
+      errors.append("libraries/vm/wasm/execution: SDK execution leaf is missing")
       return
-   if {path.name for path in family.iterdir()} != {"CMakeLists.txt", "README.md", "wasm"}:
-      errors.append("libraries/execution: family root must remain a dispatcher")
-   leaf = family / "wasm"
-   public = leaf / "include/forge/execution/wasm"
+   if (root / "libraries/execution/CMakeLists.txt").exists():
+      errors.append("libraries/execution: old family dispatcher must not return")
+   public = leaf / "include/forge/vm/wasm/execution"
    for source in leaf.glob("*.cpp"):
       pairs = [public / f"{source.stem}.cppm", leaf / "details" / f"{source.stem}.hxx"]
       if sum(path.exists() for path in pairs) != 1:
          errors.append(f"{source.relative_to(root)}: execution unit needs exactly one matching declaration")
    forbidden = re.compile(r"\b(?:import\s+forge\.(?:net|asio|app|tooling|db)(?:\.|\s*;)|namespace\s+forge::execution\s*\{)")
-   for path in source_files(root, ("libraries/execution",)):
+   for path in source_files(root, ("libraries/vm/wasm/execution",)):
       if forbidden.search(path.read_text()):
          errors.append(f"{path.relative_to(root)}: execution substrate must not own product/runtime policy")
    cmake = (leaf / "CMakeLists.txt").read_text()
    if re.search(r"\bforge_(?:tooling|net|asio|app|db)(?:_|\b)", cmake):
-      errors.append("libraries/execution/wasm: runtime/testhost dependencies are forbidden")
+      errors.append("libraries/vm/wasm/execution: runtime/testhost dependencies are forbidden")
    if "FORGE_CONTRACT_INTRINSICS" not in (leaf / "intrinsics.cpp").read_text():
-      errors.append("libraries/execution/wasm: production imports must consume the canonical SDK registry")
+      errors.append("libraries/vm/wasm/execution: production imports must consume the canonical SDK registry")
+   generic_roots = tuple(f"libraries/vm/wasm/{name}" for name in ("interpret", "optimizing", "compiler"))
+   reverse = re.compile(r"\bimport\s+forge\.(?:vm\.wasm\.execution|chain|tooling)(?:\.|\s*;)")
+   reverse_include = re.compile(r'#\s*include\s*[<"]forge/(?:vm/wasm/execution|chain|contract|tooling)/')
+   for path in source_files(root, generic_roots):
+      source = path.read_text()
+      if reverse.search(source) or reverse_include.search(source):
+         errors.append(f"{path.relative_to(root)}: generic VM must not import SDK execution, Chain or tooling")
+   for name in ("interpret", "optimizing", "compiler", "execution"):
+      owner = root / "libraries/vm/wasm" / name
+      for path in owner.rglob("CMakeLists.txt"):
+         source = path.read_text()
+         if name != "execution" and re.search(r"\bforge_(?:chain|tooling|vm_wasm_execution)(?:_|\b)", source):
+            errors.append(f"{path.relative_to(root)}: generic VM target must not link SDK execution, Chain or tooling")
+         runtime_source = cmake_without_optional_jit(source) if name == "interpret" else source
+         compiler_link = re.search(r"\b(?:Clang\w*|clang[A-Z]\w*|forge_vm_wasm_compiler)\b", source)
+         llvm_link = re.search(r"\bLLVM\w*\b", runtime_source)
+         if name != "compiler" and (compiler_link or llvm_link):
+            errors.append(f"{path.relative_to(root)}: runtime VM must not acquire a compiler/LLVM dependency")
+   legacy = re.compile(r"forge(?:\.execution\.wasm|::execution::wasm|_execution_wasm)\b")
+   for path in source_files(root, SCAN_ROOTS):
+      if legacy.search(path.read_text(errors="ignore")):
+         errors.append(f"{path.relative_to(root)}: old execution identity must not return")
 
 
 def check_modules(root: Path, files: list[Path], errors: list[str]) -> None:
@@ -2776,7 +2822,7 @@ def main() -> int:
    check_p2p_scoped_peer_mutations(root, errors)
    check_pairing(root, errors)
    check_vm_wasm_interpret_boundaries(root, errors)
-   check_execution_wasm_boundaries(root, errors)
+   check_vm_wasm_execution_boundaries(root, errors)
    check_api_wasm_boundaries(root, errors)
    check_vm_wasm_interpret_identities(root, files, errors)
    check_contract_tooling_boundaries(root, files, errors)

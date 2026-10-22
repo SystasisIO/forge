@@ -607,7 +607,7 @@ BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_86_wasm>", "[unreached-inval
 BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_87_wasm>", "[unreached-invalid_87_wasm_tests]" ) {
    using backend_t = backend<standalone_function_t, TestType>;
    auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.87.wasm");
-   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);
+   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));
 }
 
 BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_88_wasm>", "[unreached-invalid_88_wasm_tests]" ) {

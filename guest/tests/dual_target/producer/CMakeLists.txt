@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.31)
 
-project(ProductProtocol LANGUAGES CXX)
+project(ProductProtocol LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 

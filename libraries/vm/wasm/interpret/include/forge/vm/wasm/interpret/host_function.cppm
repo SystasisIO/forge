@@ -36,7 +36,9 @@ struct running_context {
    inline explicit running_context(Host_Type* host, Execution_Interface&& ei) : host(host), interface(ei) {}
 
    inline void* access(wasm_ptr_t addr = 0) const {
-      return (char*)interface.get_memory() + addr;
+      auto* memory = (char*)interface.get_memory();
+      detail::check<exceptions::memory>(memory != nullptr, "linear memory is not available");
+      return memory + addr;
    }
 
    inline Execution_Interface& get_interface() {
@@ -345,7 +347,6 @@ template <typename TC> constexpr auto to_wasm_type_v<TC, void> = types::ret_void
 struct host_function {
    std::vector<value_type> params;
    std::vector<value_type> ret;
-
    friend bool operator==(const host_function&, const host_function&) = default;
 };
 
@@ -431,39 +432,24 @@ struct registered_host_functions {
       mappings::get().template add_mapping<Func, res, args, preconditions>(mod, name);
    }
 
-   static void resolve(module& mod) {
-      if (mod.jit_mod != nullptr) {
-         resolve_impl(*mod.jit_mod);
-      } else {
-         resolve_impl(mod);
-      }
+   template <typename Module>
+      requires requires(const Module& value) { value.function_imports(); }
+   static void resolve(Module& mod) {
+      for (const auto& imported : mod.function_imports())
+         static_cast<void>(resolve_import(imported.module, imported.name, imported.signature));
    }
 
-   // Cold named-import binding for an already checked native artifact. Uses
-   // the very same registry and signature comparison as parsed-module resolve;
-   // callers finish registration before creating bindings or executing them.
    template <typename Signature>
    static uint32_t resolve_import(const std::string& module_name, const std::string& function_name,
                                   const Signature& signature) {
-      const auto& current_mappings = mappings::get();
-      const auto found = current_mappings.named_mapping.find({module_name, function_name});
-      detail::check<exceptions::link>(found != current_mappings.named_mapping.end(),
-                                      std::string("no mapping for imported function ") + function_name);
+      const auto& current = mappings::get();
+      const auto found = current.named_mapping.find({module_name, function_name});
+      detail::check<exceptions::link>(found != current.named_mapping.end(), "No mapping for imported function");
       const auto index = found->second;
-      detail::check<exceptions::link>(current_mappings.host_functions[index] == signature,
-                                      std::string("wrong type for imported function ") + function_name);
+      detail::check<exceptions::link>(index < current.host_functions.size() &&
+                                          current.host_functions[index] == signature,
+                                      "Wrong type for imported function");
       return index;
-   }
-
-   template <typename Module> static void resolve_impl(Module& mod) {
-      auto& imports = mod.import_functions;
-      for (std::size_t i = 0; i < mod.imports.size(); i++) {
-         std::string mod_name = std::string((char*)mod.imports[i].module_str.data(), mod.imports[i].module_str.size());
-         std::string fn_name = std::string((char*)mod.imports[i].field_str.data(), mod.imports[i].field_str.size());
-         detail::check<exceptions::link>((mod.imports[i].kind == Function),
-                                         std::string("importing non-function ") + fn_name);
-         imports[i] = resolve_import(mod_name, fn_name, mod.types[mod.imports[i].type.func_t]);
-      }
    }
 
    void operator()(Cls* host, Execution_Interface ei, uint32_t index) {
@@ -475,8 +461,5 @@ struct registered_host_functions {
       std::invoke(_func, host, tc);
    }
 };
-
-// Namespace metadata follows all ordinary declarations (create-library R9).
 BOOST_DESCRIBE_STRUCT(host_function, (), (params, ret))
-
 } // namespace forge::vm::wasm::interpret

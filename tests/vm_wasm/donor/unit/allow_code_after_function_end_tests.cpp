@@ -121,7 +121,7 @@ BACKEND_TEST_CASE("Test allow_code_after_function_end static fail", "[allow_code
 
 BACKEND_TEST_CASE("Test allow_code_after_function_end static pass", "[allow_code_after_function_end_test]") {
    using backend_t = backend<std::nullptr_t, TestType, static_options_true>;
-   backend_t backend(code_after_end_wasm, &wa);
+   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, &wa), exceptions::parse);
    for(auto wasm : fail_wasms) {
       BOOST_CHECK_THROW(backend_t(wasm, &wa), exceptions::parse);
    }
@@ -134,7 +134,7 @@ BACKEND_TEST_CASE("Test allow_code_after_function_end dynamic fail", "[allow_cod
 
 BACKEND_TEST_CASE("Test allow_code_after_function_end dynamic pass", "[allow_code_after_function_end_test]") {
    using backend_t = backend<std::nullptr_t, TestType, dynamic_options>;
-   backend_t backend(code_after_end_wasm, nullptr, dynamic_options{true});
+   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, nullptr, dynamic_options{true}), exceptions::parse);
    for(auto wasm : fail_wasms) {
       BOOST_CHECK_THROW(backend_t(wasm, nullptr, dynamic_options{true}), exceptions::parse);
    }

@@ -12,7 +12,7 @@ T1/T2 downstream migration and Gate are excluded.
 |---|---|---|
 | `api_core_values` | `Forge::forge_api_core_values` | Owns existing `forge.api.core.types` without API runtime |
 | `net_http_values` | `Forge::forge_net_http_values` | Owns `forge.net.http.method` and `is_idempotent` without HTTP runtime |
-| `execution_wasm` | `Forge::forge_execution_wasm` | Preview synchronous bounded pure Contract SDK action executor |
+| `vm_wasm_execution` | `Forge::forge_vm_wasm_execution` | Preview synchronous bounded pure Contract SDK action executor |
 | `api_wasm` | `Forge::forge_api_wasm` | Preview portable payload, continuation, effect, step/event, context and HTTP intent/result values with pure validation |
 
 Existing API/HTTP runtime targets consume the value owners;
@@ -114,6 +114,11 @@ root-int64 JSON writer limitation is characterized, not repaired; optional-membe
 omission versus Python null output is not byte-identical serialization.
 
 ## Integrated Validation
+
+This section records validation before the WASM-family rename. Historical
+evidence used the component name `execution_wasm`; it is not new validation of
+`vm_wasm_execution` or WAMR. See the
+[boundary migration note](unreleased-wasm-family-boundaries.md) for that work.
 
 Fresh coordinator-owned checks on macOS arm64, LLVM 22.1.8/Ninja passed:
 

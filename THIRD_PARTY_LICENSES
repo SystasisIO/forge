@@ -258,6 +258,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
+WebAssembly Micro Runtime (WAMR)
+--------------------------------
+
+Vendored under `vendor/wamr` from the SystasisIO/wasm-micro-runtime fork,
+commit `f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b`, based on upstream
+wasm-micro-runtime/wasm-micro-runtime commit
+`ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a`.
+
+Distributed under the Apache License 2.0 with LLVM Exceptions. The complete
+upstream license is preserved at `vendor/wamr/LICENSE`; upstream attribution
+records are preserved at `vendor/wamr/ATTRIBUTIONS.md`.
+
+
 AntelopeIO EOS VM
 -----------------
 
@@ -335,8 +348,11 @@ Berkeley SoftFloat Release 3e
 -----------------------------
 
 Vendored under `vendor/softfloat` from AntelopeIO/berkeley-softfloat-3 commit
-`19cbea6c254cdbb5d539584e5696675de997721d` for deterministic floating-point
-operations in `forge_vm_wasm_interpret`.
+`19cbea6c254cdbb5d539584e5696675de997721d`. Retained as an internal link
+dependency of `forge_vm_wasm_interpret` and used by optional
+`forge_tooling_testing` host compiler-builtins and floating-point helpers.
+Current guest WASM floating-point execution is owned by WAMR, not by this
+SoftFloat link dependency.
 
 Copyright 2011, 2012, 2013, 2014, 2015, 2016 The Regents of the University of
 California. All rights reserved.

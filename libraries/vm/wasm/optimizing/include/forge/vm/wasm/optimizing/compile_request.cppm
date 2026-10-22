@@ -4,6 +4,7 @@ module;
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 export module forge.vm.wasm.optimizing.compile_request;
@@ -11,8 +12,12 @@ export module forge.vm.wasm.optimizing.compile_request;
 export import forge.crypto.digest.sha256;
 export import forge.vm.wasm.interpret.host_function;
 export import forge.vm.wasm.interpret.options;
+import forge.vm.wasm.optimizing.invocation_abi;
 
 export namespace forge::vm::wasm::optimizing {
+
+// Exact engine source and build-profile identity, not a user-selected label.
+std::string_view engine_identity() noexcept;
 
 struct import_signature {
    std::string module;
@@ -26,8 +31,9 @@ struct target_profile {
    std::string cpu = "x86-64";
    std::string features;
    std::string llvm_version = "22.1.8";
-   std::uint32_t codegen_version = 3;
-   std::uint32_t host_abi_version = 2;
+   std::uint32_t codegen_version = 5;
+   std::uint32_t host_abi_version = current_host_abi_version;
+   std::string engine = std::string(engine_identity());
    // Full SAME canonical profile recognition plus supported host OS/CPU.
    // Does not promise mapping/page availability or process hardening.
    bool matches_host() const noexcept;
@@ -71,7 +77,8 @@ crypto::digest::sha256 identify(const crypto::digest::sha256& wasm, const compil
 crypto::digest::sha256 identify(const compile_request& request);
 
 BOOST_DESCRIBE_STRUCT(import_signature, (), (module, name, signature))
-BOOST_DESCRIBE_STRUCT(target_profile, (), (triple, cpu, features, llvm_version, codegen_version, host_abi_version))
+BOOST_DESCRIBE_STRUCT(target_profile, (),
+                      (triple, cpu, features, llvm_version, codegen_version, host_abi_version, engine))
 BOOST_DESCRIBE_STRUCT(compile_limits, (), (max_generated_bytes, max_function_stack_bytes))
 BOOST_DESCRIBE_STRUCT(compile_configuration, (), (version, execution, imports, target, limits))
 BOOST_DESCRIBE_STRUCT(compile_request, (), (wasm, configuration))

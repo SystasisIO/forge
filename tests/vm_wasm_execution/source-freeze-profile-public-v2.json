@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "version": 2,
+  "date": "2026-10-18",
+  "kind": "public-profile-test-delivery-only-freeze",
+  "status": "FROZEN_SOURCE_NOT_BUILT; independent test-delta review and new shared pin required",
+  "previous_freeze": {
+    "path": "tests/vm_wasm_execution/source-freeze-profile-public-v1.json",
+    "sha256": "9cb4678ac6010f471472224c149b4afaa9545545829e0d4774294f69acbaeb9a",
+    "unchanged": true
+  },
+  "source_sha256": {
+    "libraries/vm/wasm/interpret/debug_info.cpp": "6746fb25572111cfbf8eaff5080406ce826a795efb06bd61171406abf2cebc0e",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_info.cppm": "8afbd1025b71fb93f97caf5c248a04d2997d806cd73229bb7c2481a98ccdf4c8",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/backend.cppm": "5af7f24558272559ebc4d87301df87d4a53c2346ced6bf52b6100bd2dc0601a0",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/runtime_backend.cppm": "aab7b06a37b9e71e6e2ee5c617758957328451ffaa22f83ac9d00a3b91318621",
+    "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/prepared_module.cppm": "f0f1dfc0e2d3c771b07234e7364eeecb32e4564f1f038e0ab4f2f96ccabeb88b",
+    "libraries/vm/wasm/interpret/prepared_module_jit.cpp": "89e5275ab62fadd325af23657d487a6e592d3041335d3232037b0d1d293d42c3",
+    "libraries/vm/wasm/interpret/prepared_module_context.cpp": "971b2aab17ba715d065e410803c9de86464b6339afcf9c8945c4bdbc6dc27994",
+    "libraries/vm/wasm/interpret/details/engine_module.hxx": "858b21e79f48d6b6af34968169adb2f66e16c92ac0188fef1931704558c65ebc",
+    "libraries/vm/wasm/interpret/engine_module_jit.cpp": "05d1a5bb803615f68cbb6e4d678dddf420a0a4bb4d36fb4d2a66be244b0f972c",
+    "tests/vm_wasm_execution/profile_public_tests.cpp": "e3fa1450dad597b3e421cc843c1ecffc93706b367f4ce8cbaabd11b3e4e02558",
+    "tests/vm_wasm_execution/CMakeLists.txt": "67a9f9b46dd84ded20df467f896b6a26a23e22f96ba0944d0ddc2f7abb2aba58"
+  },
+  "delta": {
+    "modified_source": "tests/vm_wasm_execution/profile_public_tests.cpp",
+    "test": "profile_public_value_observer_survives_backend_destruction_during_thread_sampling",
+    "issue": "Process-directed ITIMER_PROF could select unblocked main, whose TLS active_samples is null, losing the consumer's late samples on Linux",
+    "fix": "Test-local scoped pthread masks: main blocks SIGPROF before spawn; child inherits the block, installs the existing sampler/observer, then explicitly unblocks; main stays blocked through join",
+    "child_teardown": "Restore the child's inherited blocked mask before sampling_scope disables the timer, drains pending SIGPROF and restores the prior handler; release the value pin only afterwards",
+    "main_teardown": "After child join and stopped timer, consume any remaining process/main pending SIGPROF while blocked, then restore main's complete original mask",
+    "controls": "Assert child's blocked mask restoration and main's original SIGPROF mask restoration",
+    "unchanged_semantics": "Real guest native-PC collection remains before observer transfer; ready/destroyed barriers, late sample reset, backend destruction during active consumer sampling, pinned-PC lookups and final cross-thread value-pin release remain",
+    "other_sampling_tests": "Unchanged; retain real guest native-PC samples and original instruction-offset assertions",
+    "production_and_cmake": "All ten non-test entries match v1 exactly; no production, CMake, fork or pin edits"
+  },
+  "checks": {
+    "git_diff_check": "PASS",
+    "test_added_file_whitespace": "PASS; git diff --no-index --check /dev/null profile_public_tests.cpp emitted no diagnostics, exit 1 is the added-file difference",
+    "json_and_source_hash_validation": "PASS",
+    "compile": "NOT_RUN; coordinator prohibits builds until the new shared pin",
+    "ctest": "NOT_RUN",
+    "independent_test_delta_review": "PENDING",
+    "prior_production_review": "Kepler CLEAR reported by coordinator; no production delta in this version"
+  },
+  "commands_after_pin_and_build_slot_release": [
+    "cmake --build build/wamr-dev-r4 --target test_forge_vm_wasm_profile_public -j2",
+    "build/wamr-dev-r4/tests/vm_wasm_execution/test_forge_vm_wasm_profile_public --run_test=profile_public_value_observer_survives_backend_destruction_during_thread_sampling --catch_system_errors=no",
+    "ctest --test-dir build/wamr-dev-r4 -R '^test_forge_vm_wasm_profile_public$' --output-on-failure --parallel 1 --repeat until-fail:3"
+  ],
+  "no_commit_push_or_build": true
+}

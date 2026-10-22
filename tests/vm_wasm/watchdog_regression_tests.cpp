@@ -7,6 +7,7 @@ module;
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <latch>
 #include <mutex>
@@ -343,6 +344,213 @@ BOOST_AUTO_TEST_CASE(scoped_invocation_unwinds_private_ancestor_interruption_wit
    });
 }
 
+BOOST_AUTO_TEST_CASE(ancestor_transport_through_inner_guest_preserves_real_host_failures) {
+   if (!child_case("ancestor_transport_through_inner_guest_preserves_real_host_failures"))
+      return;
+   each_backend([]<typename Implementation> {
+      auto outer = interruption_owner<Implementation>{};
+      auto code = registered_interruption_fixture();
+      auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+      auto inner = wasm::backend<interruption_functions, Implementation>{
+          pointer, code.size(), nullptr, wasm::default_options{}, false, false};
+      auto inner_host = interruption_host{};
+      auto external = std::stop_source{};
+      auto carrier = std::exception_ptr{};
+      auto continued = 0U;
+      inner_host.hook = [&] {
+         external.request_stop();
+         try {
+            outer.instance.call(outer.host, "env", "healthy");
+         } catch (...) {
+            carrier = std::current_exception();
+            throw;
+         }
+         ++continued;
+      };
+      outer.host.hook = [&] {
+         inner.with_invocation(&inner_host, {}, 1s, {}, [&] {
+            inner.call(inner_host, "env", "host");
+            ++continued;
+         });
+         ++continued;
+      };
+      BOOST_CHECK_THROW(outer.instance.timed_run(steady_clock::now() + 2s, {{}, external.get_token()},
+                                                 [&] { outer.instance.call(outer.host, "env", "host"); }),
+                        wasm::exceptions::interrupted);
+      BOOST_REQUIRE(static_cast<bool>(carrier));
+      BOOST_TEST(continued == 0U);
+      BOOST_TEST(outer.host.cleaned == 1U);
+      BOOST_TEST(inner_host.cleaned == 1U);
+      outer.healthy();
+      inner_host.hook = {};
+      inner.with_invocation(&inner_host, {}, 1s, {}, [&] {
+         const auto result = inner.call_with_return(inner_host, "env", "healthy");
+         BOOST_REQUIRE(result.has_value());
+         BOOST_TEST(result->to_ui32() == 42U);
+      });
+
+      // Same public canceled type, but genuinely thrown by this host: it must
+      // retain exact identity ahead of the owner's racing external interruption.
+      const auto host_error = std::make_exception_ptr(wasm::exceptions::canceled{"real host cancellation"});
+      external = std::stop_source{};
+      outer.host.hook = [&] {
+         external.request_stop();
+         std::rethrow_exception(host_error);
+      };
+      auto received = std::exception_ptr{};
+      try {
+         outer.instance.timed_run(steady_clock::now() + 2s, {{}, external.get_token()},
+                                  [&] { outer.instance.call(outer.host, "env", "host"); });
+      } catch (...) {
+         received = std::current_exception();
+      }
+      BOOST_CHECK(received == host_error);
+      outer.healthy();
+
+      // Replaying an expired carrier is an actual host error, not permission
+      // to clear failure state or reuse a failed strict invocation.
+      inner_host.hook = [&] { std::rethrow_exception(carrier); };
+      received = {};
+      try {
+         inner.with_invocation(&inner_host, {}, 1s, {}, [&] { inner.call(inner_host, "env", "host"); });
+      } catch (...) {
+         received = std::current_exception();
+      }
+      BOOST_CHECK(received == carrier);
+      BOOST_CHECK_THROW(inner.with_invocation(&inner_host, {}, 1s, {}, [] {}), wasm::exceptions::unusable);
+
+      // The origin context remains alive, but ownership never transfers with
+      // an exception_ptr to a different execution thread.
+      auto worker_error = std::exception_ptr{};
+      auto worker = std::jthread{[&] {
+         try {
+            auto worker_code = registered_interruption_fixture();
+            auto worker_pointer = wasm::wasm_code_ptr{worker_code.data(), worker_code.size()};
+            auto receiver = wasm::backend<interruption_functions, Implementation>{
+                worker_pointer, worker_code.size(), nullptr, wasm::default_options{}, false, false};
+            auto worker_host = interruption_host{};
+            worker_host.hook = [&] { std::rethrow_exception(carrier); };
+            auto error = std::exception_ptr{};
+            try {
+               receiver.with_invocation(&worker_host, {}, 1s, {}, [&] { receiver.call(worker_host, "env", "host"); });
+            } catch (...) {
+               error = std::current_exception();
+            }
+            if (error != carrier)
+               throw std::runtime_error("Cross-thread carrier lost its host exception identity");
+            auto poisoned = false;
+            try {
+               receiver.with_invocation(&worker_host, {}, 1s, {}, [] {});
+            } catch (const wasm::exceptions::unusable&) {
+               poisoned = true;
+            }
+            if (!poisoned)
+               throw std::runtime_error("Cross-thread carrier allowed strict backend reuse");
+         } catch (...) {
+            worker_error = std::current_exception();
+         }
+      }};
+      worker.join();
+      if (worker_error)
+         std::rethrow_exception(worker_error);
+   });
+}
+
+BOOST_AUTO_TEST_CASE(live_ancestor_transport_precedes_inner_stop_without_hiding_local_or_host_failure) {
+   if (!child_case("live_ancestor_transport_precedes_inner_stop_without_hiding_local_or_host_failure"))
+      return;
+   each_backend([]<typename Implementation> {
+      auto outer = interruption_owner<Implementation>{};
+      auto code = registered_interruption_fixture();
+      auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+      auto inner = wasm::backend<interruption_functions, Implementation>{
+          pointer, code.size(), nullptr, wasm::default_options{}, false, false};
+      auto inner_host = interruption_host{};
+      for (const auto through_guest : {false, true}) {
+         auto external = std::stop_source{};
+         auto cancel = std::stop_source{};
+         auto carrier = std::exception_ptr{};
+         auto forwarded = std::exception_ptr{};
+         auto requested = false;
+         auto continued = 0U;
+         const auto outer_cleaned = outer.host.cleaned;
+         const auto inner_cleaned = inner_host.cleaned;
+         const auto reenter = [&] {
+            external.request_stop();
+            try {
+               outer.instance.call(outer.host, "env", "healthy");
+            } catch (...) {
+               carrier = std::current_exception();
+               // The duration guard synchronously claims B's stop, then joins
+               // its timer-thread delivery before classifying this same carrier.
+               requested = cancel.request_stop();
+               throw;
+            }
+            ++continued;
+         };
+         inner_host.hook = reenter;
+         outer.host.hook = [&] {
+            try {
+               inner.with_invocation(&inner_host, {}, 1s, cancel.get_token(), [&] {
+                  if (through_guest)
+                     inner.call(inner_host, "env", "host");
+                  else
+                     reenter();
+                  ++continued;
+               });
+            } catch (...) {
+               forwarded = std::current_exception();
+               throw;
+            }
+            ++continued;
+         };
+         BOOST_CHECK_THROW(outer.instance.timed_run(steady_clock::now() + 2s, {{}, external.get_token()},
+                                                    [&] { outer.instance.call(outer.host, "env", "host"); }),
+                           wasm::exceptions::interrupted);
+         BOOST_REQUIRE(static_cast<bool>(carrier));
+         BOOST_CHECK(forwarded == carrier);
+         BOOST_TEST(requested);
+         BOOST_TEST(cancel.stop_requested());
+         BOOST_TEST(continued == 0U);
+         BOOST_TEST(outer.host.cleaned == outer_cleaned + 1U);
+         BOOST_TEST(inner_host.cleaned == inner_cleaned + (through_guest ? 1U : 0U));
+         outer.healthy();
+         inner_host.hook = {};
+         inner.with_invocation(&inner_host, {}, 1s, {}, [&] {
+            const auto result = inner.call_with_return(inner_host, "env", "healthy");
+            BOOST_REQUIRE(result.has_value());
+            BOOST_TEST(result->to_ui32() == 42U);
+         });
+         outer.host.hook = {};
+      }
+
+      // Without ancestor transport, B's own stopped duration guard still wins
+      // after Work returns and must not poison an otherwise healthy backend.
+      auto cancel = std::stop_source{};
+      BOOST_CHECK_THROW(inner.with_invocation(&inner_host, {}, 1s, cancel.get_token(), [&] { cancel.request_stop(); }),
+                        wasm::exceptions::canceled);
+      inner.with_invocation(&inner_host, {}, 1s, {}, [&] { inner.call(inner_host, "env", "healthy"); });
+
+      // A genuine host exception outranks that same local stop and permanently
+      // poisons the strict invocation. Its exact exception identity is retained.
+      const auto host_error = std::make_exception_ptr(wasm::exceptions::canceled{"real inner host cancellation"});
+      cancel = std::stop_source{};
+      inner_host.hook = [&] {
+         cancel.request_stop();
+         std::rethrow_exception(host_error);
+      };
+      auto received = std::exception_ptr{};
+      try {
+         inner.with_invocation(&inner_host, {}, 1s, cancel.get_token(), [&] { inner.call(inner_host, "env", "host"); });
+      } catch (...) {
+         received = std::current_exception();
+      }
+      BOOST_CHECK(received == host_error);
+      BOOST_CHECK_THROW(inner.with_invocation(&inner_host, {}, 1s, {}, [] {}), wasm::exceptions::unusable);
+      BOOST_TEST(wasm::timed_run_timeout_count.load() == 0U);
+   });
+}
+
 BOOST_AUTO_TEST_CASE(preexisting_requests_never_run_work) {
    if (!child_case("preexisting_requests_never_run_work"))
       return;
@@ -445,13 +653,11 @@ BOOST_AUTO_TEST_CASE(memory_host_numeric_and_ordinary_timeout_are_not_readiness)
       owner.healthy();
       owner.host.hook = {};
       const auto numeric = [&] { owner.instance.call(owner.host, "env", "numeric"); };
-      // The legacy JIT maps its arithmetic SIGFPE to memory; the interpreter
-      // throws interpreter. Preserve those existing categories, not a new trap.
-      if constexpr (Implementation::is_jit)
-         BOOST_CHECK_THROW(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric), wasm::exceptions::memory);
-      else
-         BOOST_CHECK_THROW(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric),
-                           wasm::exceptions::interpreter);
+      const auto divided_by_zero = [](const wasm::exceptions::guest_trap& error) {
+         return error.kind == wasm::exceptions::guest_trap_kind::integer_divide_by_zero;
+      };
+      BOOST_CHECK_EXCEPTION(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric),
+                            wasm::exceptions::guest_trap, divided_by_zero);
       owner.healthy();
       external = std::stop_source{};
       const auto retained_numeric = [&] {
@@ -462,14 +668,9 @@ BOOST_AUTO_TEST_CASE(memory_host_numeric_and_ordinary_timeout_are_not_readiness)
             throw;
          }
       };
-      if constexpr (Implementation::is_jit)
-         BOOST_CHECK_THROW(
-             owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
-             wasm::exceptions::memory);
-      else
-         BOOST_CHECK_THROW(
-             owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
-             wasm::exceptions::interpreter);
+      BOOST_CHECK_EXCEPTION(
+          owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
+          wasm::exceptions::guest_trap, divided_by_zero);
       owner.healthy();
    });
 }

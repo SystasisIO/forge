@@ -20,6 +20,7 @@ module;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stop_token>
 #include <sys/wait.h>
@@ -50,21 +51,41 @@ compiler_session::impl::exchange(std::shared_ptr<job> record, std::vector<std::u
    }
    auto launch_error = std::exception_ptr{};
    try {
-      // Deliberately no parent token on the mandatory ownership publication
-      // operation: compute reports cancellation AFTER work returns. The launch
-      // checks the job token before spawn, but a successful PID+fd publication
-      // must not disappear in a canceled return value. It is stored on child.
-      co_await compute.execute(asio::compute::task_options{.name = "wasm-helper-spawn"},
-                               [process, stop] { process->spawn(stop); });
+      // Retain before any workspace/PID/fd mutation. The same admission stays
+      // idle through async I/O/reap and can drain cleanup after compute stop.
+      process->admission = co_await compute.retain(
+          asio::compute::task_options{.name = "wasm-helper-lifecycle", .parent_stop_token = stop});
+      // The admission links parent stop, including post-work cancellation.
+      // Spawn publishes successful PID+fd ownership on child before returning;
+      // even a canceled phase result must still activate/drain that real child.
+      co_await process->admission.execute([process, stop] { process->spawn(stop); });
    } catch (...) {
       launch_error = std::current_exception();
    }
-   if (launch_error && process->launched_pid.load(std::memory_order_acquire) <= 0)
-      std::rethrow_exception(launch_error);
-   auto output = co_await boost::asio::co_spawn(process->strand, child::run_owned(process, std::move(request), stop),
-                                                boost::asio::use_awaitable);
+   auto output = std::vector<std::uint8_t>{};
+   if (!launch_error || process->launched_pid.load(std::memory_order_acquire) > 0) {
+      try {
+         output = co_await boost::asio::co_spawn(process->strand, child::run_owned(process, std::move(request), stop),
+                                                 boost::asio::use_awaitable);
+      } catch (...) {
+         if (!launch_error)
+            launch_error = std::current_exception();
+      }
+   }
+   auto cleanup_error = std::exception_ptr{};
+   if (process->process_drained()) {
+      try {
+         co_await child::cleanup_workspace(process);
+      } catch (...) {
+         cleanup_error = std::current_exception(); // Physical owner/admission remain on the live job.
+      }
+   }
    if (launch_error)
-      std::rethrow_exception(launch_error); // only after successful ownership drain
+      std::rethrow_exception(launch_error); // First work error wins; failed cleanup remains owned for shutdown retry.
+   if (cleanup_error)
+      std::rethrow_exception(cleanup_error);
+   // Successful cleanup releases retained capacity before prepare/cache asks
+   // for ordinary compute admission, including a single-capacity pool.
    co_return output;
 }
 
@@ -106,9 +127,11 @@ boost::asio::awaitable<void> compiler_session::impl::shutdown(std::chrono::stead
    // Pending jobs canceled before their work began never entered run()/finish().
    // Their ticket terminal errors and final retained accounting are drained now.
    for (const auto& record : records) {
-      if (record->process && !record->process->is_quiescent())
+      if (record->process && !record->process->process_drained())
          FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete,
                                "compiler child remained non-quiescent after task drain");
+      if (record->process)
+         co_await child::cleanup_workspace(record->process);
       finish(record, {}, cancelled_error);
    }
    {
@@ -119,13 +142,14 @@ boost::asio::awaitable<void> compiler_session::impl::shutdown(std::chrono::stead
    }
    release_signal_owner(); // Failure retains SAME registration/cache/runtime and forbids quiescence.
    close_cache();          // no live child/task/compute callback can still access the cache
+   clear_ready();          // external artifact/module/weak pins carry their own charge
+   static_cast<void>(interpret::prepared_module::preparation::retry_pending_cleanup(options.max_tickets));
    {
       const auto lock = std::scoped_lock{index_mutex};
       quiescent = true;
    }
    // Completed external tickets/artifact pins remain valid. No pending callback
-   // captures a raw session; immutable ready entries remain indexed/charged
-   // throughout the session lifetime, and consumer accounting has a shared owner.
+   // captures a raw session; external storage charges have a durable shared owner.
 }
 
 } // namespace forge::vm::wasm::optimizing

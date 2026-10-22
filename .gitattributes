@@ -1,3 +1,11 @@
 guest/tests/corpus/spring/** linguist-vendored whitespace=-trailing-space,-blank-at-eof
 guest/tests/corpus/eosio/** linguist-vendored whitespace=-trailing-space,-blank-at-eof
 vendor/c-ares/** linguist-vendored whitespace=-trailing-space,-blank-at-eof,-space-before-tab
+# Unified diff uses a single space for empty context lines.
+cmake/patches/wamr-deterministic-profile.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-deferred-initialization.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-native-call-alignment.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-aux-stack-boundary.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-admission-metrics.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-call-depth.patch whitespace=-blank-at-eol,-blank-at-eof
+cmake/patches/wamr-exported-raw-import.patch whitespace=-blank-at-eol,-blank-at-eof

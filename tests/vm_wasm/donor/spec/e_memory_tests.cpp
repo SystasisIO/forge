@@ -31,7 +31,7 @@ BACKEND_TEST_CASE( "Testing wasm <e_memory_0_wasm>", "[e_memory_0_wasm_tests]" )
 BACKEND_TEST_CASE( "Testing wasm <e_memory_1_wasm>", "[e_memory_1_wasm_tests]" ) {
    using backend_t = backend<standalone_function_t, TestType>;
    auto code = read_wasm( std::string(wasm_directory) + "e_memory.1.wasm");
-   backend_t bkend( code, &wa );
+   BOOST_CHECK_THROW(backend_t(code, &wa), exceptions::profile);
 
 }
 

@@ -3,6 +3,7 @@ module;
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -137,28 +138,29 @@ void validate_abi(const std::filesystem::path& path) {
    }
 }
 
-void validate_signature(const wasm::func_type& actual, const intrinsic_signature& expected, const intrinsic_key& key) {
-   if (actual.param_types.size() != expected.parameters.size()) {
+void validate_signature(wasm::prepared_module::signature_view actual, const intrinsic_signature& expected,
+                        const intrinsic_key& key) {
+   if (actual.params.size() != expected.parameters.size()) {
       throw std::runtime_error{"contract import has the wrong parameter count: " + key.first + '.' + key.second};
    }
    for (auto index = std::size_t{0}; index < expected.parameters.size(); ++index) {
-      if (actual.param_types[index] != expected.parameters[index]) {
+      if (actual.params[index] != expected.parameters[index]) {
          throw std::runtime_error{"contract import has a wrong parameter type: " + key.first + '.' + key.second};
       }
    }
-   if (actual.return_count != (expected.result.has_value() ? 1U : 0U) ||
-       (expected.result.has_value() && actual.return_type != *expected.result)) {
+   if (actual.results.size() != (expected.result.has_value() ? 1U : 0U) ||
+       (expected.result.has_value() && actual.results.front() != *expected.result)) {
       throw std::runtime_error{"contract import has the wrong return type: " + key.first + '.' + key.second};
    }
 }
 
-void validate_required_export_signature(std::string_view name, const wasm::func_type& actual) {
+void validate_required_export_signature(std::string_view name, wasm::prepared_module::signature_view actual) {
    if (name != "apply") {
       return;
    }
 
-   if (actual.param_types.size() != 3U || actual.param_types[0] != wasm::i64 || actual.param_types[1] != wasm::i64 ||
-       actual.param_types[2] != wasm::i64 || actual.return_count != 0U) {
+   if (actual.params.size() != 3U || actual.params[0] != wasm::i64 || actual.params[1] != wasm::i64 ||
+       actual.params[2] != wasm::i64 || !actual.results.empty()) {
       throw std::runtime_error{"contract apply export has the wrong signature: expected (i64, i64, i64) -> void"};
    }
 }
@@ -189,17 +191,13 @@ void validate(const request& options) {
       if (found == approved.end()) {
          throw std::runtime_error{"unsupported contract import: " + key.first + '.' + key.second};
       }
-      validate_signature(module.get_function_type(static_cast<std::uint32_t>(index)), found->second, key);
+      validate_signature(module.function_signature(static_cast<std::uint32_t>(index)), found->second, key);
    }
 
-   for (std::size_t index = 0; index < module.exports.size(); ++index) {
-      const auto& entry = module.exports[index];
-      if (entry.kind == wasm::external_kind::Function && text(entry.field_str) == options.required_export) {
-         validate_required_export_signature(options.required_export, module.get_function_type(entry.index));
-         return;
-      }
-   }
-   throw std::runtime_error{"required contract export is missing: " + options.required_export};
+   const auto required = module.get_exported_function(options.required_export);
+   if (required == std::numeric_limits<std::uint32_t>::max())
+      throw std::runtime_error{"required contract export is missing: " + options.required_export};
+   validate_required_export_signature(options.required_export, module.function_signature(required));
 }
 
 } // namespace forge::tooling::validation

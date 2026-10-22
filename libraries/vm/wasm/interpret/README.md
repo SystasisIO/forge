@@ -1,33 +1,90 @@
 # forge_vm_wasm_interpret
 
-`forge_vm_wasm_interpret` is Forge's native WebAssembly virtual machine. It is a C++23
-module port of AntelopeIO EOS VM and preserves the donor parser, validator,
-interpreter, host-function ABI, guarded memory, watchdog, deterministic
-SoftFloat operations, and x86_64 just-in-time compiler.
+`forge_vm_wasm_interpret` is Forge's native WebAssembly virtual machine. On this
+experimental branch it uses a pinned WAMR fork behind Forge's C++23 module APIs:
+validation, interpretation, optional LLVM JIT, host-function bindings, guarded
+memory and bounded invocation. Donor-derived API/conversion code and its license
+notices remain; replacing the execution engine does not erase that provenance.
 
 This is a low-level VM library. It executes architecture-neutral WASM bytes;
 the consuming product owns contract selection, code caching, scheduling,
 state access, resource billing, and the host functions exposed to a guest.
 
-`execute_numeric(opcodes, span<const expr_value>)` dispatches one raw numeric
-operation through the same interpreter overloads and existing private SoftFloat
-helpers. Its closed domain is the 62 MVP f32/f64 comparisons/arithmetic and
-FP/integer conversions, including bit reinterpretation. Constants, control,
-memory and integer-only operations reject with `exceptions::unsupported_numeric`;
-wrong one/two-operand arity rejects with `exceptions::numeric_arity`. Existing
-conversion failures retain `exceptions::interpreter`; consumers classify the
-known conversion family without parsing exception text.
+## WAMR Experiment
 
-The caller must already be on its host stack with VM signal recovery NULL,
-as established by `invoke_without_signal_recovery` for an optimizing-runtime
-callback. The primitive owns the existing `floating_point_environment` guard,
-restoring all caller SoftFloat TLS state on success or exception. It owns no
-signal checkpoint, stack switch, trap transport, parser or alternative numeric
-engine. Returning to generated code and transporting a trap remain executor
-responsibilities. Raw operand/result slots preserve existing NaN payloads and
-signed zero; no alternative native floating-point arithmetic is introduced.
+On this experimental branch, the public `interpreter` and `null_backend`
+specializations use the shared WAMR runtime owned by this target. Explicit `jit`
+selection uses WAMR LLVM JIT when `FORGE_ENABLE_VM_WASM_LLVM_JIT=ON`; it never
+falls back to interpretation or the old engine. The source build supports
+x86_64 and ARM64, but each release/platform still requires its own qualification.
+`jit_profile` selects instruction-level profiling through the same optional LLVM
+runtime. It retains an immutable native-PC to original WASM-instruction map;
+ordinary `jit` does not allocate this map. The new implementation is pending
+runtime qualification, not a production acceptance claim.
+
+`forge.vm.wasm.interpret.prepared_module` owns the generic prepared module,
+module-local `host_binding`, and nested execution `context` (also named by the
+`runtime_context` alias). The same context executes source WASM and trusted AOT
+through private `engine_*` mechanics. It exposes neither the SDK registry nor
+WAMR/LLVM types. Ordinary interpreter/AOT configurations do not link LLVM;
+the explicitly enabled JIT runtime has a private LLVM dependency.
+Source-plus-AOT preparation requires explicit trusted-compiler origin; structural
+matching alone does not establish artifact provenance. Upstream stack-size and
+structural-memory observations do not constitute exact resident allocation quotas.
+
+Validation-only preparation uses WAMR `no_resolve` and projects import names and
+function types from validated upstream metadata. It cannot instantiate guest
+code. The interpreter retains the templated host registry and converters;
+their donor-derived algorithms and corresponding license notices remain.
+
+The usage-aware dispatcher now commits and grows the supplied `wasm_allocator`
+mapping directly. Active execution borrows that allocator exclusively; an idle
+instance is retired before reset or sequential handoff to another context.
+Nested and parallel dispatch restore the correct owner. Local allocation or
+protection failure is operational and prevents a subsequent host effect, while
+module/caller growth-limit failure retains WASM's canonical `-1` result. The
+private system provider zeroes initial storage and newly grown tails; public
+contexts do not fall back to that provider.
+
+The bounded profile currently admits at most 65,535 logical 64 KiB pages
+(4 GiB minus 64 KiB), not 65,536. Initial declarations and explicit caller caps
+above that representation bound reject before instance creation; the historical
+`UINT32_MAX` caller sentinel means the common cap applies. A missing declared
+maximum does not itself reject. Prospective native instance metadata must fit
+`INT32_MAX` bytes, calculated from upstream layouts rather than an arbitrary
+table-element cap. Boundary admission tests do not allocate multi-GiB memory.
+
+Migration is not production-accepted: complete regression, profiling qualification,
+cross-platform and installed/downstream gates remain open. Preparation uses an
+enforced conservative reservation followed by actual retained-byte accounting,
+not an exact prospective size. The three malformed-WASM permissions
+`allow_code_after_function_end`, `allow_invalid_empty_local_set`, and
+`allow_u32_limits_flags` no longer permit invalid bytecode in WAMR. Their source
+fields remain usable, including `compatibility_options`; valid modules are not
+rejected merely because those flags are true. This explicit maintainer-approved
+change does not retire `allow_zero_blocktype`: the shared loader policy can
+normalize a literal zero block type to void in its owned input copy, without
+changing caller bytes or accepting arbitrary type-index encodings.
+
+The consumer regression retains cached A-reset-B-reset-A with persistent
+contexts and one allocator. Idle retirement is implemented; reset during active
+guest execution, host callbacks or argument conversion is rejected instead of
+mutating live memory. Fresh tests on the integration base remain mandatory.
+The absolute-deadline `timed_run(deadline, interrupt_options, work)` API is now
+present on the WAMR backend and covered by consumer-shaped compile/runtime tests;
+this does not establish complete downstream or cross-platform compatibility.
+
+The [compatibility checkpoint](../../../../tests/vm_wasm/WAMR_COMPATIBILITY.md)
+separates current results from historical evidence. Do not include private engine
+headers from products, load unauthenticated native artifacts, or claim EOS-derived
+source removal.
 
 ## Package Integration
+
+An explicitly LLVM-JIT-enabled distribution uses LLVM's CMake package, whose
+dependency probes require both C and CXX languages in the consuming project.
+Pass the matching `LLVM_DIR` and toolchain explicitly. This does not add LLVM
+to the ordinary interpreter/AOT-only distribution or change the C++ runtime API.
 
 ```cmake
 cmake_minimum_required(VERSION 3.31)
@@ -54,12 +111,84 @@ The main consumer module is `forge.vm.wasm.interpret.backend`. It reexports allo
 debug-info, exception, host-function, option, type, and watchdog contracts.
 Consumers that need only a leaf type may import its owning module directly.
 
-Parser, visitor, signal, execution-context, SoftFloat, and native-code-generator
-components are non-reexported partitions of `forge.vm.wasm.interpret.backend`. Their
-source units are installed because the template backend needs them when CMake
-builds module BMIs. Partition names are not public import contracts.
+The backend's runtime/host-conversion partitions are implementation units of
+the module graph; their source is installed where CMake needs it to rebuild
+module BMIs. Partition names and private engine headers are not public import
+contracts. The retired donor parser, visitors and machine-code writer are no
+longer part of this module graph.
 
 The VM and WASM family roots do not expose targets or aggregate modules.
+
+## Retained Numeric And FP APIs
+
+Status at this checkpoint: numeric v2 and FP/TLS APIs are restored in source;
+independent numeric review is CLEAR, with the P2 finding closed. The pre-legacy-fix R5
+full ON source/build-tree checkpoint passed 72/72 selected CTests on Darwin
+ARM64 in 74.27 seconds, with zero failures/errors/skips/disabled tests and no
+expected-failure masking. It covers core, interpreter/JIT, nine public-profile
+cases and 47 AOT/session/cleanup registrations; helper/session checks select the
+current build-tree compiler helper. Unit and spec report 288 and 4856 cases,
+not assertion counts. All 290 source files matched that checkpoint's freeze;
+this was not the entire root test suite.
+
+The earlier LLVM-free interpreter-only run remains a separate 10/10 PASS
+checkpoint (165 unit / 2428 spec cases). The later frozen F6 ON checkpoint
+passes 76/76 selected tests, installed AOT/session 5/5 and the direct installed
+interpreter/JIT consumer. Its separate runtime-OFF delivery passes 14/14 selected
+tests, installed AOT/session 2/2 and direct interpreter smoke, with no LLVM in
+resolved runtime dependencies. Spine passes three contract gates and one
+293-assertion process case; its other process cases were filtered. These are
+local F6 results, not automatic qualification of the later publication branch,
+wider Turbine or Linux/x86/remote CI.
+
+The retained surfaces live in `forge::vm::wasm::interpret`:
+
+```cpp
+import forge.vm.wasm.interpret.backend;
+import forge.vm.wasm.interpret.floating_point_environment;
+```
+
+The backend module exposes
+`expr_value execute_numeric(opcodes, std::span<const expr_value>)`, using the
+existing `opcodes` and `expr_value` contracts reexported through `types`. There
+is no separate numeric public module. The second import owns
+`floating_point_environment`; importing the backend alone does not import that
+guard.
+
+`floating_point_environment` scopes only SoftFloat state: rounding mode,
+tininess detection, exception flags and extF80 precision. It saves the caller's
+four values, selects nearest-even / after-rounding / zero flags / precision 80,
+and restores the saved values on normal or C++ exceptional exit, including
+nested scopes. It does not change the native hardware FP environment, establish
+WAMR's guest FP boundary or provide signal/trap transport. A recovery jump must
+not bypass its destructor.
+
+SoftFloat definitions compiled as C and declarations consumed from C or C++
+must use the same TLS (thread-local storage) ABI. The restored build applies
+`THREAD_LOCAL=__thread` as a PUBLIC requirement of the existing SoftFloat target,
+including its installed internal target. Rebuild the library and all consumers
+together; do not mix old non-TLS objects/archives with new TLS declarations.
+
+The numeric adapter executes exactly 62 FP/comparison/conversion
+operations through one fixed, lazily prepared WAMR module and a fresh interpreter
+context for each call. It uses the existing WAMR admission, numeric execution and
+FP boundary, not an EOS visitor, a second interpreter or a keyed module cache.
+It does not read or mutate SoftFloat state and does not require the public guard
+to establish its guest arithmetic behavior.
+
+Arithmetic NaNs follow the approved canonical WAMR profile
+(`0x7fc00000` / `0x7ff8000000000000`). Reinterpretation and raw sign/bit
+operations retain their specified payload and signed-zero behavior; this is not
+historical EOS arithmetic-NaN payload parity.
+
+This is not a hard-real-time or zero-allocation numeric primitive. Cold
+preparation and per-call context lifecycle can allocate and have variable
+latency; no fixed latency, exact per-call allocation budget or old SoftFloat
+performance guarantee is promised. The checkpoint above covers only its recorded
+Darwin source/build-tree checks and separately bounded runtime-package evidence.
+Rebuild/reinstall after source changes and complete the remaining full-package,
+platform and product gates; earlier package results do not qualify a later API
+or installed-helper snapshot.
 
 ## Execution Model
 
@@ -70,11 +199,12 @@ A production execution lane consists of four objects:
 3. a `wasm_allocator` that owns guarded guest linear memory;
 4. a host object that owns the capabilities visible to that invocation.
 
-Backend construction parses, validates, instantiates the module, initializes
-globals and linear memory, resolves imports, and executes the WASM start
-function when present. Calling an export does not compile a source-language
-contract. The input is already WASM. The interpreter translates it to donor
-bitcode; the x86_64 JIT translates it to native code inside the process.
+Backend construction prepares and validates WASM. Context-owning constructors
+can also initialize it and execute its start function. For untrusted modules,
+use preparation without an attached context, then `with_invocation` so the
+deadline covers initialization and start as well as the exported call.
+The input is already WASM, not source code: WAMR interprets it or LLVM JIT
+compiles it to native code inside the process.
 
 Legacy backend operations and execution contexts require external synchronization.
 `with_invocation` rejects overlapping scoped calls rather than queuing them;
@@ -83,31 +213,6 @@ executing lane its own compiled module, context, linear memory, mutable host
 state, and deadline guard.
 Host-function registration is static per `registered_host_functions` type and
 must finish during process startup before backend construction.
-
-SoftFloat state is thread-local in the owning dependency target. Guest entry
-(including start functions) uses nearest-even rounding, tininess after
-rounding, zero exception flags and extended precision 80, independently of
-the caller's state. A nested invocation and every host-function boundary
-restore their caller's exact four values on return or exception. Changing
-rounding in a host callback must not affect subsequent guest arithmetic.
-
-The real reusable guard is `forge.vm.wasm.interpret.floating_point_environment`.
-An execution adapter that uses it must construct the guard **outside** its
-guest signal/trap boundary, with VM recovery suspended before constructing
-the guard and throughout its destruction. The existing two-mode callback
-adapter owns that suspension: both numeric roots keep argument conversion,
-saved-state cleanup and result conversion inside it; host gateways keep the
-complete registered wrapper and user callback inside it, without an inner
-hardware-fault checkpoint. Root entry saves the original caller environment
-before custom argument conversion, then recanonicalizes after conversion
-before executing the guest; throwing converters restore the original caller
-too. Guest-pointer validation remains typed. Genuine
-C++ host SIGSEGV/SIGBUS is foreign/fatal; no host-RAII cleanup is promised on
-that fatal path. Pending legacy watchdog interruption is recovered only on
-safe guest reentry. Do not reset state on every internal WASM call or expose
-SoftFloat globals as a second VM API.
-After changing ordinary SoftFloat objects to TLS, rebuild the full archive
-and all consumers; old ordinary-state and new TLS objects cannot be mixed.
 
 ## Cookbook: Load Canonical WASM Bytes
 
@@ -208,10 +313,10 @@ backends.
 
 ## Cookbook: Interpreter With A Deadline
 
-Use a bounded validation profile and a deadline for untrusted code. The
-compatibility profile preserves the donor limits used by Spring/Antelope. A
-different product may define its own options type, but every consensus-visible
-limit must be stable across all participating nodes.
+Use a bounded validation profile and a deadline for untrusted code. Existing
+option names are subject to the versioned WAMR capacity profile, not the full
+historical donor range. Every consensus-visible limit must be stable across
+all participating nodes.
 
 ```cpp
 #include <chrono>
@@ -232,18 +337,15 @@ void initialize_vm() {
 }
 
 void execute(wasm::wasm_code code) {
-   auto memory = wasm::wasm_allocator{};
-   {
-      auto host = invocation_host{.id = 42};
-      auto vm = interpreter{code, host, &memory};
-      auto deadline = wasm::watchdog{std::chrono::milliseconds{50}};
-
-      vm.timed_run(deadline, [&] {
+   auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+   auto vm = interpreter{pointer, code.size(), nullptr,
+      wasm::compatibility_options{}, true, false};
+   vm.validate();
+   auto host = invocation_host{.id = 42};
+   vm.with_invocation(&host, wasm::compatibility_options{},
+      std::chrono::milliseconds{50}, {}, [&] {
          vm(host, "env", "apply", std::uint64_t{42}, std::uint64_t{7});
       });
-   }
-
-   // wasm_allocator owns and releases its guarded mapping.
 }
 ```
 
@@ -256,56 +358,10 @@ is templated, so a high-concurrency service may supply a product scheduler-backe
 watchdog with the same `scoped_run(callback)` guard contract. `null_watchdog`
 means unbounded execution and is not appropriate for untrusted production code.
 
-On expiry, the callback disables the backend's code pages. The guarded signal
-path interrupts execution and `timed_run` reports
+On expiry, the callback requests cooperative cancellation through WAMR's
+interrupt mechanism. `timed_run` reports
 `forge::vm::wasm::interpret::exceptions::timeout`. Do not catch and ignore this exception
 inside the timed callable.
-
-### Absolute Deadline And Neutral External Interruption
-
-The additive overload `backend::timed_run(steady_clock::time_point,
-interrupt_options, Work)` uses the same guard/protection algorithm and the
-existing single watchdog thread, with stop callbacks rather than an additional
-per-invocation thread. `interrupt_options::cancel` is ordinary cancellation;
-`external` is a neutral caller-owned notification. At the one-shot claim,
-cancellation takes priority, then an already expired **original absolute
-deadline**, then external notification. The first claimed cause is sticky.
-Preexisting cancellation, expiry or external notification does not run Work.
-The categories are `exceptions::canceled` (4010003), `exceptions::timeout`
-(4010001) and `exceptions::interrupted` (4010008), respectively.
-
-A notification arriving after Work admission can disable that backend's code
-pages. Only its existing owned-code fault, bound to the same mapping and this
-scope's fired cause, may become an interruption. Genuine memory, arithmetic,
-host/C++ exceptions and an ordinary timeout keep their original categories,
-even if a notification is pending. Host callbacks finish their complete C++
-cleanup before guest reentry can trap. A successful callable with a pending
-claimed cause reports that cause after guard teardown. Stop callbacks are
-unregistered and the timer joined outside their mutex before code is reenabled
-and borrowed backend/TLS state is released. A late request after return is inert.
-The existing two-argument/custom-watchdog API retains its original timeout
-semantics, including expiry during guard destruction. All duration-constructor
-callbacks, including explicit stop, run on the existing timer thread and never
-reenter the requester. Only absolute-deadline stop callbacks may run synchronously
-on the requester. The existing sole atomic pending-protection count is the truth
-for both POSIX and private Darwin readers, with no separately maintained boolean:
-publish before disabling code, restore code before retirement.
-
-There is at most one active **typed** timed scope per code mapping. A nested
-timed scope sharing that mapping, when either scope is typed, fails with
-`exceptions::execution_unavailable` before its Work; page protection cannot
-represent independent owners. This does not change legacy+legacy behavior.
-Separate backends/modules for the exact same WASM contract have independent
-mappings and may nest through the existing host boundary; they never consume
-an ancestor's reason. This is not a claim of arbitrary same-mapping nested
-interruption support. Backends still must not execute concurrently.
-
-Forge does not associate `external` with a compiler, code identity, readiness,
-receipt, savepoint or retry. The consuming product must verify those facts and
-perform any full-transaction rollback/retry itself. The deadline is never
-extended to make a readiness threshold reachable: for example, a product's
-deadline shorter than its 500 ms compile-readiness threshold can legitimately
-expire without any readiness interruption.
 
 ## Cookbook: Read A Return Value
 
@@ -321,32 +377,38 @@ const auto balance = result->to_ui64();
 ```
 
 Use `to_ui32`, `to_ui64`, `to_f32`, or `to_f64` according to the validated
-export signature. Forge uses deterministic SoftFloat for guest floating-point
-instructions. The host still owns the semantics of native floating-point
-values passed into or returned from host functions.
+export signature. The pinned WAMR profile canonicalizes arithmetic NaNs and
+establishes nearest-even rounding with gradual underflow at execution/host-call
+boundaries; bitwise operations retain their specified payload behavior. The
+host still owns the semantics of its native functions. Numeric qualification
+is required separately for each runtime mode and architecture.
 
 ## Cookbook: Reset Between Isolated Invocations
 
-Backend construction performs the first initialization. To reuse that backend
-for another isolated invocation, call `initialize` between invocations. It
-resets the operand-stack capacity, linear memory, data segments, and globals,
-then executes the module's start function again when one is present.
+For a backend prepared without an attached context, use a new bounded invocation
+for each isolated call. Each scope initializes fresh memory/globals and runs the
+start function under the same deadline as the exported call.
 
 ```cpp
-vm.timed_run(deadline, [&] { vm(host, "env", "apply", first_receiver); });
-
-vm.initialize(host);
-vm.timed_run(deadline, [&] { vm(host, "env", "apply", second_receiver); });
+for (const auto receiver : {first_receiver, second_receiver}) {
+   vm.with_invocation(&host, wasm::compatibility_options{},
+      std::chrono::milliseconds{50}, {}, [&] {
+         vm(host, "env", "apply", receiver);
+      });
+}
 ```
 
-Do not call `initialize` concurrently with execution. If a product intentionally
+For manually managed contexts, `initialize` also executes start and must be
+inside the caller's timed scope, not between two timed calls. Do not call it
+concurrently with execution. If a product intentionally
 wants stateful WASM memory across calls, it must define and test that lifecycle
 instead of using the isolated-invocation recipe.
 
 ## Cookbook: Exclusive Invocation Scope
 
-For isolated calls, prepare a backend with `exec_ctx_by_backend = false`, validate
-the module and the product's import/export policy, then use:
+For isolated calls, prepare a backend using the pointer/size constructor with
+context ownership disabled as above. Validate the module and the product's
+import/export policy, then use:
 
 ```cpp
 vm.with_invocation(&host, options, std::chrono::milliseconds{50}, stop_token, [&] {
@@ -376,19 +438,37 @@ that backend. A caught host exception still poisons the scope and is rethrown at
 its boundary. The original host exception takes precedence over racing stop or
 deadline. This is not rollback for external host side effects.
 
-Code-page protection failures are native failures, not guest traps. If disabling
-code pages fails, the watchdog terminates the process: it cannot safely promise
-to interrupt an endless guest. If restoring access fails after the watchdog has
-joined, the invocation reports `exceptions::allocation`, taking precedence over
-any racing execution or host exception, and permanently marks the backend
-unusable. Later invocation, execution, initialization, or sharing attempts must
-not reuse that backend. Restoration never throws from a cleanup destructor.
-
-Cancellation uses the existing code-page watchdog mechanism, not native thread
-preemption. Host callbacks and the native body must return in bounded time;
-blocking native work is not interrupted by disabling guest code pages. Legacy
+Cancellation uses WAMR interrupt checks, not executable-page disabling or native
+thread preemption. Host callbacks and the native body must return in bounded
+time; a stop request cannot forcibly interrupt blocking host work. Legacy
 `timed_run`, `initialize`, and externally attached-context APIs remain available
 with their original caller-managed lifetime and synchronization obligations.
+
+## Legacy Timed Scopes And Recovery
+
+Status: V3 is applied and qualified within the frozen F6 local ON and OFF
+checkpoints. Source review is P1/P2 CLEAR; installed and unchanged Spine smoke
+checks passed. Broader product and cross-platform release acceptance remains
+separate from those bounded results.
+
+Ordinary `timed_run` overloads, including the absolute-deadline overload with
+`interrupt_options`, retain f6 caller-managed lifetime behavior. A timed scope
+is a budget guard, not an implicit VM reset or rollback boundary. A transported
+host exception alone does not permanently poison this legacy backend. After
+the failed scope closes, the caller can reinitialize it inside a new bounded
+scope before guest reuse. This does not relax strict `with_invocation` above.
+
+`initialize(host, options)` retires the old VM instance and its linear-memory
+borrow, clears the closed-instance failure state, and creates fresh globals,
+memory/data initialization and host association before running start. It does
+not destroy the caller-owned host or undo host/application/DB effects. The
+application still owns its transaction and rollback policy.
+
+Within an active timed/invocation scope, the first recorded host failure
+survives raw context reset, clear and reinitialization and retains precedence
+over racing cancellation/deadline. A failure from a closed scope must not
+override a future call's pre-cancellation or be rethrown by a new empty scope
+with no new failure; the new scope's own admission and interruption rules apply.
 
 ## Cookbook: Validation Without Execution
 
@@ -420,38 +500,50 @@ Construction throws typed parse, allocation, section-length, pointer, or link
 exceptions. Keep admission failures separate from execution traps in product
 metrics and error handling.
 
-## Cookbook: x86_64 JIT
+## Cookbook: Optional LLVM JIT
 
-WASM binaries are architecture-neutral. On x86_64, selecting `jit` asks the
+WASM binaries are architecture-neutral. In an LLVM-JIT-enabled build, `jit` asks the
 node process to translate the already validated WASM into native code when the
 backend is constructed. It does not rebuild the contract source and it does not
 change the uploaded WASM artifact.
 
 ```cpp
-#if defined(__x86_64__)
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT
 using native_engine = wasm::backend<
    host_functions,
    wasm::jit,
    wasm::compatibility_options>;
 
-auto memory = wasm::wasm_allocator{};
-{
-   auto host = invocation_host{};
-   auto vm = native_engine{code, host, &memory};
-   vm.timed_run(deadline, [&] { vm(host, "env", "apply", std::uint64_t{0}); });
-}
-memory.free();
+auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+auto vm = native_engine{pointer, code.size(), nullptr,
+   wasm::compatibility_options{}, true, false};
+vm.validate();
+auto host = invocation_host{};
+vm.with_invocation(&host, wasm::compatibility_options{},
+   std::chrono::milliseconds{50}, {}, [&] {
+      vm(host, "env", "apply", std::uint64_t{0});
+   });
 #endif
 ```
 
-The JIT is intentionally unavailable on ARM64 because the donor has no ARM64
-native code generator. Use the interpreter there. Never silently select a
-different backend in consensus code: backend policy must be explicit and both
-backends must produce identical observable results.
+JIT requires the configured LLVM version and supported host target. The current
+source selects WAMR LLVM JIT for x86_64 and ARM64; native ARM64 probes are not
+evidence of an x86_64 or Linux release pass. Never silently select a different
+backend: policy must be explicit and admitted modules must produce equivalent
+observable results across qualified modes.
 
-`jit_profile` plus `profile_instr_map` records a native-code-to-WASM instruction
-map for profiling. It has additional memory cost and should be selected only by
-an explicit diagnostics profile.
+Select `backend<Host, jit_profile, Options, profile_instr_map>` to use the existing
+`get_debug().translate(pc)` diagnostic surface. The default debug type remains
+`null_debug_info`; selecting a profiled execution mode does not change that
+template default. `prepared_module::get_debug()` returns an owning observer
+that can outlive the backend and pins its code, map and preparation owner.
+Translation is allocation-free and returns `UINT32_MAX` for unknown addresses,
+including host code, gaps and another module's code. Stop and join sampling
+before moving, replacing or destroying that observer. Native maps are immutable:
+`relocate()` rejects them rather than pretending that LLVM-owned code moved.
+Product code owns the sampling driver; the VM owns mapping and lifetime.
+The [current qualification](../../../../docs/donors/forge-wamr-dev-integration-20261018.md)
+separates the implementation and static review from platform/runtime acceptance.
 
 ## Allocator Ownership
 
@@ -460,8 +552,6 @@ The allocator family is specialized; it is not a general application allocator.
 | Allocator | Role | Production ownership |
 |---|---|---|
 | `wasm_allocator` | Guarded guest linear memory, committed in 64 KiB WASM pages | One long-lived instance per execution lane; never share concurrently; call `reset()` between invocations |
-| `growable_allocator` | Arena for parsed module structures and generated code | Owned by `module`; backend manages it |
-| `jit_allocator` | Process-wide executable-page pool using large virtual segments | Internal singleton used by x86_64 JIT; consumers do not allocate from it directly |
 | `stack_allocator` | Optional native stack with room for host and signal handling | Low-level runtime primitive; RAII-managed |
 | `bounded_allocator` | Fixed monotonic byte arena with explicit reset/free semantics | Low-level parser/tooling primitive |
 | `contiguous_allocator` | Page-backed contiguous arena that grows by remapping | Low-level tooling primitive |
@@ -483,10 +573,17 @@ early-release operation. Therefore:
 - use `reset(page_count)` or backend `initialize` for a new isolated run, not
   `free()` followed by reuse.
 
-`growable_allocator`, `jit_allocator`, guarded containers, and stack allocators
-are exported because they are part of the native EOS VM component model. Most
-applications should interact only with `wasm_allocator` and let `backend` own
-the rest.
+A standalone `wasm_allocator::borrow` is an exclusive manual reservation, without
+context idle-retirement support. The allocator must outlive the borrow and every
+`borrow::activity` guard. Release manual borrows and finish active executions and
+memory transitions before `free()` or allocator destruction: these `noexcept`
+lifetime operations require quiescence, unlike reset operations that can reject
+active use with `exceptions::busy`.
+
+`growable_allocator` and `jit_allocator` are retired. WAMR preparation and native
+mappings are accounted by the engine integration; consumers should not rebuild
+the donor executable arena. See the exact
+[source API changes](../../../../docs/releases/unreleased-wamr-bounded-profile.md#legacy-parser-and-allocator-api-break).
 
 ## Exceptions
 
@@ -499,7 +596,8 @@ Stable exception categories live in `forge::vm::wasm::interpret::exceptions`:
 - `timeout` for deadline interruption;
 - `canceled` for stop-token interruption;
 - `busy`, `shared_instance`, and `invocation_state` for rejected scoped admission;
-- `unusable` for a backend discarded after a host/native failure;
+- `unusable` for a backend permanently rejected by strict `with_invocation`
+  after a host/native failure;
 - `exit` for an explicit VM exit;
 - `interpreter` for execution traps not represented by a narrower category.
 
@@ -511,7 +609,7 @@ exception text as a consensus-visible value.
 try {
    vm.timed_run(deadline, [&] { vm(host, "env", "apply", receiver); });
 } catch (const wasm::exceptions::timeout&) {
-   // Map to the product's deterministic deadline result.
+   // Abort local work; wall-clock expiry is not a deterministic guest result.
 } catch (const wasm::exceptions::memory&) {
    // Treat as a guest execution trap.
 } catch (const wasm::exceptions::link&) {
@@ -541,9 +639,11 @@ behavior, and failure cleanup under concurrency.
 
 ## Options And Compatibility
 
-`default_options` follows the generic donor defaults. `compatibility_options`
-provides the bounded Spring/Antelope-compatible profile, including limits for
-memory pages, call depth, symbols, sections, locals, tables, and control depth.
+`default_options` and `compatibility_options` retain the consumer option
+vocabulary, including memory pages, call depth, symbols, sections, locals,
+tables and control depth. The common WAMR profile imposes additional admitted
+capacity and numeric constraints; the old names are not a promise to accept
+every historical module. Unsupported configuration is rejected explicitly.
 
 `max_control_depth` counts nested `block`, `loop`, and `if` frames; `else` does
 not open another frame. The compatibility profile also preserves the donor's
@@ -553,34 +653,10 @@ Product-specific profiles should use `max_control_depth` for normal nesting
 policy and should not opt into the legacy counter.
 
 Products may define another options type with the same named static members or
-use the runtime `options` record. `options{}` now contains the generic parser
-defaults; untrusted production code still requires an explicit bounded policy.
-Use `resolve_options(profile)` to create an owned value from a custom/static
-profile. It uses the canonical parser getters, retains section-limit
-inheritance and preserves omitted optional checker traits through the
-`check_*` flags. In a blockchain, changing any execution or validation
+use the runtime `options` record. Do not default-construct `options` and leave
+its scalar fields uninitialized. Fill every field from validated policy before
+passing it to a backend. In a blockchain, changing any execution or validation
 limit is a protocol change and must be activated consistently.
-
-```cpp
-import forge.vm.wasm.interpret.backend;
-
-auto snapshot = forge::vm::wasm::interpret::resolve_options(
-   forge::vm::wasm::interpret::compatibility_options{});
-using validator = forge::vm::wasm::interpret::backend<
-   std::nullptr_t, forge::vm::wasm::interpret::null_backend,
-   forge::vm::wasm::interpret::options>;
-auto validated = validator{code, nullptr, snapshot};
-```
-
-`interpreter::parser<Host, Options, DebugInfo>` is an existing public alias for
-consumers that need the canonical typed instruction sequence. After parsing
-and `module::finalize()`, call `module::validate_instantiation()` before using
-that sequence: parsing can defer an element-bound failure, and initial data
-segments must fit declared initial memory. This method does not execute start
-or bind imports; validate every import against the product's existing typed
-host registry before execution. Do not import backend partitions as a public
-API. See the [options migration note](../../../../docs/releases/unreleased-wasm-options-snapshot.md)
-for the approved record-layout change.
 
 ## Boundaries
 
@@ -589,8 +665,10 @@ controller behavior, contract policy, state storage, code cache policy,
 resource billing, transaction execution, or product-specific host functions.
 Those belong to consuming products.
 
-The donor's inactive `memory_dump` and `profile` headers are intentionally not
-ported. They are not part of the active EOS VM build or public VM behavior.
+The donor's `memory_dump` and sampling-driver headers are not Forge services.
+Product sampling orchestration stays outside the VM, but the public
+instruction-map behavior required by `jit_profile` belongs to this leaf, not to
+a second product-owned parser or relocator.
 
 ## Production Checklist
 
@@ -607,17 +685,19 @@ ported. They are not part of the active EOS VM build or public VM behavior.
 
 ## Tests
 
-The test tree is generated from the pinned EOS VM donor suite and uses
+The historical test tree is generated from the pinned EOS VM donor suite and uses
 Boost.Test. A manifest records donor source hashes, test cases, assertion
 counts, backend matrices, and fixture hashes. The mapping gate rejects changes
 outside the explicit namespace, symbol, exception, macro, and assertion-framework
-translations.
+translations. Replacement-specific regression tests additionally cover the
+approved API/profile changes, validation-only behavior, intrinsic calls,
+allocator handoff, cancellation/reuse and native preparation budgets. Historical
+donor evidence is not a passing result for the current source tree.
 
-The manual `VM WASM` GitHub Actions workflow builds interpreter and x86_64 JIT
-matrices in Debug and Release, an ARM64 interpreter lane, ASan/UBSan, a
-relocatable package consumer, and the donor's original Catch2 bodies as an
-oracle. Catch2 remains CI-only donor infrastructure and is not a Forge package
-dependency.
+The manual `VM WASM` workflow and its donor oracle are historical baseline
+infrastructure, not proof that the replacement has passed every platform/mode.
+Track fresh results in the compatibility checkpoint. Catch2 remains donor-test
+infrastructure and is not a Forge package dependency.
 
 The pinned donor revision has two modern-toolchain build defects: its signal
 header neither includes its allocator definitions nor accepts the null
@@ -629,8 +709,10 @@ remains unchanged and is verified before it is built.
 `forge_vm_wasm_interpret_spec_test_generator` is an excluded-from-all maintenance tool
 copied from the pinned donor. `tests/vm_wasm/regenerate_spec_test.py` maps its
 JSON output through the same checked Forge/Boost transformation. The optional
-`FORGE_VM_WASM_INTERPRET_ENABLE_FUZZ_TESTS=ON` target builds the parser harness with Clang
-libFuzzer and AddressSanitizer; it is not installed.
+`FORGE_VM_WASM_INTERPRET_ENABLE_FUZZ_TESTS=ON` target builds a validation-only
+harness with Clang libFuzzer and AddressSanitizer; it must not run guest start
+functions. The target's flags alone do not establish sanitizer instrumentation
+of the entire runtime. The harness is not installed.
 
 See `PROVENANCE.md`, `THIRD_PARTY_LICENSES`, and `LICENSE.eos-vm` for source
 lineage and licensing.
