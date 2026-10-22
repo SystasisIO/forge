@@ -1,0 +1,4528 @@
+{
+  "schema": "forge.expression.native.report.v1",
+  "pins": {
+    "cel": "9c562a306569e90c8dea6d3af71f4433aa386162",
+    "exprtk": "1e4a80b5ec9b4832ed59c6faa65f625a01b18ef0"
+  },
+  "corpus_sha256": "3092a37192c4ae6bee522ad4219527060e2e0098e762cd40d95b9f1ae7eb5546",
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.1.0",
+    "macos": ""
+  },
+  "settings": {
+    "iterations": 10000,
+    "warmup": 1000,
+    "samples": 7,
+    "timeout": 30
+  },
+  "binary_sha256": {
+    "cel": "2058d92a96cf228e598280c62b9707025009640f6df89e71add270ac7871d789",
+    "exprtk": "fb5ce2789628ff71b7a3baf946a29365c8c3ef8a0d16784b80f3d0825f33d210"
+  },
+  "results": [
+    {
+      "case": "lookup_720_false",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "39"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "39"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        1221458,
+        150333,
+        120333,
+        104041,
+        98542,
+        96000,
+        95834
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10633216,
+      "process_wall_seconds": 0.016790833906270564
+    },
+    {
+      "case": "lookup_720_false",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "39"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "39"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        1270792,
+        325125,
+        255625,
+        197417,
+        157458,
+        150625,
+        141042
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3506176,
+      "process_wall_seconds": 0.5257417908869684
+    },
+    {
+      "case": "lookup_720_true",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "60"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "60"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        1030042,
+        240500,
+        213000,
+        194250,
+        196916,
+        180708,
+        180417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10633216,
+      "process_wall_seconds": 0.019564999965950847
+    },
+    {
+      "case": "lookup_720_true",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "60"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "60"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        352000,
+        132708,
+        113875,
+        91125,
+        78791,
+        81458,
+        79708
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3440640,
+      "process_wall_seconds": 0.0069452079478651285
+    },
+    {
+      "case": "lookup_1080_false",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "87"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "87"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        796541,
+        194333,
+        170000,
+        149500,
+        145792,
+        141542,
+        140083
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10633216,
+      "process_wall_seconds": 0.013872749987058342
+    },
+    {
+      "case": "lookup_1080_false",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "87"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "87"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        286583,
+        102958,
+        85875,
+        73583,
+        68542,
+        66542,
+        66209
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3473408,
+      "process_wall_seconds": 0.006031041033565998
+    },
+    {
+      "case": "lookup_1080_true",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "120"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "120"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        680292,
+        157584,
+        135708,
+        124208,
+        122042,
+        116750,
+        115708
+      ],
+      "evaluate_ns_per_op": [
+        405.8208,
+        395.475,
+        387.6583,
+        379.0958,
+        371.0583,
+        371.8541,
+        366.5041
+      ],
+      "process_peak_rss_bytes": 10633216,
+      "process_wall_seconds": 0.03954270901158452
+    },
+    {
+      "case": "lookup_1080_true",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "120"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "120"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        231250,
+        83542,
+        68958,
+        58834,
+        52708,
+        52834,
+        52125
+      ],
+      "evaluate_ns_per_op": [
+        11.0167,
+        10.9792,
+        10.9833,
+        10.9875,
+        10.9875,
+        10.9791,
+        10.9833
+      ],
+      "process_peak_rss_bytes": 3473408,
+      "process_wall_seconds": 0.005875958013348281
+    },
+    {
+      "case": "tts_1",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        586000,
+        131792,
+        111083,
+        103041,
+        98334,
+        95500,
+        94000
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.010210625012405217
+    },
+    {
+      "case": "tts_1",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        215709,
+        68458,
+        57917,
+        48042,
+        43917,
+        46666,
+        45583
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3440640,
+      "process_wall_seconds": 0.004678167053498328
+    },
+    {
+      "case": "tts_99",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        553500,
+        129250,
+        111000,
+        102541,
+        99167,
+        95709,
+        95000
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10567680,
+      "process_wall_seconds": 0.009994124993681908
+    },
+    {
+      "case": "tts_99",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        201125,
+        68708,
+        55333,
+        44042,
+        42250,
+        40875,
+        40875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3391488,
+      "process_wall_seconds": 0.004718624986708164
+    },
+    {
+      "case": "tts_100",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        589125,
+        132958,
+        118667,
+        105875,
+        99417,
+        96625,
+        94916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.010635207989253104
+    },
+    {
+      "case": "tts_100",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        211000,
+        69750,
+        57750,
+        47459,
+        43625,
+        45250,
+        45875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3457024,
+      "process_wall_seconds": 0.004669916001148522
+    },
+    {
+      "case": "tts_101",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        553250,
+        127542,
+        108250,
+        100292,
+        97709,
+        93833,
+        101083
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.01007220905739814
+    },
+    {
+      "case": "tts_101",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        207416,
+        67708,
+        57625,
+        47542,
+        46333,
+        43208,
+        41792
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3375104,
+      "process_wall_seconds": 0.00454925000667572
+    },
+    {
+      "case": "tts_199",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        649584,
+        151250,
+        125500,
+        104500,
+        96709,
+        94250,
+        93041
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.010976416058838367
+    },
+    {
+      "case": "tts_199",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        213084,
+        69041,
+        57875,
+        50500,
+        53375,
+        47667,
+        48625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3375104,
+      "process_wall_seconds": 0.005470916978083551
+    },
+    {
+      "case": "tts_200",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        688833,
+        140667,
+        120167,
+        106208,
+        102625,
+        99166,
+        98375
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.011270874994806945
+    },
+    {
+      "case": "tts_200",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        231125,
+        66416,
+        54708,
+        46208,
+        43917,
+        42792,
+        41583
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3424256,
+      "process_wall_seconds": 0.005211042007431388
+    },
+    {
+      "case": "tts_201",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        591584,
+        129958,
+        108458,
+        99000,
+        95542,
+        93375,
+        92208
+      ],
+      "evaluate_ns_per_op": [
+        227.1458,
+        227.7167,
+        222.4833,
+        225.425,
+        223.8541,
+        225.0,
+        228.4458
+      ],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.02709533297456801
+    },
+    {
+      "case": "tts_201",
+      "group": "tts",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        204000,
+        68417,
+        61709,
+        60916,
+        55667,
+        50459,
+        48625
+      ],
+      "evaluate_ns_per_op": [
+        4.1041,
+        4.0333,
+        3.5791,
+        3.5458,
+        3.5542,
+        3.5416,
+        3.55
+      ],
+      "process_peak_rss_bytes": 3375104,
+      "process_wall_seconds": 0.005260208039544523
+    },
+    {
+      "case": "seedance_4_2",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        595084,
+        139250,
+        122959,
+        111208,
+        108541,
+        105709,
+        103959
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.011156000080518425
+    },
+    {
+      "case": "seedance_4_2",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        231541,
+        66083,
+        56458,
+        46500,
+        41708,
+        39792,
+        40916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3309568,
+      "process_wall_seconds": 0.004759249975904822
+    },
+    {
+      "case": "seedance_4_3",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        585167,
+        142042,
+        123125,
+        113792,
+        110917,
+        117625,
+        106042
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10633216,
+      "process_wall_seconds": 0.010925083071924746
+    },
+    {
+      "case": "seedance_4_3",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        187000,
+        66000,
+        55875,
+        47000,
+        42917,
+        43375,
+        43292
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3375104,
+      "process_wall_seconds": 0.004982833052054048
+    },
+    {
+      "case": "seedance_4_4",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        664708,
+        147166,
+        127250,
+        117875,
+        113166,
+        116541,
+        108542
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10616832,
+      "process_wall_seconds": 0.010932542034424841
+    },
+    {
+      "case": "seedance_4_4",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "8"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "8"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        187250,
+        72458,
+        57625,
+        57375,
+        48333,
+        48625,
+        47833
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3309568,
+      "process_wall_seconds": 0.004823750001378357
+    },
+    {
+      "case": "seedance_5_3",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        572459,
+        140917,
+        122666,
+        112709,
+        109959,
+        107625,
+        104916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10616832,
+      "process_wall_seconds": 0.01059408311266452
+    },
+    {
+      "case": "seedance_5_3",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        188708,
+        64959,
+        55709,
+        46000,
+        41458,
+        42375,
+        42875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3358720,
+      "process_wall_seconds": 0.0047680409625172615
+    },
+    {
+      "case": "seedance_5_4",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        611958,
+        147875,
+        126792,
+        116792,
+        113667,
+        111666,
+        107792
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10616832,
+      "process_wall_seconds": 0.010671790922060609
+    },
+    {
+      "case": "seedance_5_4",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        184417,
+        63750,
+        55875,
+        46875,
+        43083,
+        41875,
+        42875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3293184,
+      "process_wall_seconds": 0.004689250024966896
+    },
+    {
+      "case": "seedance_5_5",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "10"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "10"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        644417,
+        146250,
+        126292,
+        116542,
+        113333,
+        110125,
+        109500
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10616832,
+      "process_wall_seconds": 0.011043916922062635
+    },
+    {
+      "case": "seedance_5_5",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "10"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "10"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        195500,
+        62542,
+        54333,
+        44917,
+        40708,
+        39708,
+        41083
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3293184,
+      "process_wall_seconds": 0.005114750005304813
+    },
+    {
+      "case": "seedance_15_9",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "25"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "25"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        587042,
+        143750,
+        122000,
+        113042,
+        108875,
+        107042,
+        104375
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10616832,
+      "process_wall_seconds": 0.010966332978568971
+    },
+    {
+      "case": "seedance_15_9",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "25"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "25"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        189125,
+        66666,
+        56917,
+        47833,
+        43834,
+        43167,
+        43458
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3342336,
+      "process_wall_seconds": 0.00482399994507432
+    },
+    {
+      "case": "seedance_15_10",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "25"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "25"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        597375,
+        149125,
+        129958,
+        115542,
+        111541,
+        107125,
+        105542
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.01059495797380805
+    },
+    {
+      "case": "seedance_15_10",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "25"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "25"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        189042,
+        64459,
+        51833,
+        42875,
+        38375,
+        37834,
+        39917
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3309568,
+      "process_wall_seconds": 0.005155332968570292
+    },
+    {
+      "case": "seedance_15_11",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "26"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "26"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        586958,
+        142125,
+        149667,
+        133542,
+        129083,
+        125584,
+        123417
+      ],
+      "evaluate_ns_per_op": [
+        210.4083,
+        217.525,
+        216.175,
+        219.1875,
+        224.3792,
+        219.225,
+        216.2167
+      ],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.026173667050898075
+    },
+    {
+      "case": "seedance_15_11",
+      "group": "seedance_edit",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "26"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "26"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        190625,
+        65584,
+        56208,
+        46209,
+        43875,
+        41250,
+        44625
+      ],
+      "evaluate_ns_per_op": [
+        4.0,
+        3.9917,
+        3.9916,
+        3.9833,
+        4.0208,
+        3.9875,
+        3.9875
+      ],
+      "process_peak_rss_bytes": 3375104,
+      "process_wall_seconds": 0.005181249929592013
+    },
+    {
+      "case": "llm_0_0",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        585709,
+        165458,
+        145375,
+        132750,
+        126000,
+        122458,
+        118917
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.010553792002610862
+    },
+    {
+      "case": "llm_0_0",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        202750,
+        67583,
+        59916,
+        48458,
+        44541,
+        42417,
+        43917
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3358720,
+      "process_wall_seconds": 0.00485170807223767
+    },
+    {
+      "case": "llm_1_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        633333,
+        159291,
+        143583,
+        124666,
+        114500,
+        105000,
+        103000
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10518528,
+      "process_wall_seconds": 0.010580959031358361
+    },
+    {
+      "case": "llm_1_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        203042,
+        70667,
+        63667,
+        56584,
+        49500,
+        50250,
+        55375
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3358720,
+      "process_wall_seconds": 0.004818832967430353
+    },
+    {
+      "case": "llm_99_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        590083,
+        139083,
+        120125,
+        111375,
+        107375,
+        104958,
+        103834
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.010608916985802352
+    },
+    {
+      "case": "llm_99_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        199666,
+        77417,
+        75209,
+        54625,
+        50042,
+        48542,
+        47709
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3391488,
+      "process_wall_seconds": 0.005043541896156967
+    },
+    {
+      "case": "llm_100_100",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        585792,
+        137125,
+        119500,
+        111000,
+        107000,
+        104500,
+        102500
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.011042917030863464
+    },
+    {
+      "case": "llm_100_100",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        205625,
+        68833,
+        59917,
+        49250,
+        45958,
+        44792,
+        44500
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3391488,
+      "process_wall_seconds": 0.004709000000730157
+    },
+    {
+      "case": "llm_101_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        601208,
+        149333,
+        135167,
+        124375,
+        120583,
+        119375,
+        117167
+      ],
+      "evaluate_ns_per_op": [
+        333.7208,
+        319.1583,
+        318.3833,
+        329.7,
+        304.2541,
+        319.55,
+        319.8542
+      ],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.03454866702668369
+    },
+    {
+      "case": "llm_101_1",
+      "group": "llm_separate_rounding",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        236291,
+        76167,
+        66791,
+        55000,
+        49458,
+        47417,
+        49250
+      ],
+      "evaluate_ns_per_op": [
+        5.3542,
+        5.2916,
+        5.2875,
+        5.3666,
+        5.3375,
+        5.35,
+        5.3542
+      ],
+      "process_peak_rss_bytes": 3342336,
+      "process_wall_seconds": 0.006107624969445169
+    },
+    {
+      "case": "wavespeed_empty",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        803500,
+        294500,
+        282000,
+        273917,
+        253417,
+        273083,
+        265041
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10764288,
+      "process_wall_seconds": 0.013524333946406841
+    },
+    {
+      "case": "wavespeed_empty",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "vector_registration_failed:durations",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        14250
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 2211840,
+      "process_wall_seconds": 0.0049541660118848085
+    },
+    {
+      "case": "wavespeed_1000_1000_1000",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "6"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "6"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        864583,
+        325083,
+        297333,
+        279708,
+        277458,
+        316500,
+        326250
+      ],
+      "evaluate_ns_per_op": [
+        1259.4542,
+        1233.4166,
+        1253.2417,
+        1220.1458,
+        1245.5958,
+        1244.725,
+        1245.0167
+      ],
+      "process_peak_rss_bytes": 10698752,
+      "process_wall_seconds": 0.10242391703650355
+    },
+    {
+      "case": "wavespeed_1000_1000_1000",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "6"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "6"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        290375,
+        75167,
+        61375,
+        55208,
+        52000,
+        51458,
+        52625
+      ],
+      "evaluate_ns_per_op": [
+        10.8833,
+        11.7625,
+        12.2458,
+        11.3084,
+        11.8083,
+        12.2375,
+        12.2375
+      ],
+      "process_peak_rss_bytes": 3686400,
+      "process_wall_seconds": 0.006329915951937437
+    },
+    {
+      "case": "wavespeed_2001_2001",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "5"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "5"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        840500,
+        362500,
+        316125,
+        276500,
+        243500,
+        238083,
+        239750
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10764288,
+      "process_wall_seconds": 0.012631417019292712
+    },
+    {
+      "case": "wavespeed_2001_2001",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR126 - Index of 2 out of range for vector 'durations' of size 2",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "5"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        223334
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3407872,
+      "process_wall_seconds": 0.004849749966524541
+    },
+    {
+      "case": "wavespeed_2499_2501",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "5"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "5"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        793583,
+        320958,
+        265000,
+        245500,
+        239084,
+        237375,
+        236292
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10764288,
+      "process_wall_seconds": 0.013002458028495312
+    },
+    {
+      "case": "wavespeed_2499_2501",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR126 - Index of 2 out of range for vector 'durations' of size 2",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "5"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        216750
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3424256,
+      "process_wall_seconds": 0.004504500073380768
+    },
+    {
+      "case": "wavespeed_1_14999",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "15"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "15"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        737667,
+        309208,
+        264584,
+        245042,
+        239791,
+        235208,
+        276041
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10764288,
+      "process_wall_seconds": 0.011728332960046828
+    },
+    {
+      "case": "wavespeed_1_14999",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR126 - Index of 2 out of range for vector 'durations' of size 2",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "15"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        224417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3407872,
+      "process_wall_seconds": 0.004542458918876946
+    },
+    {
+      "case": "wavespeed_7500_7500",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "15"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "15"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        775125,
+        320833,
+        254292,
+        267792,
+        239875,
+        238792,
+        262667
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10698752,
+      "process_wall_seconds": 0.011393374996259809
+    },
+    {
+      "case": "wavespeed_7500_7500",
+      "group": "reference_aggregate",
+      "scope": "donor_scaled_milliseconds_max_3",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR126 - Index of 2 out of range for vector 'durations' of size 2",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "15"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        221584
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3391488,
+      "process_wall_seconds": 0.004266957985237241
+    },
+    {
+      "case": "bitshares_data_0",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        541083,
+        110417,
+        97209,
+        92375,
+        86250,
+        97167,
+        92291
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.010365167050622404
+    },
+    {
+      "case": "bitshares_data_0",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        177959,
+        64084,
+        55125,
+        45792,
+        41667,
+        42167,
+        41000
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3260416,
+      "process_wall_seconds": 0.004658250021748245
+    },
+    {
+      "case": "bitshares_data_1",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        536500,
+        111791,
+        93542,
+        86750,
+        85542,
+        84709,
+        96625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.010347875067964196
+    },
+    {
+      "case": "bitshares_data_1",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        187916,
+        74792,
+        65334,
+        49792,
+        40334,
+        41416,
+        41125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3293184,
+      "process_wall_seconds": 0.004789166036061943
+    },
+    {
+      "case": "bitshares_data_341",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        542959,
+        111250,
+        96750,
+        92000,
+        84250,
+        83083,
+        80417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.010341500048525631
+    },
+    {
+      "case": "bitshares_data_341",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        171500,
+        63500,
+        52875,
+        43375,
+        44291,
+        40291,
+        50875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004559374996460974
+    },
+    {
+      "case": "bitshares_data_342",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        517583,
+        109625,
+        91500,
+        105583,
+        97875,
+        92209,
+        79959
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.010080332984216511
+    },
+    {
+      "case": "bitshares_data_342",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        171541,
+        63709,
+        54208,
+        43417,
+        49292,
+        43042,
+        43334
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3309568,
+      "process_wall_seconds": 0.004579083062708378
+    },
+    {
+      "case": "bitshares_data_1023",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        527916,
+        109042,
+        91833,
+        85792,
+        83750,
+        83125,
+        79667
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.00995154189877212
+    },
+    {
+      "case": "bitshares_data_1023",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        171958,
+        68333,
+        57042,
+        48125,
+        43625,
+        41459,
+        42375
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004462250042706728
+    },
+    {
+      "case": "bitshares_data_1024",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        520709,
+        108667,
+        93250,
+        86042,
+        87625,
+        84709,
+        81458
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.009945875033736229
+    },
+    {
+      "case": "bitshares_data_1024",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        181459,
+        73041,
+        59334,
+        47792,
+        43125,
+        44250,
+        43416
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3260416,
+      "process_wall_seconds": 0.0047807920491322875
+    },
+    {
+      "case": "bitshares_data_1025",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        578917,
+        114875,
+        93000,
+        86834,
+        85542,
+        84417,
+        80708
+      ],
+      "evaluate_ns_per_op": [
+        81.5917,
+        82.6375,
+        85.475,
+        87.1958,
+        87.3,
+        85.6833,
+        86.2875
+      ],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.01657800003886223
+    },
+    {
+      "case": "bitshares_data_1025",
+      "group": "data_fee",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        175666,
+        65541,
+        54250,
+        44417,
+        40083,
+        41542,
+        38709
+      ],
+      "evaluate_ns_per_op": [
+        2.4666,
+        2.4458,
+        2.4375,
+        2.4458,
+        2.45,
+        2.45,
+        2.4459
+      ],
+      "process_peak_rss_bytes": 3260416,
+      "process_wall_seconds": 0.004676875076256692
+    },
+    {
+      "case": "bitshares_scale_1_9999",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        536000,
+        111167,
+        93583,
+        86833,
+        89125,
+        83917,
+        81958
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10551296,
+      "process_wall_seconds": 0.010026499978266656
+    },
+    {
+      "case": "bitshares_scale_1_9999",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        163250,
+        59375,
+        51042,
+        42000,
+        37708,
+        38000,
+        37916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004456624970771372
+    },
+    {
+      "case": "bitshares_scale_1_10000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        537000,
+        113625,
+        92167,
+        86291,
+        85083,
+        80208,
+        79084
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.010125249973498285
+    },
+    {
+      "case": "bitshares_scale_1_10000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        170334,
+        66792,
+        54042,
+        44042,
+        40000,
+        38583,
+        40750
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3260416,
+      "process_wall_seconds": 0.004516792017966509
+    },
+    {
+      "case": "bitshares_scale_1_10001",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        528167,
+        110500,
+        92792,
+        86416,
+        84292,
+        83667,
+        80791
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.009800040978007019
+    },
+    {
+      "case": "bitshares_scale_1_10001",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        173750,
+        61083,
+        52166,
+        43167,
+        39250,
+        48792,
+        39084
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3276800,
+      "process_wall_seconds": 0.004454624955542386
+    },
+    {
+      "case": "bitshares_scale_2_5000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        549916,
+        113333,
+        92750,
+        86375,
+        87917,
+        84125,
+        81125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.010074167046695948
+    },
+    {
+      "case": "bitshares_scale_2_5000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        169750,
+        62959,
+        54917,
+        45667,
+        45000,
+        40084,
+        40125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.0045218749437481165
+    },
+    {
+      "case": "bitshares_scale_3_5000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        525250,
+        111708,
+        95208,
+        87750,
+        89167,
+        81208,
+        80417
+      ],
+      "evaluate_ns_per_op": [
+        83.7083,
+        81.425,
+        82.85,
+        80.5917,
+        82.6542,
+        83.1292,
+        82.375
+      ],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.01599958399310708
+    },
+    {
+      "case": "bitshares_scale_3_5000",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        166958,
+        62167,
+        49959,
+        41125,
+        37542,
+        38417,
+        38291
+      ],
+      "evaluate_ns_per_op": [
+        2.325,
+        2.3167,
+        2.3125,
+        2.3125,
+        2.3167,
+        2.3166,
+        2.3167
+      ],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004579999949783087
+    },
+    {
+      "case": "bitshares_scale_1000000000000000_9999",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:OUT_OF_RANGE: integer overflow",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "999900000000000"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        523542,
+        114250,
+        92500,
+        87208,
+        83250,
+        82334,
+        79250
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.010215417016297579
+    },
+    {
+      "case": "bitshares_scale_1000000000000000_9999",
+      "group": "global_scale",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "999900000000000"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "999900000000000"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        172375,
+        63000,
+        54375,
+        44625,
+        40625,
+        39042,
+        40417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3227648,
+      "process_wall_seconds": 0.004564708098769188
+    },
+    {
+      "case": "bitshares_asset_0",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        581500,
+        119750,
+        102542,
+        94125,
+        90375,
+        88208,
+        87125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.010616208077408373
+    },
+    {
+      "case": "bitshares_asset_0",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "0"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        188875,
+        73750,
+        62959,
+        52709,
+        43583,
+        42000,
+        43875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3325952,
+      "process_wall_seconds": 0.004709500004537404
+    },
+    {
+      "case": "bitshares_asset_1",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        567750,
+        120250,
+        105750,
+        95500,
+        92084,
+        89792,
+        87833
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10551296,
+      "process_wall_seconds": 0.01017312507610768
+    },
+    {
+      "case": "bitshares_asset_1",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        169708,
+        64791,
+        53000,
+        43375,
+        40875,
+        40250,
+        39083
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3276800,
+      "process_wall_seconds": 0.005065042059868574
+    },
+    {
+      "case": "bitshares_asset_2",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        573333,
+        122709,
+        105542,
+        96708,
+        92875,
+        90750,
+        89208
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.010374875040724874
+    },
+    {
+      "case": "bitshares_asset_2",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        177167,
+        65958,
+        53958,
+        42042,
+        39417,
+        47542,
+        43167
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3260416,
+      "process_wall_seconds": 0.005027791950851679
+    },
+    {
+      "case": "bitshares_asset_3",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        565459,
+        121000,
+        103250,
+        94833,
+        90000,
+        88417,
+        87041
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10469376,
+      "process_wall_seconds": 0.010773375048302114
+    },
+    {
+      "case": "bitshares_asset_3",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "2"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "2"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        174125,
+        62417,
+        52416,
+        42542,
+        40000,
+        37250,
+        38333
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3276800,
+      "process_wall_seconds": 0.004584249923937023
+    },
+    {
+      "case": "bitshares_asset_4",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        553083,
+        138708,
+        130042,
+        102875,
+        94542,
+        92000,
+        90458
+      ],
+      "evaluate_ns_per_op": [
+        165.3083,
+        167.6542,
+        166.6042,
+        156.8834,
+        165.9458,
+        166.3209,
+        170.2583
+      ],
+      "process_peak_rss_bytes": 10551296,
+      "process_wall_seconds": 0.02232841693330556
+    },
+    {
+      "case": "bitshares_asset_4",
+      "group": "asset_conversion",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        177250,
+        62041,
+        50541,
+        41500,
+        40458,
+        38125,
+        36291
+      ],
+      "evaluate_ns_per_op": [
+        3.3208,
+        3.2834,
+        3.2959,
+        3.2834,
+        3.2916,
+        3.2875,
+        3.3
+      ],
+      "process_peak_rss_bytes": 3276800,
+      "process_wall_seconds": 0.004887250019237399
+    },
+    {
+      "case": "bitshares_staged",
+      "group": "staged_rounding",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        704542,
+        175875,
+        135000,
+        124083,
+        118542,
+        157708,
+        201542
+      ],
+      "evaluate_ns_per_op": [
+        355.0625,
+        370.9125,
+        397.4541,
+        361.1083,
+        358.5375,
+        366.6959,
+        362.9542
+      ],
+      "process_peak_rss_bytes": 10567680,
+      "process_wall_seconds": 0.04164045793004334
+    },
+    {
+      "case": "bitshares_staged",
+      "group": "staged_rounding",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        421500,
+        83291,
+        70167,
+        58291,
+        54083,
+        52458,
+        53375
+      ],
+      "evaluate_ns_per_op": [
+        6.65,
+        6.5208,
+        6.5417,
+        6.8375,
+        7.7166,
+        7.3833,
+        7.3833
+      ],
+      "process_peak_rss_bytes": 3424256,
+      "process_wall_seconds": 0.009694083011709154
+    },
+    {
+      "case": "identity_above_2pow53",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        574000,
+        108042,
+        88542,
+        81709,
+        84041,
+        79792,
+        76458
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10485760,
+      "process_wall_seconds": 0.011141750030219555
+    },
+    {
+      "case": "identity_above_2pow53",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9007199254740992"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "exact_match": false,
+      "classification": "exact_numeric_mismatch",
+      "compile_ns": [
+        130750,
+        56167,
+        47875,
+        39292,
+        35833,
+        35917,
+        34291
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 2998272,
+      "process_wall_seconds": 0.0046836669789627194
+    },
+    {
+      "case": "cancellation_2pow53",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        600458,
+        114500,
+        94458,
+        89125,
+        84291,
+        83292,
+        81041
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10534912,
+      "process_wall_seconds": 0.010319291963241994
+    },
+    {
+      "case": "cancellation_2pow53",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": false,
+      "classification": "exact_numeric_mismatch",
+      "compile_ns": [
+        185958,
+        62125,
+        52500,
+        48834,
+        38916,
+        37542,
+        46167
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3276800,
+      "process_wall_seconds": 0.0047105830162763596
+    },
+    {
+      "case": "add_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:OUT_OF_RANGE: integer overflow",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        554459,
+        124459,
+        103542,
+        94458,
+        101292,
+        77958,
+        76209
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10502144,
+      "process_wall_seconds": 0.010826957994140685
+    },
+    {
+      "case": "add_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9.2233720368547758e+18"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        153292,
+        56542,
+        50416,
+        41750,
+        37959,
+        36583,
+        40625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3211264,
+      "process_wall_seconds": 0.004657292040064931
+    },
+    {
+      "case": "multiply_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:OUT_OF_RANGE: integer overflow",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        530417,
+        109708,
+        94875,
+        86958,
+        81833,
+        80333,
+        78583
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10567680,
+      "process_wall_seconds": 0.010172624955885112
+    },
+    {
+      "case": "multiply_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9.2233720370002493e+18"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        150208,
+        61834,
+        51791,
+        41750,
+        37708,
+        36500,
+        36458
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3162112,
+      "process_wall_seconds": 0.004923166939988732
+    },
+    {
+      "case": "divide_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:OUT_OF_RANGE: integer overflow",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        558417,
+        107500,
+        89666,
+        82709,
+        82583,
+        79709,
+        90708
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10502144,
+      "process_wall_seconds": 0.010375083074904978
+    },
+    {
+      "case": "divide_int64_overflow",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "9.2233720368547758e+18"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        163500,
+        64709,
+        60208,
+        48833,
+        44084,
+        46792,
+        47667
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3227648,
+      "process_wall_seconds": 0.0048915420193225145
+    },
+    {
+      "case": "divide_zero",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:INVALID_ARGUMENT: divide by zero",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        537917,
+        107625,
+        90000,
+        83292,
+        82416,
+        81333,
+        77959
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10584064,
+      "process_wall_seconds": 0.010711750015616417
+    },
+    {
+      "case": "divide_zero",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "inf"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        152792,
+        63833,
+        57792,
+        46375,
+        42125,
+        40875,
+        41167
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3162112,
+      "process_wall_seconds": 0.004708042019046843
+    },
+    {
+      "case": "integer_division",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        549167,
+        116583,
+        101209,
+        95250,
+        85042,
+        82708,
+        79291
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10518528,
+      "process_wall_seconds": 0.010291374986991286
+    },
+    {
+      "case": "integer_division",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "3.5"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "3"
+      },
+      "exact_match": false,
+      "classification": "exact_numeric_mismatch",
+      "compile_ns": [
+        156458,
+        61250,
+        51625,
+        42292,
+        39542,
+        37500,
+        38125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3178496,
+      "process_wall_seconds": 0.004600833053700626
+    },
+    {
+      "case": "lazy_false",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        577917,
+        111375,
+        103333,
+        84958,
+        85417,
+        78875,
+        79000
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10436608,
+      "process_wall_seconds": 0.010931958095170557
+    },
+    {
+      "case": "lazy_false",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        174208,
+        64750,
+        48750,
+        40833,
+        38541,
+        38417,
+        37625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3309568,
+      "process_wall_seconds": 0.005429166951216757
+    },
+    {
+      "case": "lazy_true",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        551792,
+        114000,
+        94083,
+        86500,
+        85917,
+        84084,
+        81417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10502144,
+      "process_wall_seconds": 0.010315541992895305
+    },
+    {
+      "case": "lazy_true",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "7"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        159792,
+        63458,
+        54291,
+        44333,
+        43834,
+        47666,
+        42500
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004853582940995693
+    },
+    {
+      "case": "wide_intermediate",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:OUT_OF_RANGE: integer overflow",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1000000000000000"
+      },
+      "exact_match": false,
+      "classification": "expected_value_was_not_returned",
+      "compile_ns": [
+        551458,
+        120459,
+        106958,
+        95583,
+        93417,
+        90208,
+        88667
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.00996845809277147
+    },
+    {
+      "case": "wide_intermediate",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1000000000000000"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1000000000000000"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        171125,
+        60417,
+        53541,
+        45125,
+        41083,
+        37667,
+        36500
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3244032,
+      "process_wall_seconds": 0.004372042021714151
+    },
+    {
+      "case": "unknown_identifier",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "check:ERROR: :1:1: undeclared reference to 'unknown' (in container '')",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        478125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 9961472,
+      "process_wall_seconds": 0.009500375017523766
+    },
+    {
+      "case": "unknown_identifier",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR239 - Undefined symbol: 'unknown'",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        151708
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3031040,
+      "process_wall_seconds": 0.004291041987016797
+    },
+    {
+      "case": "assignment",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "parse:INVALID_ARGUMENT: ERROR: <input>:1:2: Syntax error: unexpected token after expression  | x=2  | .^",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        26417
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 9093120,
+      "process_wall_seconds": 0.008595291059464216
+    },
+    {
+      "case": "assignment",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR015 - Invalid or disabled assignment operation ':='",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        138916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3047424,
+      "process_wall_seconds": 0.003938209032639861
+    },
+    {
+      "case": "deep_parentheses",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "parse:CANCELLED: Expression recursion limit exceeded. limit: 64",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        24375
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 9093120,
+      "process_wall_seconds": 0.008538000052794814
+    },
+    {
+      "case": "deep_parentheses",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR000 - Current stack depth 129 exceeds maximum allowed stack depth of 128",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        146250
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 2981888,
+      "process_wall_seconds": 0.004296957980841398
+    },
+    {
+      "case": "source_guard",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "guard_rejected",
+        "kind": "source_bytes",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "guard_rejected"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 9093120,
+      "process_wall_seconds": 0.008466208004392684
+    },
+    {
+      "case": "source_guard",
+      "group": "adversarial",
+      "scope": "target_profile",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "guard_rejected",
+        "kind": "source_bytes",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "guard_rejected"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 2162688,
+      "process_wall_seconds": 0.0038484999677166343
+    },
+    {
+      "case": "comprehension_1023",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "ok",
+        "kind": "native",
+        "type": "int64",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        580083,
+        125792,
+        105750,
+        96334,
+        95042,
+        90542,
+        88625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10600448,
+      "process_wall_seconds": 0.010525209014303982
+    },
+    {
+      "case": "comprehension_1023",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "ok",
+        "type": "int64",
+        "value": "1"
+      },
+      "exact_match": true,
+      "classification": "exact_value",
+      "compile_ns": [
+        200334,
+        69541,
+        59333,
+        49125,
+        44542,
+        44250,
+        41916
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3424256,
+      "process_wall_seconds": 0.004536874941550195
+    },
+    {
+      "case": "comprehension_1024",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "engine_status:INTERNAL: Iteration budget exceeded",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        590791,
+        146541,
+        114708,
+        101542,
+        96083,
+        92291,
+        90625
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10764288,
+      "process_wall_seconds": 0.01006224995944649
+    },
+    {
+      "case": "comprehension_1024",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        192500,
+        68666,
+        58084,
+        48500,
+        44083,
+        43000,
+        46875
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3457024,
+      "process_wall_seconds": 0.00482633407227695
+    },
+    {
+      "case": "comprehension_1025",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "engine_status:INTERNAL: Iteration budget exceeded",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        558833,
+        129292,
+        114209,
+        98250,
+        97125,
+        92666,
+        91834
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10682368,
+      "process_wall_seconds": 0.01013612502720207
+    },
+    {
+      "case": "comprehension_1025",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "1"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        183375,
+        66000,
+        56000,
+        45833,
+        41375,
+        41916,
+        39708
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3440640,
+      "process_wall_seconds": 0.004552291007712483
+    },
+    {
+      "case": "complex_expression",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "parse:CANCELLED: Expression recursion limit exceeded. limit: 64",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        37750
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 9093120,
+      "process_wall_seconds": 0.00855904200579971
+    },
+    {
+      "case": "complex_expression",
+      "group": "configured_profile_limits",
+      "scope": "configured_profile_probe_not_donor",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "compile_error",
+        "kind": "ERR018 - Expression depth of 2047 exceeds maximum allowed expression depth of 256",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "compile_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        1698708
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 4096000,
+      "process_wall_seconds": 0.005489207920618355
+    },
+    {
+      "case": "lookup_unknown",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "cel",
+      "numeric_type": "native-int64-uint64-double",
+      "actual": {
+        "status": "evaluation_error",
+        "kind": "cel_error:NOT_FOUND: Key not found in map : 999",
+        "type": "none",
+        "value": "0"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": true,
+      "classification": "rejected",
+      "compile_ns": [
+        575208,
+        125792,
+        107583,
+        103917,
+        112250,
+        96583,
+        91834
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 10698752,
+      "process_wall_seconds": 0.009935374953784049
+    },
+    {
+      "case": "lookup_unknown",
+      "group": "resolution_audio",
+      "scope": "donor_integer_domain",
+      "backend": "exprtk",
+      "numeric_type": "double",
+      "actual": {
+        "status": "ok",
+        "kind": "",
+        "type": "double",
+        "value": "nan"
+      },
+      "expected": {
+        "status": "error",
+        "allowed_status": [
+          "evaluation_error"
+        ]
+      },
+      "exact_match": false,
+      "classification": "expected_error_was_not_reported",
+      "compile_ns": [
+        231042,
+        80209,
+        63000,
+        52583,
+        47875,
+        46250,
+        50125
+      ],
+      "evaluate_ns_per_op": [],
+      "process_peak_rss_bytes": 3440640,
+      "process_wall_seconds": 0.004549207980744541
+    }
+  ],
+  "summary": {
+    "cel": {
+      "matches": 67,
+      "mismatches": 2,
+      "harness_errors": 0
+    },
+    "exprtk": {
+      "matches": 54,
+      "mismatches": 15,
+      "harness_errors": 0
+    }
+  }
+}

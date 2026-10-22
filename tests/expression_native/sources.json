@@ -1,0 +1,25 @@
+{
+  "schema": "forge.expression.native.sources.v1",
+  "cel": {
+    "repository": "https://github.com/cel-expr/cel-cpp",
+    "commit": "9c562a306569e90c8dea6d3af71f4433aa386162",
+    "url": "https://codeload.github.com/cel-expr/cel-cpp/tar.gz/9c562a306569e90c8dea6d3af71f4433aa386162",
+    "sha256": "219218598ad5e64a69b2878c82df503feb3f8acf02c19b2356e840c15a7b0616",
+    "directory": "cel-cpp"
+  },
+  "exprtk": {
+    "repository": "https://github.com/ArashPartow/exprtk",
+    "commit": "1e4a80b5ec9b4832ed59c6faa65f625a01b18ef0",
+    "files": {
+      "exprtk.hpp": "a056126bb009b5676a0aade83f86035d384ea8fd4392037380e4774353871218",
+      "readme.txt": "7ad2bae1d0b0cce985feaf782bd85ac52d5bd24bc0fdc6f6cf6188398978fb15"
+    },
+    "directory": "exprtk"
+  },
+  "bazel": {
+    "version": "8.7.0",
+    "platform": "darwin-arm64",
+    "url": "https://github.com/bazelbuild/bazel/releases/download/8.7.0/bazel-8.7.0-darwin-arm64",
+    "sha256": "575f20fb23955e02f73519befd180df635b4ed0960c60f0e70fcc8d74014a713"
+  }
+}
