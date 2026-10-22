@@ -197,7 +197,8 @@ class service_node {
   operational block numbers and slots and must not import
   `forge.chain.protocol.*` or derive semantics from protocol block IDs.
 - Protocol-bound Savanna integration (`policy_state`, `extensions`, `genesis`,
-  `header_state`, `candidate`, `checkpoint`, `admission`, `finality_witness`)
+  `header_state`, `candidate`, `checkpoint`, `admission`, `finality_witness`,
+  `producer_opportunity`)
   remains in the existing `forge_chain_savanna` target and may import Chain
   Protocol. Do not create a second aggregate/facade or integration target for
   this dependency boundary; neutrality is enforced module by module.

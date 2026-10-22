@@ -1776,6 +1776,7 @@ def check_chain_savanna_boundaries(root: Path, errors: list[str]) -> None:
       "include/forge/chain/savanna/checkpoint.cppm",
       "include/forge/chain/savanna/admission.cppm",
       "include/forge/chain/savanna/finality_witness.cppm",
+      "include/forge/chain/savanna/producer_opportunity.cppm",
       "policy_state.cpp",
       "extensions.cpp",
       "genesis.cpp",
