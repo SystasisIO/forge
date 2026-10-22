@@ -1,0 +1,9 @@
+if(NOT TARGET ForgeCEL::backend)
+   find_library(_forge_cel_corefoundation CoreFoundation REQUIRED)
+   add_library(ForgeCEL::backend STATIC IMPORTED)
+   set_target_properties(ForgeCEL::backend PROPERTIES
+      IMPORTED_LOCATION "@FORGE_CEL_ARCHIVE_LOCATION@"
+      INTERFACE_LINK_LIBRARIES "${_forge_cel_corefoundation}"
+   )
+@FORGE_CEL_CONFIGURATION_PROPERTIES@
+endif()

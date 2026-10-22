@@ -1,5 +1,13 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(TARGET forge_expression)
+   add_executable(test_forge_expression unit/main.cpp expression_profile.cpp)
+   target_link_libraries(test_forge_expression PRIVATE forge_expression Boost::included_unit_test_framework)
+   add_test(NAME test_forge_expression COMMAND test_forge_expression)
+   add_test(NAME test_forge_expression_oracle COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/expression_arithmetic_oracle.py" --check)
+endif()
+
 add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
 target_link_libraries(test_forge_auth_attestation PRIVATE
    forge_auth_attestation forge_codec_json forge_variant Boost::included_unit_test_framework)

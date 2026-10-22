@@ -1,0 +1,13 @@
+{
+  "schema": "forge.expression.cel.sources.v1",
+  "cel": {
+    "commit": "9c562a306569e90c8dea6d3af71f4433aa386162",
+    "url": "https://codeload.github.com/cel-expr/cel-cpp/tar.gz/9c562a306569e90c8dea6d3af71f4433aa386162",
+    "sha256": "219218598ad5e64a69b2878c82df503feb3f8acf02c19b2356e840c15a7b0616"
+  },
+  "bazel": {
+    "version": "8.7.0",
+    "url": "https://github.com/bazelbuild/bazel/releases/download/8.7.0/bazel-8.7.0-darwin-arm64",
+    "sha256": "575f20fb23955e02f73519befd180df635b4ed0960c60f0e70fcc8d74014a713"
+  }
+}
