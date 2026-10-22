@@ -88,8 +88,7 @@ struct executor::impl::bridge {
 thread_local std::unique_ptr<executor::impl::thread_state> executor::impl::thread;
 
 executor::impl::impl(asio::task::scheduler& scheduler, options value) : limits(value), epoch(scheduler) {
-   if (limits.max_guest_stack_bytes <=
-           guest_reserve_bytes + native_stack::max_frame_bytes + native_stack::anchor_bytes ||
+   if (limits.max_guest_stack_bytes <= guest_reserve_bytes + native_stack::anchor_bytes ||
        limits.min_host_stack_headroom < bridge_bytes ||
        limits.min_host_stack_headroom > UINTPTR_MAX - native_stack::host_red_zone - bridge_bytes)
       FORGE_THROW_EXCEPTION(interpret::exceptions::execution_unavailable, "Local native stack capacity is unavailable");
@@ -167,13 +166,12 @@ std::uint64_t executor::impl::host_entry(void* opaque) noexcept {
    return 0;
 }
 
-invocation_result executor::impl::invoke(const artifact& code, std::uint64_t max_frame_bytes,
-                                         std::span<const std::uint32_t> imports, host_thunk thunk, void* host,
-                                         bool requires_host, std::uint32_t function_index,
-                                         std::span<const interpret::operand_stack_elem> arguments,
-                                         interpret::wasm_allocator& memory,
-                                         std::chrono::steady_clock::time_point deadline, std::stop_token caller_stop,
-                                         std::stop_token compute_stop) {
+invocation_result
+executor::impl::invoke(const artifact& code, std::uint64_t max_frame_bytes, std::uint64_t initialization_frame_bytes,
+                       std::span<const std::uint32_t> imports, host_thunk thunk, void* host, bool requires_host,
+                       std::uint32_t function_index, std::span<const interpret::operand_stack_elem> arguments,
+                       interpret::wasm_allocator& memory, std::chrono::steady_clock::time_point deadline,
+                       std::stop_token caller_stop, std::stop_token compute_stop) {
    if (!thread || thread->owner.get() != this)
       FORGE_THROW_EXCEPTION(interpret::exceptions::execution_unavailable, "Native worker is not prepared");
    if ((requires_host && !host) || !thunk || imports.size() != code.image().configuration.imports.size())
@@ -201,10 +199,16 @@ invocation_result executor::impl::invoke(const artifact& code, std::uint64_t max
       guest_top = aligned_top(thread->active->paused_guest_pointer - bridge_bytes);
    }
    const auto bounds = thread->guest.usable();
+   guest_top = aligned_top(guest_top);
    if (guest_top < bounds.low || guest_top > bounds.high ||
        guest_top - bounds.low <= guest_reserve_bytes + max_frame_bytes + native_stack::anchor_bytes)
       FORGE_THROW_EXCEPTION(interpret::exceptions::execution_unavailable,
                             "Local AOT native stack capacity is unavailable");
+   const auto remaining = guest_top - bounds.low - guest_reserve_bytes - max_frame_bytes - native_stack::anchor_bytes;
+   const auto first_frame = std::max(functions[function_index].stack_bytes, initialization_frame_bytes);
+   if (first_frame > remaining)
+      FORGE_THROW_EXCEPTION(interpret::exceptions::execution_unavailable,
+                            "Local AOT entry or initialization frame capacity is unavailable");
 
    auto call = invocation{*this,          *thread, code, imports, thunk,     host,          memory,
                           thread->active, {},      {},   {},      arguments, function_index};

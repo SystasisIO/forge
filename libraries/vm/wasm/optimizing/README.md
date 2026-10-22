@@ -92,6 +92,15 @@ Never relabel old artifacts or compiler binaries with a new source identity.
 
 ## Execution And Resources
 
+Executor construction admits the existing physical budgets above the fixed
+4 MiB fallback reserve and 32-byte return anchor. It does not require room for
+the maximum supported 64 KiB frame before an artifact is selected. Each invoke
+checks the actual page-rounded window, largest prepared function frame, and the
+selected entry/start/active post-instantiation frame before memory initialization
+or host effects. Insufficient local capacity remains typed
+`interpret::exceptions::execution_unavailable`; logical depth limits and the
+64 KiB frame/guard bound are unchanged. No configured usable budget is enlarged.
+
 The existing cold native-stack/thread owner remains. Guest entry uses its mapped
 stack; host callbacks bounce onto the ordinary host stack. Native frame sizes
 come from the common WAMR loader's generated stack metadata. Logical source

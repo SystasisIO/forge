@@ -461,6 +461,7 @@ jobs:
             targets+=(test_forge_vm_wasm_optimizing test_forge_vm_wasm_optimizing_traps
               test_forge_vm_wasm_optimizing_preparation test_forge_vm_wasm_optimizing_session
               test_forge_vm_wasm_optimizing_session_probe test_forge_vm_wasm_optimizing_cleanup)
+            targets+=(test_forge_vm_wasm_optimizing_stack_capacity)
             targets+=(wamr_export_name_fixture test_forge_vm_wasm_optimizing_export_names)
             targets+=(wamr_optimizing_fixtures wasm_compiler)
             # The optimizing label also selects the real installed package test.

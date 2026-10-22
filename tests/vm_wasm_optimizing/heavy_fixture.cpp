@@ -99,6 +99,74 @@ bytes fixture(std::uint32_t budget, bool changed_body = false, bool changed_init
    return out;
 }
 
+bytes stack_capacity_fixture(std::string_view mode) {
+   const auto healthy = mode == "healthy";
+   const auto start = mode == "start";
+   const auto post_instantiate = mode == "post_instantiate";
+   bytes out{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
+   section(out, 1, {4, 0x60, 0, 1, 0x7e, 0x60, 1, 0x7e, 0, 0x60, 1, 0x7f, 0, 0x60, 0, 0});
+   bytes imports;
+   u32(imports, 3);
+   for (const auto& [field, type] :
+        std::vector<std::pair<std::string_view, unsigned>>{{"next", 0}, {"consume", 1}, {"mark", 2}}) {
+      name(imports, "env");
+      name(imports, field);
+      imports.push_back(0);
+      u32(imports, type);
+   }
+   section(out, 2, imports);
+   section(out, 3, healthy ? bytes{1, 3} : bytes{2, 3, 3});
+   section(out, 5, {1, 1, 1, 1});
+   bytes exports;
+   u32(exports, healthy ? 1 : post_instantiate ? 3 : 2);
+   const auto export_function = [&](std::string_view field, std::uint32_t index) {
+      name(exports, field);
+      exports.push_back(0);
+      u32(exports, index);
+   };
+   export_function("entry", healthy || (!start && !post_instantiate) ? 3 : 4);
+   if (!healthy)
+      export_function("shallow", 4);
+   if (post_instantiate)
+      export_function("__post_instantiate", 3);
+   section(out, 7, exports);
+   if (start)
+      section(out, 8, {3});
+   // Runtime host calls make every i64 local live across the observable mark.
+   // Both executors consume these SAME compiler-produced bytes and metadata.
+   constexpr auto locals = (32768U - 16U) / 8U;
+   bytes heavy;
+   u32(heavy, 1);
+   u32(heavy, locals);
+   heavy.push_back(0x7e);
+   for (auto index = 0U; index != locals; ++index) {
+      call(heavy, 0);
+      local(heavy, 0x21, index);
+   }
+   heavy.insert(heavy.end(), {0x41, 7});
+   call(heavy, 2);
+   heavy.insert(heavy.end(), {0x41, 0, 0x41, 42, 0x36, 2, 0});
+   for (auto index = 0U; index != locals; ++index) {
+      local(heavy, 0x20, index);
+      call(heavy, 1);
+   }
+   heavy.push_back(0x0b);
+   bytes shallow{0, 0x41, 9};
+   call(shallow, 2);
+   shallow.insert(shallow.end(), {0x41, 0, 0x41, 43, 0x36, 2, 0, 0x0b});
+   bytes code;
+   u32(code, healthy ? 1 : 2);
+   if (!healthy) {
+      u32(code, heavy.size());
+      code.insert(code.end(), heavy.begin(), heavy.end());
+   }
+   u32(code, shallow.size());
+   code.insert(code.end(), shallow.begin(), shallow.end());
+   section(out, 10, code);
+   section(out, 11, {1, 0, 0x41, 0, 0x0b, 1, 0x11});
+   return out;
+}
+
 bytes traps() {
    bytes out{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
    section(out, 1, {5, 0x60, 0, 1, 0x7e, 0x60, 1, 0x7e, 0, 0x60, 1, 0x7f, 0, 0x60, 0, 0, 0x60, 0, 1, 0x7f});
@@ -409,6 +477,13 @@ int main(int argc, char** argv) {
       output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
       if (!output)
          throw std::runtime_error("Cannot write AOT substitution fixture");
+   }
+   for (const auto mode : {"entry", "start", "post_instantiate", "healthy"}) {
+      const auto bytes = stack_capacity_fixture(mode);
+      auto output = std::ofstream(std::string(argv[1]) + "/stack-capacity-" + mode + ".wasm", std::ios::binary);
+      output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      if (!output)
+         throw std::runtime_error("Cannot write native-stack capacity fixture");
    }
    const auto bytes = traps();
    auto output = std::ofstream(std::string(argv[1]) + "/traps.wasm", std::ios::binary);

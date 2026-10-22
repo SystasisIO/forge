@@ -63,19 +63,37 @@ std::uint64_t executor::checked_frame_bytes(const artifact& code) {
    return largest;
 }
 
-invocation_result executor::invoke_erased(const artifact& code, std::uint64_t max_frame_bytes,
-                                          std::span<const std::uint32_t> imports, host_thunk thunk, void* host,
-                                          bool requires_host, std::uint32_t function_index,
-                                          std::span<const interpret::operand_stack_elem> arguments,
-                                          interpret::wasm_allocator& memory,
-                                          std::chrono::steady_clock::time_point deadline, std::stop_token caller_stop,
-                                          std::stop_token compute_stop) {
+std::uint64_t executor::checked_initialization_frame_bytes(const artifact& code) {
+   const auto functions = code.functions();
+   const auto& image = code.image();
+   auto largest = std::uint64_t{0};
+   if (image.start != UINT32_MAX)
+      largest = std::max(largest, functions[image.start].stack_bytes);
+   // The bounded profile disables WASI and bulk-memory ctors. WAMR still
+   // executes a void __post_instantiate export during deferred initialization.
+   for (const auto& exported : code.exports()) {
+      if (exported.name == "__post_instantiate") {
+         const auto& function = functions[exported.function_index];
+         const auto& type = image.types[function.type_index];
+         if (type.params.empty() && type.ret.empty())
+            largest = std::max(largest, function.stack_bytes);
+      }
+   }
+   return largest;
+}
+
+invocation_result
+executor::invoke_erased(const artifact& code, std::uint64_t max_frame_bytes, std::uint64_t initialization_frame_bytes,
+                        std::span<const std::uint32_t> imports, host_thunk thunk, void* host, bool requires_host,
+                        std::uint32_t function_index, std::span<const interpret::operand_stack_elem> arguments,
+                        interpret::wasm_allocator& memory, std::chrono::steady_clock::time_point deadline,
+                        std::stop_token caller_stop, std::stop_token compute_stop) {
    // Pin spans ALL run state, activation destruction/retirement and the final
    // result/exception cleanup. The completion gate proves no runtime-notify tail
    // survives shutdown; this pin additionally protects the implementation itself.
    const auto owner = _impl;
-   return owner->invoke(code, max_frame_bytes, imports, thunk, host, requires_host, function_index, arguments, memory,
-                        deadline, caller_stop, compute_stop);
+   return owner->invoke(code, max_frame_bytes, initialization_frame_bytes, imports, thunk, host, requires_host,
+                        function_index, arguments, memory, deadline, caller_stop, compute_stop);
 }
 
 } // namespace forge::vm::wasm::optimizing

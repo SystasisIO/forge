@@ -6,6 +6,10 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.wasm"
    "${CMAKE_CURRENT_BINARY_DIR}/traps.wasm"
    "${CMAKE_CURRENT_BINARY_DIR}/multi-result.wasm"
    "${CMAKE_CURRENT_BINARY_DIR}/operational-oracles.wasm"
+   "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-entry.wasm"
+   "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-start.wasm"
+   "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-post_instantiate.wasm"
+   "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-healthy.wasm"
    COMMAND wamr_heavy_fixture "${CMAKE_CURRENT_BINARY_DIR}" DEPENDS wamr_heavy_fixture VERBATIM)
 if(TARGET forge_vm_wasm_compiler)
    add_executable(wamr_compile_fixture compile_fixture.cpp)
@@ -59,6 +63,28 @@ if(TARGET forge_vm_wasm_compiler)
       "${CMAKE_CURRENT_BINARY_DIR}/heavy-32768.foc" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192-body.foc"
       "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192-initializer.foc" "${CMAKE_CURRENT_BINARY_DIR}/traps.foc"
       "${CMAKE_CURRENT_BINARY_DIR}/operational-oracles.foc")
+   set(_stack_capacity_fixtures)
+   foreach(_case IN ITEMS entry start post_instantiate healthy)
+      set(_fixture "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-${_case}")
+      add_custom_command(OUTPUT "${_fixture}.foc" "${_fixture}.request"
+         COMMAND wamr_compile_fixture "${_fixture}.wasm" "${_fixture}.foc" "${_fixture}.request"
+         DEPENDS wamr_compile_fixture "${_fixture}.wasm" VERBATIM)
+      list(APPEND _stack_capacity_fixtures "${_fixture}.foc" "${_fixture}.request")
+   endforeach()
+   add_custom_target(wamr_optimizing_stack_capacity_fixtures DEPENDS ${_stack_capacity_fixtures})
+   add_executable(test_forge_vm_wasm_optimizing_stack_capacity stack_capacity_tests.cpp)
+   target_link_libraries(test_forge_vm_wasm_optimizing_stack_capacity PRIVATE forge_vm_wasm_optimizing)
+   add_dependencies(test_forge_vm_wasm_optimizing_stack_capacity wamr_optimizing_stack_capacity_fixtures)
+   foreach(_case IN ITEMS entry start post_instantiate)
+      add_test(NAME "wamr_optimizing_stack_capacity_${_case}"
+         COMMAND test_forge_vm_wasm_optimizing_stack_capacity "${_case}"
+            "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-${_case}.foc"
+            "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-${_case}.request"
+            "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-healthy.foc"
+            "${CMAKE_CURRENT_BINARY_DIR}/stack-capacity-healthy.request")
+      set_tests_properties("wamr_optimizing_stack_capacity_${_case}" PROPERTIES
+         TIMEOUT 180 LABELS "wamr;optimizing;native_stack")
+   endforeach()
    add_executable(test_forge_vm_wasm_optimizing runtime_tests.cpp operational_oracles.cpp)
    target_link_libraries(test_forge_vm_wasm_optimizing PRIVATE forge_vm_wasm_optimizing)
    add_dependencies(test_forge_vm_wasm_optimizing wamr_optimizing_fixtures)

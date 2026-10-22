@@ -45,7 +45,9 @@ def main():
                          "wamr_optimizing_session_bounded", "wamr_optimizing_session_probe_late",
                          "wamr_optimizing_session_probe_overlap", "wamr_optimizing_session_cleanup",
                          "wamr_optimizing_8192_preparation", "wamr_optimizing_guest_depth",
-                         "test_forge_package_vm_wasm_optimizing_component"))
+                         "test_forge_package_vm_wasm_optimizing_component",
+                         "wamr_optimizing_stack_capacity_entry", "wamr_optimizing_stack_capacity_start",
+                         "wamr_optimizing_stack_capacity_post_instantiate"))
     if not required <= names:
         raise ValueError(f"missing selected registrations: {sorted(required - names)}")
     for test in tests:

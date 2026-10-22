@@ -68,9 +68,10 @@ class executor {
    struct impl;
    using host_thunk = void (*)(void*, interpret::execution_interface, std::uint32_t);
    static std::uint64_t checked_frame_bytes(const artifact& code);
+   static std::uint64_t checked_initialization_frame_bytes(const artifact& code);
    invocation_result invoke_erased(const artifact& code, std::uint64_t max_frame_bytes,
-                                   std::span<const std::uint32_t> imports, host_thunk thunk, void* host,
-                                   bool requires_host, std::uint32_t function_index,
+                                   std::uint64_t initialization_frame_bytes, std::span<const std::uint32_t> imports,
+                                   host_thunk thunk, void* host, bool requires_host, std::uint32_t function_index,
                                    std::span<const interpret::operand_stack_elem> arguments,
                                    interpret::wasm_allocator& memory, std::chrono::steady_clock::time_point deadline,
                                    std::stop_token caller_stop, std::stop_token compute_stop);
@@ -91,12 +92,14 @@ template <class Registered> class executor::binding {
    explicit binding(artifact code) : _code(std::move(code)) {
       // The checked accessor rejects unprepared state; it never maps/decode/hash.
       _max_frame_bytes = executor::checked_frame_bytes(_code);
+      _initialization_frame_bytes = executor::checked_initialization_frame_bytes(_code);
       _imports.reserve(_code.image().configuration.imports.size());
       for (const auto& imported : _code.image().configuration.imports)
          _imports.push_back(Registered::resolve_import(imported.module, imported.name, imported.signature));
    }
    artifact _code;
    std::uint64_t _max_frame_bytes = 0;
+   std::uint64_t _initialization_frame_bytes = 0;
    std::vector<std::uint32_t> _imports;
 };
 
@@ -115,7 +118,7 @@ invocation_result executor::invoke(const binding<Registered>& code, typename Reg
    const auto thunk = +[](void* erased, interpret::execution_interface interface, std::uint32_t index) {
       Registered{}(static_cast<typename Registered::host_type_t*>(erased), std::move(interface), index);
    };
-   return invoke_erased(code._code, code._max_frame_bytes, code._imports, thunk, host,
+   return invoke_erased(code._code, code._max_frame_bytes, code._initialization_frame_bytes, code._imports, thunk, host,
                         !std::is_same_v<typename Registered::host_type_t, interpret::standalone_function_t>,
                         function_index, arguments, memory, deadline, caller_stop, compute_stop);
 }
