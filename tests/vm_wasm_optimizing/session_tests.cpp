@@ -445,6 +445,8 @@ void many_tickets(forge::asio::runtime& runtime, forge::asio::compute::pool& com
 #if defined(FORGE_WAMR_SESSION_LATE_SPAWN_TEST)
 int session_late_spawn_cleanup(int argc, char** argv);
 int session_workspace_refusal(int argc, char** argv);
+int session_deadline_context(int argc, char** argv);
+int session_second_socketpair_refusal(int argc, char** argv);
 #endif
 
 int main(int argc, char** argv) {
@@ -453,6 +455,10 @@ int main(int argc, char** argv) {
       return session_late_spawn_cleanup(argc, argv);
    if (argc > 1 && std::string_view{argv[1]} == "workspace-refusal")
       return session_workspace_refusal(argc, argv);
+   if (argc > 1 && std::string_view{argv[1]} == "deadline-context")
+      return session_deadline_context(argc, argv);
+   if (argc > 1 && std::string_view{argv[1]} == "second-socketpair-refusal")
+      return session_second_socketpair_refusal(argc, argv);
 #endif
    try {
       if (argc != 7)

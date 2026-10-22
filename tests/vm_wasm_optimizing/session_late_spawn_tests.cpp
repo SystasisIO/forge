@@ -1,6 +1,8 @@
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/scope/scope_exit.hpp>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
@@ -22,7 +24,9 @@
 #include <spawn.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <typeinfo>
@@ -52,6 +56,8 @@ struct spawn_publication_gate {
    std::atomic<unsigned> launches{0};
    std::atomic<unsigned> terminal_reaps{0};
    std::atomic<int> native_status{0};
+   std::atomic_bool stop_next{false};
+   std::atomic<int> stop_result{-1};
 
    void release() {
       const auto lock = std::scoped_lock{mutex};
@@ -59,6 +65,13 @@ struct spawn_publication_gate {
       changed.notify_all();
    }
 } gate;
+
+struct {
+   std::atomic_bool active{false}, next_workspace{false}, mismatched{false};
+   std::atomic<unsigned> calls{0}, refusals{0};
+   std::atomic<int> first_result{-2}, first_read{-1}, first_write{-1};
+} pair_refusal;
+thread_local unsigned setup_pair_step = 0;
 
 void require(bool value, const char* message) {
    if (!value)
@@ -164,6 +177,54 @@ void require_cache_locked(int descriptor) {
 }
 } // namespace
 
+// Only the next real compiler workspace arms this thread's two setup calls.
+extern "C" char* mkdtemp(char* pattern) {
+   static const auto actual = reinterpret_cast<decltype(&::mkdtemp)>(::dlsym(RTLD_NEXT, "mkdtemp"));
+   if (!actual) {
+      errno = ENOSYS;
+      return nullptr;
+   }
+   const auto slash = std::strrchr(pattern, '/');
+   const auto selected = pair_refusal.active.load(std::memory_order_acquire) &&
+                         std::strcmp(slash ? slash + 1 : pattern, "forge-wasm-compiler-XXXXXX") == 0;
+   const auto result = actual(pattern);
+   if (result && selected && pair_refusal.next_workspace.exchange(false, std::memory_order_acq_rel))
+      setup_pair_step = 1;
+   return result;
+}
+
+extern "C" int socketpair(int domain, int type, int protocol, int descriptors[2]) {
+   static const auto actual = reinterpret_cast<decltype(&::socketpair)>(::dlsym(RTLD_NEXT, "socketpair"));
+   if (!actual) {
+      errno = ENOSYS;
+      return -1;
+   }
+   if (!pair_refusal.active.load(std::memory_order_acquire) || setup_pair_step == 0)
+      return actual(domain, type, protocol, descriptors);
+   if (domain != AF_UNIX || type != SOCK_STREAM || protocol != 0) {
+      pair_refusal.mismatched.store(true, std::memory_order_release);
+      setup_pair_step = 0;
+      return actual(domain, type, protocol, descriptors);
+   }
+   pair_refusal.calls.fetch_add(1, std::memory_order_relaxed);
+   if (setup_pair_step == 1) {
+      const auto result = actual(domain, type, protocol, descriptors);
+      const auto saved_errno = errno;
+      pair_refusal.first_result.store(result, std::memory_order_relaxed);
+      if (result == 0) {
+         pair_refusal.first_read.store(descriptors[0], std::memory_order_relaxed);
+         pair_refusal.first_write.store(descriptors[1], std::memory_order_relaxed);
+      }
+      setup_pair_step = result == 0 ? 2 : 0;
+      errno = saved_errno;
+      return result;
+   }
+   setup_pair_step = 0;
+   pair_refusal.refusals.fetch_add(1, std::memory_order_release);
+   errno = ENFILE;
+   return -1;
+}
+
 // Delegate unchanged to the real OS spawn. Only the dedicated mode arms this
 // gate; ordinary session_bounded calls pass straight through every interposer.
 extern "C" int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* actions,
@@ -175,6 +236,8 @@ extern "C" int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_
    if (result == 0 && gate.armed.load(std::memory_order_acquire) && std::strcmp(path, gate.helper.c_str()) == 0) {
       gate.pid.store(*pid, std::memory_order_release);
       gate.launches.fetch_add(1, std::memory_order_relaxed);
+      if (gate.stop_next.exchange(false, std::memory_order_acq_rel))
+         gate.stop_result.store(::kill(*pid, SIGSTOP), std::memory_order_release);
       auto lock = std::unique_lock{gate.mutex};
       gate.entered = true;
       gate.changed.notify_all();
@@ -376,6 +439,372 @@ int session_late_spawn_cleanup(int argc, char** argv) {
    } catch (const std::exception& error) {
       gate.release();
       std::cerr << "FAIL late-spawn setup: " << error.what() << '\n';
+      return 1;
+   }
+}
+
+int session_deadline_context(int argc, char** argv) {
+   try {
+      if (argc != 6)
+         return 2;
+      require((::getpgrp() == ::getpid() || ::setpgid(0, 0) == 0) && ::getpgrp() == ::getpid(),
+              "Cannot isolate deadline-context watchdog process group");
+      struct sigaction alarm_action{};
+      alarm_action.sa_handler = watchdog;
+      sigemptyset(&alarm_action.sa_mask);
+      require(::sigaction(SIGALRM, &alarm_action, nullptr) == 0, "Cannot install bounded process watchdog");
+      auto alarm_mask = sigset_t{};
+      sigemptyset(&alarm_mask);
+      sigaddset(&alarm_mask, SIGALRM);
+      require(::sigprocmask(SIG_UNBLOCK, &alarm_mask, nullptr) == 0, "Cannot unblock process watchdog");
+      ::alarm(30);
+      std::cout << std::unitbuf;
+      std::cerr << std::unitbuf;
+      auto address = std::uint64_t{};
+      const auto text = std::string_view{argv[5]};
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), address);
+      require(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && address,
+              "Explicit finite helper address-space bytes are required");
+      require(std::filesystem::file_size(argv[3]) <= 1024 * 1024, "Session request exceeds 1 MiB");
+      auto input = std::ifstream{argv[3], std::ios::binary};
+      require(bool(input), "Cannot read current WAMR session request");
+      const auto bytes = std::vector<std::uint8_t>{std::istreambuf_iterator<char>{input}, {}};
+      const auto request = oc::compile_request::decode(bytes, 1024 * 1024);
+      require(request.configuration.target == oc::target_profile::native(), "Request is not the native profile");
+      const auto identity = oc::identify(request);
+      auto pattern = (std::filesystem::path{argv[4]} / "session-deadline-context-XXXXXX").string();
+      require(::mkdtemp(pattern.data()) != nullptr, "Cannot create owned deadline-context cache");
+      auto configuration = oc::session_options{};
+      configuration.helper = argv[2];
+      configuration.cache = pattern;
+      configuration.worker_count = 1;
+      configuration.max_pending_jobs = 4;
+      configuration.max_tickets = 8;
+      configuration.max_imports = 8;
+      configuration.max_configuration_bytes = 16384;
+      configuration.max_request_bytes = 1024 * 1024;
+      configuration.max_response_bytes = 1024 * 1024;
+      configuration.max_inflight_bytes = 512ULL * 1024 * 1024;
+      configuration.max_resident_bytes = 64 * 1024 * 1024;
+      configuration.max_disk_bytes = 32 * 1024 * 1024;
+      configuration.max_disk_entries = 8;
+      configuration.helper_timeout = 2s;
+      configuration.helper_limits = {120, address, 16 * 1024 * 1024};
+      const auto before_signal = signal_snapshot();
+      require(before_signal.sa_handler == SIG_DFL && before_signal.sa_flags == 0, "Nondefault cold SIGCHLD");
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto compute = forge::asio::compute::pool{forge::asio::compute::pool::options{
+          .worker_threads = 1, .max_pending_tasks = 8, .max_waiting_submissions = 8}};
+      auto session = oc::compiler_session{runtime, compute.get_executor(), configuration};
+      const auto base = session.usage();
+      auto failure = std::exception_ptr{};
+      auto terminal = std::exception_ptr{};
+      auto workspace = std::filesystem::path{};
+      try {
+         const auto release_on_error = boost::scope::scope_exit{[] { gate.release(); }};
+         auto initialized = boost::asio::co_spawn(
+             runtime.context(), session.initialize(oc::target_profile::native(), {}), boost::asio::use_future);
+         if (const auto error = finish(initialized))
+            std::rethrow_exception(error);
+         const auto owned_signal = signal_snapshot();
+         require(!same_signal(before_signal, owned_signal), "Initialized session has no retained SIGCHLD owner");
+         gate.helper = configuration.helper.string();
+         gate.stop_next.store(true, std::memory_order_release);
+         gate.armed.store(true, std::memory_order_release);
+         auto admitted = session.enqueue(identity, oc::compile_request{request}, forge::asio::task::priority{});
+         require(admitted.status == oc::admission_status::accepted_unverified && admitted.completion,
+                 "Deadline-context request was not admitted");
+         {
+            auto lock = std::unique_lock{gate.mutex};
+            require(gate.changed.wait_for(lock, 5s, [] { return gate.entered; }),
+                    "Real compilation spawn did not enter the existing gate");
+            workspace = gate.workspace;
+         }
+         require(gate.pid.load(std::memory_order_acquire) > 0 && gate.stop_result.load(std::memory_order_acquire) == 0,
+                 "Cannot stop the real helper before compilation handshake");
+         require(!workspace.empty() && std::filesystem::is_directory(workspace), "Missing actual helper workspace");
+         gate.release(); // Publish the real stopped child; only its normal deadline may kill/reap it.
+         try {
+            static_cast<void>(
+                forge::asio::blocking::run(runtime, std::move(*admitted.completion).wait(clock_type::now() + 5s, {})));
+         } catch (...) {
+            terminal = std::current_exception();
+         }
+         admitted.completion.reset();
+         require(same_signal(owned_signal, signal_snapshot()), "Compile-child reap released the session SIGCHLD owner");
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      gate.release();
+      auto stopped =
+          boost::asio::co_spawn(runtime.context(), session.shutdown(clock_type::now() + 2s), boost::asio::use_future);
+      const auto shutdown_error = finish(stopped);
+      auto pool_drain = boost::asio::co_spawn(runtime.context(), compute.shutdown(), boost::asio::use_future);
+      const auto pool_error = finish(pool_drain);
+      const auto pid = gate.pid.load(std::memory_order_acquire);
+      const auto reaps = gate.terminal_reaps.load(std::memory_order_acquire);
+      auto waited = pid_t{-2};
+      auto wait_error = int{};
+      if (reaps == 1) {
+         auto status = int{};
+         do {
+            errno = 0;
+            waited = ::waitpid(pid, &status, WNOHANG);
+            wait_error = errno;
+         } while (waited < 0 && wait_error == EINTR);
+      }
+      try {
+         if (failure)
+            std::rethrow_exception(failure);
+         if (shutdown_error)
+            std::rethrow_exception(shutdown_error);
+         if (pool_error)
+            std::rethrow_exception(pool_error);
+         require(!gate.timed_out && gate.launches == 1 && gate.stop_result == 0,
+                 "Deadline control changed the real spawn/stop timeline");
+         require(pid > 0 && reaps == 1 && waited == -1 && wait_error == ECHILD,
+                 "Missing sole production reap/post-drain ECHILD");
+         const auto native_status = gate.native_status.load(std::memory_order_acquire);
+         require(WIFSIGNALED(native_status) && WTERMSIG(native_status) == SIGKILL,
+                 "The normal deadline did not terminate the stopped helper");
+         require(!std::filesystem::exists(workspace) && same_signal(before_signal, signal_snapshot()),
+                 "Deadline cleanup left workspace/SIGCHLD ownership");
+         require(!session.ready(identity, request.configuration), "Timed-out helper published ready code");
+         const auto usage = session.usage();
+         require(usage.resident_bytes == base.resident_bytes && usage.inflight_bytes == base.inflight_bytes &&
+                     compute.snapshot().retained == 0,
+                 "Deadline cleanup did not restore reservation baselines");
+         require(bool(terminal), "Stopped helper unexpectedly completed successfully");
+         // Inspect the frozen first-expiry context only AFTER both drains and the ECHILD oracle.
+         try {
+            std::rethrow_exception(terminal);
+         } catch (const oc::exceptions::compile_limit& error) {
+            require(typeid(error) == typeid(oc::exceptions::compile_limit) &&
+                        error.code() == oc::exceptions::make_error_code(oc::exceptions::code::compile_limit),
+                    "Owned helper deadline lost its exact exception type/code");
+            const forge::exceptions::frame* snapshot = nullptr;
+            auto snapshots = std::size_t{};
+            for (const auto& frame : error.context_frames())
+               if (frame.message == "compiler helper deadline snapshot") {
+                  snapshot = &frame;
+                  ++snapshots;
+               }
+            require(snapshots == 1 && snapshot, "Deadline must publish exactly one frozen context frame");
+            constexpr std::array<std::string_view, 15> keys{"oc_helper_exchange",
+                                                            "oc_helper_phase",
+                                                            "oc_helper_arm_ms",
+                                                            "oc_helper_elapsed_ms",
+                                                            "oc_helper_io",
+                                                            "oc_helper_reap",
+                                                            "oc_helper_owned",
+                                                            "oc_helper_socket_peek",
+                                                            "oc_helper_socket_errno",
+                                                            "oc_helper_validated_hello_ms",
+                                                            "oc_helper_ack_shutdown_ms",
+                                                            "oc_helper_eof_ms",
+                                                            "oc_helper_reap_ms",
+                                                            "oc_helper_pid",
+                                                            "oc_helper_socket_fd"};
+            require(snapshot->context.size() == keys.size(), "Deadline context has missing or extra fields");
+            for (auto index = std::size_t{}; index < keys.size(); ++index)
+               require(snapshot->context[index].key == keys[index] && !snapshot->context[index].redacted,
+                       "Deadline context field order/redaction changed");
+            require(snapshot->context[0].value == "compile", "Expected the real compile-child deadline");
+            constexpr std::array<std::string_view, 9> phases{"before_io",  "request_write", "hello_header",
+                                                             "hello_body", "ack_write",     "reply_header",
+                                                             "reply_body", "output_eof",    "await_reap"};
+            auto known_phase = false;
+            for (const auto phase : phases)
+               known_phase = known_phase || snapshot->context[1].value == phase;
+            require(known_phase, "Deadline context contains an unknown parent phase");
+            const auto signed_number = [](const auto& text) {
+               require(!text.empty() && text.size() <= 20, "Invalid signed deadline diagnostic field");
+               auto value = std::int64_t{};
+               const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+               require(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size(),
+                       "Deadline diagnostic field is not a complete int64");
+               return value;
+            };
+            const auto arm = signed_number(snapshot->context[2].value);
+            const auto elapsed = signed_number(snapshot->context[3].value);
+            require(arm >= 0 && arm <= elapsed && elapsed >= 2000, "Deadline duration/arming contract changed");
+            for (auto index = std::size_t{4}; index < 7; ++index)
+               require(snapshot->context[index].value == "true" || snapshot->context[index].value == "false",
+                       "Deadline pending/ownership field is not a boolean");
+            require(snapshot->context[6].value == "true", "First expiry did not retain the real helper owner");
+            require(snapshot->context[7].value == "would_block", "Stopped real helper lost its open endpoint");
+            const auto native_error = signed_number(snapshot->context[8].value);
+            require(native_error == EAGAIN || native_error == EWOULDBLOCK, "Wrong nonblocking socket observation");
+            for (auto index = std::size_t{9}; index < 13; ++index)
+               require(signed_number(snapshot->context[index].value) == -1,
+                       "Unreached phase must remain -1 in the first-expiry snapshot, not cleanup time");
+            require(signed_number(snapshot->context[13].value) == static_cast<std::int64_t>(pid),
+                    "Deadline context lost the SAME real helper PID");
+            const auto& descriptor_text = snapshot->context[14].value;
+            auto descriptor = int{-1};
+            const auto descriptor_result =
+                std::from_chars(descriptor_text.data(), descriptor_text.data() + descriptor_text.size(), descriptor);
+            require(descriptor_result.ec == std::errc{} &&
+                        descriptor_result.ptr == descriptor_text.data() + descriptor_text.size() && descriptor >= 0,
+                    "Deadline context lost its native socket descriptor");
+         }
+      } catch (...) {
+         report_error("deadline-context-FAILED", std::current_exception());
+         if (reaps != 1)
+            bounded_failure("Deadline control lacks a confirmed sole owned reap");
+         std::_Exit(1);
+      }
+      gate.armed.store(false, std::memory_order_release);
+      std::cout << "PASS real stopped-helper 2s deadline, first-expiry context15, sole reap/ECHILD, exact refund\n";
+      return 0;
+   } catch (const std::exception& error) {
+      gate.release();
+      std::cerr << "FAIL deadline-context setup: " << error.what() << '\n';
+      return 1;
+   }
+}
+
+int session_second_socketpair_refusal(int argc, char** argv) {
+   try {
+      if (argc != 6)
+         return 2;
+      require((::getpgrp() == ::getpid() || ::setpgid(0, 0) == 0) && ::getpgrp() == ::getpid(),
+              "Cannot isolate socketpair-refusal process group");
+      auto address = std::uint64_t{};
+      const auto text = std::string_view{argv[5]};
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), address);
+      require(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && address,
+              "Explicit finite helper address-space bytes are required");
+      require(std::filesystem::file_size(argv[3]) <= 1024 * 1024, "Session request exceeds 1 MiB");
+      auto input = std::ifstream{argv[3], std::ios::binary};
+      require(bool(input), "Cannot read current WAMR session request");
+      const auto bytes = std::vector<std::uint8_t>{std::istreambuf_iterator<char>{input}, {}};
+      const auto request = oc::compile_request::decode(bytes, 1024 * 1024);
+      require(request.configuration.target == oc::target_profile::native(), "Request is not the native profile");
+      const auto identity = oc::identify(request);
+      auto pattern = (std::filesystem::path{argv[4]} / "session-second-socketpair-XXXXXX").string();
+      require(::mkdtemp(pattern.data()) != nullptr, "Cannot create owned socketpair-refusal cache");
+      auto configuration = oc::session_options{};
+      configuration.helper = argv[2];
+      configuration.cache = pattern;
+      configuration.worker_count = 1;
+      configuration.max_pending_jobs = 4;
+      configuration.max_tickets = 8;
+      configuration.max_imports = 8;
+      configuration.max_configuration_bytes = 16384;
+      configuration.max_request_bytes = 1024 * 1024;
+      configuration.max_response_bytes = 1024 * 1024;
+      configuration.max_inflight_bytes = 512ULL * 1024 * 1024;
+      configuration.max_resident_bytes = 64 * 1024 * 1024;
+      configuration.max_disk_bytes = 32 * 1024 * 1024;
+      configuration.max_disk_entries = 8;
+      configuration.helper_timeout = 120s;
+      configuration.helper_limits = {120, address, 16 * 1024 * 1024};
+      const auto before_signal = signal_snapshot();
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto compute = forge::asio::compute::pool{forge::asio::compute::pool::options{
+          .worker_threads = 1, .max_pending_tasks = 8, .max_waiting_submissions = 8}};
+      auto session = oc::compiler_session{runtime, compute.get_executor(), configuration};
+      const auto base = session.usage();
+      auto failure = std::exception_ptr{};
+      try {
+         auto initialized = boost::asio::co_spawn(
+             runtime.context(), session.initialize(oc::target_profile::native(), {}), boost::asio::use_future);
+         if (const auto error = finish(initialized))
+            std::rethrow_exception(error);
+         const auto initialized_base = session.usage();
+         gate.helper = configuration.helper.string();
+         gate.release(); // Observe healthy spawn/reap without withholding publication.
+         gate.armed.store(true, std::memory_order_release);
+         pair_refusal.next_workspace.store(true, std::memory_order_release);
+         pair_refusal.active.store(true, std::memory_order_release);
+         auto refused = session.enqueue(identity, oc::compile_request{request}, forge::asio::task::priority{});
+         require(refused.status == oc::admission_status::accepted_unverified && refused.completion,
+                 "Socketpair-refusal request was not admitted");
+         auto typed = false;
+         try {
+            static_cast<void>(
+                forge::asio::blocking::run(runtime, std::move(*refused.completion).wait(clock_type::now() + 150s, {})));
+         } catch (const oc::exceptions::compiler_unavailable& error) {
+            require(error.code() == oc::exceptions::make_error_code(oc::exceptions::code::compiler_unavailable),
+                    "Socketpair refusal lost its typed compiler_unavailable code");
+            typed = true;
+         }
+         refused.completion.reset();
+         pair_refusal.active.store(false, std::memory_order_release);
+         // The ticket may wake before finish() releases its final job accounting.
+         auto settled = boost::asio::post(runtime.context(), boost::asio::use_future);
+         if (const auto error = finish(settled))
+            std::rethrow_exception(error);
+         require(typed && pair_refusal.calls == 2 && pair_refusal.refusals == 1 && pair_refusal.first_result == 0 &&
+                     !pair_refusal.next_workspace && !pair_refusal.mismatched,
+                 "Did not reach exactly one real-first/ENFILE-second compiler setup");
+         const auto first_read = pair_refusal.first_read.load(std::memory_order_acquire);
+         const auto first_write = pair_refusal.first_write.load(std::memory_order_acquire);
+         require(first_read >= 0 && first_write >= 0 && first_read != first_write,
+                 "Missing actual first socketpair descriptors");
+         for (const auto descriptor : {first_read, first_write}) {
+            errno = 0;
+            require(::fcntl(descriptor, F_GETFD) == -1 && errno == EBADF,
+                    "Partial setup did not physically close the first pair");
+         }
+         require(gate.launches == 0 && gate.pid == -1 && gate.terminal_reaps == 0,
+                 "Second socketpair failure launched a child");
+         require(!session.ready(identity, request.configuration), "Socketpair failure published ready code");
+         const auto usage = session.usage();
+         require(usage.resident_bytes == initialized_base.resident_bytes &&
+                     usage.inflight_bytes == initialized_base.inflight_bytes && compute.snapshot().retained == 0,
+                 "Socketpair failure leaked quota or retained compute capacity");
+         auto healthy = session.enqueue(identity, oc::compile_request{request}, forge::asio::task::priority{});
+         require(healthy.status == oc::admission_status::accepted_unverified && healthy.completion,
+                 "Socketpair refusal poisoned SAME-session admission");
+         const auto completed =
+             forge::asio::blocking::run(runtime, std::move(*healthy.completion).wait(clock_type::now() + 150s, {}));
+         require(completed.status == oc::compiler_session::completion_status::compiled &&
+                     completed.code.is_prepared() && session.ready(identity, request.configuration).has_value(),
+                 "SAME session failed its healthy real-helper compile");
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      pair_refusal.active.store(false, std::memory_order_release);
+      pair_refusal.next_workspace.store(false, std::memory_order_release);
+      gate.release();
+      auto stopped =
+          boost::asio::co_spawn(runtime.context(), session.shutdown(clock_type::now() + 2s), boost::asio::use_future);
+      const auto shutdown_error = finish(stopped);
+      auto drained = boost::asio::co_spawn(runtime.context(), compute.shutdown(), boost::asio::use_future);
+      const auto pool_error = finish(drained);
+      if (failure || shutdown_error || pool_error) {
+         report_error("second-socketpair-refusal-FAILED", failure          ? failure
+                                                          : shutdown_error ? shutdown_error
+                                                                           : pool_error);
+         if (gate.launches != gate.terminal_reaps)
+            bounded_failure("Socketpair control lacks a confirmed sole owned reap");
+         std::_Exit(1);
+      }
+      require(gate.launches == 1 && gate.terminal_reaps == 1 && !gate.timed_out,
+              "Healthy retry did not have exactly one physical production reap");
+      const auto pid = gate.pid.load(std::memory_order_acquire);
+      const auto status = gate.native_status.load(std::memory_order_acquire);
+      require(pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "Healthy real helper did not exit normally");
+      auto waited = pid_t{};
+      do {
+         errno = 0;
+         auto unused = int{};
+         waited = ::waitpid(pid, &unused, WNOHANG);
+      } while (waited < 0 && errno == EINTR);
+      require(waited == -1 && errno == ECHILD, "Missing post-drain ECHILD");
+      require(same_signal(before_signal, signal_snapshot()), "Shutdown retained SIGCHLD ownership");
+      const auto usage = session.usage();
+      require(usage.resident_bytes == base.resident_bytes && usage.inflight_bytes == base.inflight_bytes &&
+                  compute.snapshot().retained == 0,
+              "Healthy retry/shutdown did not refund exact reservations");
+      gate.armed.store(false, std::memory_order_release);
+      std::cout
+          << "PASS second socketpair ENFILE, first pair closed, no spawn/quota leak, SAME-session real compile/reap\n";
+      return 0;
+   } catch (const std::exception& error) {
+      std::cerr << "FAIL second-socketpair-refusal: " << error.what() << '\n';
       return 1;
    }
 }

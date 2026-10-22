@@ -20,17 +20,21 @@ module;
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fcntl.h>
 #include <forge/exceptions/macros.hpp>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <ratio>
 #include <spawn.h>
 #include <stop_token>
 #include <string>
@@ -78,7 +82,8 @@ compiler_session::impl::child::child(boost::asio::any_io_executor executor, cons
                                      compiler_protocol::exchange_id exchange_value,
                                      crypto::digest::sha256 identity_value, target_profile target, bool preflight_value)
     : options{options_value}, exchange{exchange_value}, identity{identity_value}, preflight{preflight_value},
-      strand{boost::asio::make_strand(std::move(executor))}, socket{strand}, timer{strand} {
+      strand{boost::asio::make_strand(std::move(executor))}, request_socket{strand}, response_socket{strand},
+      timer{strand} {
    using clock = std::chrono::steady_clock;
    if (options.helper_timeout.count() >
        std::chrono::duration_cast<std::chrono::milliseconds>(clock::duration::max()).count())
@@ -105,9 +110,13 @@ compiler_session::impl::child::child(boost::asio::any_io_executor executor, cons
 compiler_session::impl::child::~child() {
    if (!is_quiescent())
       std::terminate();
-   if (parent_endpoint >= 0)
-      ::close(parent_endpoint);
-   if (const auto endpoint = launched_endpoint.load(std::memory_order_relaxed); endpoint >= 0)
+   if (parent_request_endpoint >= 0)
+      ::close(std::exchange(parent_request_endpoint, -1));
+   if (parent_response_endpoint >= 0)
+      ::close(std::exchange(parent_response_endpoint, -1));
+   if (const auto endpoint = launched_request_endpoint.exchange(-1, std::memory_order_relaxed); endpoint >= 0)
+      ::close(endpoint);
+   if (const auto endpoint = launched_response_endpoint.exchange(-1, std::memory_order_relaxed); endpoint >= 0)
       ::close(endpoint);
 }
 
@@ -120,29 +129,40 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler helper workspace is unavailable");
    }
    workspace_pending.store(true, std::memory_order_release);
-   auto endpoints = std::array<int, 2>{-1, -1};
+   auto request_endpoints = std::array<int, 2>{-1, -1};
+   auto response_endpoints = std::array<int, 2>{-1, -1};
+   const auto close_endpoints = boost::scope::scope_exit{[&] {
+      for (auto fd : request_endpoints)
+         if (fd >= 0)
+            ::close(fd);
+      for (auto fd : response_endpoints)
+         if (fd >= 0)
+            ::close(fd);
+   }};
    int socket_type = SOCK_STREAM;
 #if defined(__linux__)
    socket_type |= SOCK_CLOEXEC; // Atomic at creation, not a later descriptor mutation.
 #endif
-   if (::socketpair(AF_UNIX, socket_type, 0, endpoints.data()) != 0)
+   if (::socketpair(AF_UNIX, socket_type, 0, request_endpoints.data()) != 0 ||
+       ::socketpair(AF_UNIX, socket_type, 0, response_endpoints.data()) != 0)
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler helper socketpair is unavailable");
-   const auto close_endpoints = boost::scope::scope_exit{[&] {
-      for (auto fd : endpoints)
-         if (fd >= 0)
-            ::close(fd);
-   }};
    // Ensure child action sources cannot collide with stdin/stdout/stderr,
    // including when the embedding process started with a standard fd closed.
-   const auto parent = duplicate_endpoint(endpoints[0]);
-   auto close_parent = boost::scope::scope_exit{[parent] { ::close(parent); }};
-   ::close(std::exchange(endpoints[0], -1));
-   const auto child_fd = duplicate_endpoint(endpoints[1]);
-   const auto close_child = boost::scope::scope_exit{[child_fd] { ::close(child_fd); }};
-   ::close(std::exchange(endpoints[1], -1));
+   const auto parent_request = duplicate_endpoint(request_endpoints[0]);
+   auto close_parent_request = boost::scope::scope_exit{[parent_request] { ::close(parent_request); }};
+   ::close(std::exchange(request_endpoints[0], -1));
+   const auto child_request = duplicate_endpoint(request_endpoints[1]);
+   const auto close_child_request = boost::scope::scope_exit{[child_request] { ::close(child_request); }};
+   ::close(std::exchange(request_endpoints[1], -1));
+   const auto parent_response = duplicate_endpoint(response_endpoints[0]);
+   auto close_parent_response = boost::scope::scope_exit{[parent_response] { ::close(parent_response); }};
+   ::close(std::exchange(response_endpoints[0], -1));
+   const auto child_response = duplicate_endpoint(response_endpoints[1]);
+   const auto close_child_response = boost::scope::scope_exit{[child_response] { ::close(child_response); }};
+   ::close(std::exchange(response_endpoints[1], -1));
 #if defined(__APPLE__)
    const auto no_sigpipe = 1;
-   if (::setsockopt(parent, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0)
+   if (::setsockopt(parent_request, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0)
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler parent endpoint SIGPIPE isolation failed");
 #endif
    const auto null_input = ::open("/dev/null", O_RDWR | O_CLOEXEC);
@@ -156,8 +176,8 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
    require_spawn(::posix_spawn_file_actions_init(&actions));
    const auto destroy_actions = boost::scope::scope_exit{[&] { ::posix_spawn_file_actions_destroy(&actions); }};
    require_spawn(::posix_spawn_file_actions_addchdir_np(&actions, workspace.c_str()));
-   require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_fd, STDIN_FILENO));
-   require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_fd, STDOUT_FILENO));
+   require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_request, STDIN_FILENO));
+   require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_response, STDOUT_FILENO));
    require_spawn(::posix_spawn_file_actions_adddup2(&actions, null_fd, STDERR_FILENO));
 #if defined(__linux__) && defined(FORGE_HAS_POSIX_SPAWN_CLOSEFROM)
    require_spawn(::posix_spawn_file_actions_addclosefrom_np(&actions, 3));
@@ -200,12 +220,14 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
    require_spawn(
        ::posix_spawn(&spawned, options.helper.c_str(), &actions, &attributes, argv.data(), environment.data()));
    // No allocation/throw/cancellation checkpoint after a successful spawn:
-   // the pre-existing shared record takes PID+fd ownership before return.
-   launched_endpoint.store(parent, std::memory_order_relaxed);
-   close_parent.set_active(false);
+   // the pre-existing shared record takes PID+both-fd ownership before return.
+   launched_request_endpoint.store(parent_request, std::memory_order_relaxed);
+   launched_response_endpoint.store(parent_response, std::memory_order_relaxed);
+   close_parent_request.set_active(false);
+   close_parent_response.set_active(false);
    launched_pid.store(spawned, std::memory_order_release);
    // Final commit: any actor observing non-quiescence through acquire must
-   // already see the owned endpoint and successful PID publication. Cleanup
+   // already see both owned endpoints and successful PID publication. Cleanup
    // before this commit leaves activation_pending intact; the retained running
    // scheduler/compute operation must resolve launch before shutdown can drain.
    quiescent.store(false, std::memory_order_release);
@@ -251,9 +273,9 @@ bool compiler_session::impl::child::drained() const noexcept {
 }
 
 void compiler_session::impl::child::refresh_quiescent() noexcept {
-   if (drained() && !activation_pending && !owned && !unresolved && parent_endpoint < 0) {
-      boost::system::error_code ignored;
-      socket.close(ignored);
+   if (drained() && !activation_pending && !owned && !unresolved && parent_request_endpoint < 0 &&
+       parent_response_endpoint < 0) {
+      abort_io();
       // No wait is live and physical reap was confirmed. Drop the unmanaged
       // handle/its signal registration before announcing child quiescence;
       // delayed destruction of a scheduler work capture cannot keep it alive
@@ -266,7 +288,8 @@ void compiler_session::impl::child::refresh_quiescent() noexcept {
 
 void compiler_session::impl::child::abort_io() noexcept {
    boost::system::error_code ignored;
-   socket.close(ignored);
+   request_socket.close(ignored);
+   response_socket.close(ignored);
 }
 
 void compiler_session::impl::child::adopt() {
@@ -280,14 +303,20 @@ void compiler_session::impl::child::adopt() {
    }
    adopted = true;
    owned = true;
-   parent_endpoint = launched_endpoint.exchange(-1, std::memory_order_acq_rel);
+   parent_request_endpoint = launched_request_endpoint.exchange(-1, std::memory_order_acq_rel);
+   parent_response_endpoint = launched_response_endpoint.exchange(-1, std::memory_order_acq_rel);
    try {
-      socket.assign(boost::asio::local::stream_protocol{}, parent_endpoint);
-      parent_endpoint = -1;
+      request_socket.assign(boost::asio::local::stream_protocol{}, parent_request_endpoint);
+      parent_request_endpoint = -1;
+      response_socket.assign(boost::asio::local::stream_protocol{}, parent_response_endpoint);
+      parent_response_endpoint = -1;
    } catch (...) {
       failure = transport_failure(std::current_exception());
-      if (parent_endpoint >= 0)
-         ::close(std::exchange(parent_endpoint, -1));
+      if (parent_request_endpoint >= 0)
+         ::close(std::exchange(parent_request_endpoint, -1));
+      if (parent_response_endpoint >= 0)
+         ::close(std::exchange(parent_response_endpoint, -1));
+      abort_io(); // Also retires an already-adopted request fd if response adoption failed.
    }
    start_reap();
 }
@@ -354,6 +383,7 @@ void compiler_session::impl::child::reap_completed(boost::system::error_code err
    // This callback and the Boost readiness/reap operation run on the SAME
    // child strand. Clear authority immediately after confirmed reap, before a
    // late timeout/cleanup handler can attempt any signal with the old PID.
+   diagnostic_times.reap_ms = diagnostic_elapsed_ms();
    owned = false;
    if (!WIFEXITED(native_status) || WEXITSTATUS(native_status) != 0) {
       if (!failure)
@@ -417,6 +447,10 @@ void compiler_session::impl::child::arm_deadline(std::chrono::steady_clock::time
                       self->expired_io_inflight = self->io_inflight;
                       self->expired_reap_inflight = self->reap_inflight;
                       self->expired_owned = self->owned;
+                      self->expired_times = self->diagnostic_times;
+                      self->expired_pid = self->pid;
+                      self->expired_socket_fd =
+                          self->response_socket.is_open() ? self->response_socket.native_handle() : -1;
                       self->observe_expired_socket();
                       self->diagnostic_captured = true;
                    }
@@ -437,13 +471,28 @@ void compiler_session::impl::child::arm_deadline(std::chrono::steady_clock::time
    }
 }
 
+std::int64_t compiler_session::impl::child::diagnostic_elapsed_ms() const noexcept {
+   using clock = std::chrono::steady_clock;
+   using rep = clock::duration::rep;
+   using scale = std::ratio_divide<clock::period, std::milli>;
+   static_assert(noexcept(clock::now()));
+   static_assert(std::numeric_limits<rep>::is_integer && std::numeric_limits<rep>::is_signed &&
+                 std::numeric_limits<rep>::digits <= std::numeric_limits<std::int64_t>::digits);
+   static_assert(scale::num == 1); // Supported steady clocks use integral sub-millisecond ticks.
+   const auto started = diagnostic_started.time_since_epoch().count();
+   const auto now = clock::now().time_since_epoch().count();
+   if (now < started || (started < 0 && now > std::numeric_limits<rep>::max() + started))
+      return -2;
+   return static_cast<std::int64_t>((now - started) / scale::den);
+}
+
 void compiler_session::impl::child::observe_expired_socket() noexcept {
    // SAME strand, before abort_io closes this known socket. One nonconsuming
    // nonblocking observation only; never retry, wait for, or reap the helper.
    const auto saved_errno = errno;
-   if (socket.is_open()) {
+   if (response_socket.is_open()) {
       auto byte = std::uint8_t{};
-      const auto count = ::recv(socket.native_handle(), &byte, sizeof(byte), MSG_PEEK | MSG_DONTWAIT);
+      const auto count = ::recv(response_socket.native_handle(), &byte, sizeof(byte), MSG_PEEK | MSG_DONTWAIT);
       expired_socket_errno = count < 0 ? errno : 0;
       if (count == 0)
          expired_socket = socket_observation::eof;
@@ -522,7 +571,13 @@ void compiler_session::impl::child::append_deadline_context() noexcept {
                                forge::exceptions::ctx("oc_helper_reap", expired_reap_inflight),
                                forge::exceptions::ctx("oc_helper_owned", expired_owned),
                                forge::exceptions::ctx("oc_helper_socket_peek", socket_state),
-                               forge::exceptions::ctx("oc_helper_socket_errno", expired_socket_errno)});
+                               forge::exceptions::ctx("oc_helper_socket_errno", expired_socket_errno),
+                               forge::exceptions::ctx("oc_helper_validated_hello_ms", expired_times.validated_hello_ms),
+                               forge::exceptions::ctx("oc_helper_ack_shutdown_ms", expired_times.ack_shutdown_ms),
+                               forge::exceptions::ctx("oc_helper_eof_ms", expired_times.output_eof_ms),
+                               forge::exceptions::ctx("oc_helper_reap_ms", expired_times.reap_ms),
+                               forge::exceptions::ctx("oc_helper_pid", expired_pid),
+                               forge::exceptions::ctx("oc_helper_socket_fd", expired_socket_fd)});
       } catch (...) {
          // Best-effort metadata must never replace the original exception,
          // code or terminal cleanup result, including allocation failure.
@@ -550,7 +605,7 @@ std::exception_ptr compiler_session::impl::child::transport_failure(std::excepti
 boost::asio::awaitable<compiler_protocol::header>
 compiler_session::impl::child::read_header(std::shared_ptr<child> self, compiler_protocol::message_kind kind) {
    auto bytes = std::vector<std::uint8_t>(compiler_protocol::header_size());
-   co_await boost::asio::async_read(self->socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
+   co_await boost::asio::async_read(self->response_socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
    const auto value = compiler_protocol::decode_header(bytes);
    if (value.kind != kind || value.exchange != self->exchange || value.body_bytes > self->options.max_response_bytes ||
        (kind == compiler_protocol::message_kind::hello ? value.identity != crypto::digest::sha256{}
@@ -569,32 +624,37 @@ boost::asio::awaitable<void> compiler_session::impl::child::exchange_io(std::sha
    header.body_bytes = request.size();
    auto bytes = compiler_protocol::encode(header);
    self->progress = deadline_phase::request_write;
-   co_await boost::asio::async_write(self->socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
-   co_await boost::asio::async_write(self->socket, boost::asio::buffer(request), boost::asio::use_awaitable);
+   co_await boost::asio::async_write(self->request_socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
+   co_await boost::asio::async_write(self->request_socket, boost::asio::buffer(request), boost::asio::use_awaitable);
    self->progress = deadline_phase::hello_header;
    const auto hello_header = co_await read_header(self, compiler_protocol::message_kind::hello);
    bytes.resize(static_cast<std::size_t>(hello_header.body_bytes));
    self->progress = deadline_phase::hello_body;
-   co_await boost::asio::async_read(self->socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
+   co_await boost::asio::async_read(self->response_socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
    const auto actual = compiler_protocol::decode_hello(bytes, self->options.max_response_bytes);
    if (actual != self->expected)
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable,
                             "compiler helper build/target/resource handshake mismatch");
+   self->diagnostic_times.validated_hello_ms = self->diagnostic_elapsed_ms();
    // No LLVM work may begin until this exact SAME Raw ack and subsequent EOF.
    header.kind = compiler_protocol::message_kind::hello_ack;
    header.body_bytes = 0;
    bytes = compiler_protocol::encode(header);
    self->progress = deadline_phase::ack_write;
-   co_await boost::asio::async_write(self->socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
-   self->socket.shutdown(boost::asio::local::stream_protocol::socket::shutdown_send);
+   co_await boost::asio::async_write(self->request_socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
+   // Retire the only parent writer, rather than relying on a half-close wake.
+   // Keep the historical diagnostic key: ACK plus request-writer full close.
+   self->request_socket.close();
+   self->diagnostic_times.ack_shutdown_ms = self->diagnostic_elapsed_ms();
    if (self->preflight) {
       auto extra = std::array<std::uint8_t, 1>{};
       auto error = boost::system::error_code{};
       self->progress = deadline_phase::output_eof;
-      const auto count = co_await self->socket.async_read_some(
+      const auto count = co_await self->response_socket.async_read_some(
           boost::asio::buffer(extra), boost::asio::redirect_error(boost::asio::use_awaitable, error));
       if (error != boost::asio::error::eof || count != 0)
          FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler preflight requires clean output EOF");
+      self->diagnostic_times.output_eof_ms = self->diagnostic_elapsed_ms();
       self->progress = deadline_phase::await_reap;
       co_return; // run_owned STILL waits for confirmed successful sole reap/drains.
    }
@@ -602,15 +662,16 @@ boost::asio::awaitable<void> compiler_session::impl::child::exchange_io(std::sha
    const auto reply_header = co_await read_header(self, compiler_protocol::message_kind::reply);
    bytes.resize(static_cast<std::size_t>(reply_header.body_bytes));
    self->progress = deadline_phase::reply_body;
-   co_await boost::asio::async_read(self->socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
+   co_await boost::asio::async_read(self->response_socket, boost::asio::buffer(bytes), boost::asio::use_awaitable);
    auto reply = compiler_protocol::decode_reply(bytes, self->options.max_response_bytes);
    auto extra = std::array<std::uint8_t, 1>{};
    auto error = boost::system::error_code{};
    self->progress = deadline_phase::output_eof;
-   const auto count = co_await self->socket.async_read_some(
+   const auto count = co_await self->response_socket.async_read_some(
        boost::asio::buffer(extra), boost::asio::redirect_error(boost::asio::use_awaitable, error));
    if (error != boost::asio::error::eof || count != 0)
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler helper response has trailing bytes or no EOF");
+   self->diagnostic_times.output_eof_ms = self->diagnostic_elapsed_ms();
    if (reply.failure)
       FORGE_THROW_CODE(*reply.failure, "isolated compiler rejected the request");
    self->output = std::move(reply.image);
@@ -644,7 +705,8 @@ compiler_session::impl::child::run_owned(std::shared_ptr<child> self, std::vecto
        });
    if (!self->cleanup_requested || self->timers_inflight == 0)
       self->arm_deadline(self->deadline);
-   if (!self->cleanup_requested && !self->failure && self->socket.is_open()) {
+   if (!self->cleanup_requested && !self->failure && self->request_socket.is_open() &&
+       self->response_socket.is_open()) {
       self->io_inflight = true;
       try {
          boost::asio::co_spawn(self->strand, exchange_io(self, std::move(request)),

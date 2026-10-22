@@ -451,6 +451,20 @@ Direct conversion and real memoryless `inc0`/`inc4` calls assert the typed refus
 before host side effects. Fresh interpreter/JIT, sanitizer and broader runtime
 qualification are required; test registration alone is not acceptance.
 
+## Isolated Compiler Input Completion
+
+The private helper transport separates stdin requests from stdout responses.
+The parent closes the request writer after the validated HELLO/ACK exchange,
+instead of relying on a shared duplex socket's send-half shutdown to deliver
+input EOF. This addresses an observed preflight EOF/liveness failure on Darwin;
+it is not a claim of a universal operating-system defect. Strict input/output
+EOF checks, framing, helper deadlines, cancellation, physical child reap and
+existing session/cache ownership remain required. No public API or wire-format
+migration is needed. The diagnostic `oc_helper_ack_shutdown_ms` key is retained,
+but denotes completion of ACK plus request-channel closure in the new transport.
+Fresh helper/session and installed-product tests are required for this change;
+the earlier passing CI does not qualify this follow-up.
+
 ## Migration
 
 Before adopting the replacement, validate original WASM and caller budgets

@@ -251,6 +251,21 @@ HELLO/ACK/EOF exchange, sole physical child reap and bounded cache preflight.
 Failure keeps admission closed. `enqueue` only admits bounded unverified work;
 worker-side canonicalization verifies the hint before cache/helper mutation.
 
+The private helper uses separate request and response socket pairs, with one
+direction used on each pair. After the exact HELLO acknowledgement is written,
+the parent closes its request writer. The helper still requires clean input EOF
+before compiling; the parent still rejects trailing output and waits for the
+sole physical reap. A send-half shutdown on a shared duplex socket is not the
+request-completion boundary. Both channels belong to the existing child owner
+and drain together on cancellation or failure; there is no second reaper or
+transport service. The wire protocol and public session APIs are unchanged.
+
+Deadline diagnostics record bounded phase/timing fields, not request data or
+resource paths. The retained `oc_helper_ack_shutdown_ms` field now means elapsed
+time through successful request-writer closure after ACK, not a `SHUT_WR` call.
+`oc_helper_socket_fd` and the non-consuming peek refer to the response reader.
+These fields are observations only and never control admission or cancellation.
+
 A ticket cancellation affects its consumer, not shared compilation. `ready`
 is immediate and requires full canonical configuration equality. The same
 cache catalog charges selected, quarantined, opaque and temporary payloads.

@@ -1,7 +1,7 @@
 #pragma once
 
-// Included after the owning session module. One fresh helper owns one private
-// inherited socket endpoint and one unmanaged Boost.Process async reap.
+// Included after the owning session module. One fresh helper owns separate
+// request/response socketpairs and one unmanaged Boost.Process async reap.
 struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_shared_from_this<child> {
    // Diagnostic progress only: never used for admission, cancellation or reap.
    enum class deadline_phase {
@@ -23,6 +23,13 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
       interrupted,
       error,
    };
+   struct deadline_timings {
+      // Elapsed whole milliseconds: -1 not reached, -2 invalid clock interval.
+      std::int64_t validated_hello_ms = -1;
+      std::int64_t ack_shutdown_ms = -1;
+      std::int64_t output_eof_ms = -1;
+      std::int64_t reap_ms = -1;
+   };
 
    child(boost::asio::any_io_executor, const session_options&, compiler_protocol::exchange_id, crypto::digest::sha256,
          target_profile, bool preflight = false);
@@ -38,6 +45,7 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    void start_reap();
    void reap_completed(boost::system::error_code);
    void arm_deadline(std::chrono::steady_clock::time_point);
+   std::int64_t diagnostic_elapsed_ms() const noexcept;
    void observe_expired_socket() noexcept;
    void append_deadline_context() noexcept;
    std::exception_ptr transport_failure(std::exception_ptr) const noexcept;
@@ -56,7 +64,8 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    compiler_protocol::hello expected;
    bool preflight = false;
    boost::asio::strand<boost::asio::any_io_executor> strand;
-   boost::asio::local::stream_protocol::socket socket;
+   boost::asio::local::stream_protocol::socket request_socket;
+   boost::asio::local::stream_protocol::socket response_socket;
    boost::asio::steady_timer timer;
    asio::notification changed;
    std::unique_ptr<boost::process::v2::process_handle> process;
@@ -67,9 +76,11 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    // Nonthrowing one-shot ownership publication across compute completion.
    // Actor/reap/timer/IO fields below are strand-owned only.
    std::atomic<pid_t> launched_pid{-1};
-   std::atomic<int> launched_endpoint{-1};
+   std::atomic<int> launched_request_endpoint{-1};
+   std::atomic<int> launched_response_endpoint{-1};
    pid_t pid = -1;
-   int parent_endpoint = -1;
+   int parent_request_endpoint = -1;
+   int parent_response_endpoint = -1;
    std::atomic_bool quiescent{true};
    std::atomic_bool workspace_pending{false};
    std::string workspace;
@@ -94,6 +105,10 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    std::chrono::steady_clock::time_point diagnostic_started;
    std::chrono::steady_clock::time_point diagnostic_armed;
    std::chrono::steady_clock::time_point diagnostic_expired;
+   deadline_timings diagnostic_times;
+   deadline_timings expired_times;
+   pid_t expired_pid = -1;
+   int expired_socket_fd = -1;
    bool diagnostic_armed_once = false;
    bool diagnostic_captured = false;
    bool diagnostic_context_attempted = false;

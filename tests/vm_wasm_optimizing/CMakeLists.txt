@@ -126,6 +126,12 @@ if(TARGET forge_vm_wasm_compiler)
          "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}" "${CMAKE_CURRENT_BINARY_DIR}/multi-result.wasm")
       set_tests_properties(wamr_optimizing_session_bounded PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE LABELS "wamr;optimizing;session")
       if(APPLE)
+         add_test(NAME wamr_optimizing_session_deadline_context
+            COMMAND test_forge_vm_wasm_optimizing_session deadline-context
+               "$<TARGET_FILE:wasm_compiler>" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.request"
+               "${CMAKE_CURRENT_BINARY_DIR}" "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}")
+         set_tests_properties(wamr_optimizing_session_deadline_context PROPERTIES
+            TIMEOUT 45 RUN_SERIAL TRUE LABELS "wamr;optimizing;session;cleanup")
          add_test(NAME wamr_optimizing_session_late_spawn_cleanup
             COMMAND test_forge_vm_wasm_optimizing_session late-spawn-cleanup
                "$<TARGET_FILE:wasm_compiler>" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.request"
@@ -138,6 +144,12 @@ if(TARGET forge_vm_wasm_compiler)
                "${CMAKE_CURRENT_BINARY_DIR}" "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}")
          set_tests_properties(wamr_optimizing_session_workspace_refusal PROPERTIES
             TIMEOUT 90 RUN_SERIAL TRUE LABELS "wamr;optimizing;session;cleanup")
+         add_test(NAME wamr_optimizing_session_second_socketpair_refusal
+            COMMAND test_forge_vm_wasm_optimizing_session second-socketpair-refusal
+               "$<TARGET_FILE:wasm_compiler>" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.request"
+               "${CMAKE_CURRENT_BINARY_DIR}" "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}")
+         set_tests_properties(wamr_optimizing_session_second_socketpair_refusal PROPERTIES
+            TIMEOUT 180 RUN_SERIAL TRUE LABELS "wamr;optimizing;session;cleanup")
       endif()
       foreach(_case IN ITEMS late overlap)
          add_test(NAME "wamr_optimizing_session_probe_${_case}"
