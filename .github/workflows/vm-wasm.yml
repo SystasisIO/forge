@@ -455,7 +455,7 @@ jobs:
         run: |
           read -r -a targets <<< "$VM_RUNTIME_TEST_TARGETS"
           if [[ "$WAMR_JIT" == "ON" ]]; then
-            targets+=(test_forge_wamr_jit_native_maps test_forge_wamr_jit_error_threads)
+            targets+=(test_forge_wamr_jit_native_maps test_forge_wamr_jit_error_threads test_forge_wamr_jit_profile_map)
           fi
           if [[ "$WAMR_AOT" == "ON" ]]; then
             targets+=(test_forge_vm_wasm_optimizing test_forge_vm_wasm_optimizing_traps
