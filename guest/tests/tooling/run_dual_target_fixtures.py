@@ -1315,6 +1315,82 @@ def validate(
     )
 
 
+def validate_module_entry(*, cmake: str, source: Path, output: Path, contract_package: Path) -> None:
+    def command(mode: str) -> list[str]:
+        return [
+            cmake, "-S", str(source), "-B", str(output / mode), "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release", f"-DENTRY_MODE={mode}",
+            f"-DForgeContract_DIR={contract_package}",
+            f"-DCMAKE_TOOLCHAIN_FILE={contract_package / 'ForgeContractToolchain.cmake'}",
+        ]
+
+    artifacts = []
+    for mode in ("module", "legacy"):
+        run(*command(mode))
+        build(cmake, output / mode, "moduleprobe_artifacts")
+        files = {
+            suffix: (output / mode / "artifacts" / f"moduleprobe.{suffix}").read_bytes()
+            for suffix in ("wasm", "abi", "contract.json")
+        }
+        if any(not data for data in files.values()):
+            raise RuntimeError("module entry produced an empty artifact")
+        artifacts.append(files)
+    if artifacts[0] != artifacts[1]:
+        raise RuntimeError("module entry changed legacy WASM/ABI/manifest bytes")
+    abi = json.loads(artifacts[0]["abi"])
+    if [item["name"] for item in abi["actions"]] != ["ping"]:
+        raise RuntimeError("module entry lost its action")
+    if [item["name"] for item in abi["calls"]] != ["read"]:
+        raise RuntimeError("module entry lost its call")
+    records = {item["name"]: item for item in abi["structs"]}
+    for item in [*abi["actions"], *abi["calls"]]:
+        if records[item["type"]]["fields"] != [{"name": "value", "type": "uint64"}]:
+            raise RuntimeError("module entry changed direct argument ABI")
+    entry = output / "module" / "moduleprobe.generated" / "entry.cpp"
+    if entry.read_text() != "import probe.contract;\n":
+        raise RuntimeError("module entry source contains unexpected code")
+    before = entry.stat().st_mtime_ns
+    run(*command("module"))
+    if entry.stat().st_mtime_ns != before:
+        raise RuntimeError("unchanged module entry was rewritten on configure")
+    run(cmake, "--build", str(output / "module"), "--target", "clean")
+    build(cmake, output / "module", "moduleprobe_artifacts")
+    for suffix, expected in artifacts[0].items():
+        if (output / "module" / "artifacts" / f"moduleprobe.{suffix}").read_bytes() != expected:
+            raise RuntimeError("module entry clean/rebuild changed artifacts")
+    for mode, message in (
+        ("invalid", "DISPATCH_MODULE must name a primary C++ module"),
+        ("empty", "DISPATCH_MODULE requires a module name"),
+        ("sources", "DISPATCH_MODULE is exclusive with SOURCES and DISPATCH_SOURCE"),
+        ("dispatch", "DISPATCH_MODULE is exclusive with SOURCES and DISPATCH_SOURCE"),
+        ("outside", "DISPATCH_MODULE requires a valid target name"),
+    ):
+        run_failure(*command(mode), contains=message)
+    if (output / "escaped.generated").exists():
+        raise RuntimeError("rejected module entry wrote outside the build directory")
+    symlink_build = output / "symlink"
+    symlink_target = output / "outside-symlink"
+    symlink_build.mkdir(parents=True)
+    symlink_target.mkdir()
+    (symlink_build / "moduleprobe.generated").symlink_to(symlink_target, target_is_directory=True)
+    symlink_command = command("module")
+    symlink_command[symlink_command.index("-B") + 1] = str(symlink_build)
+    run_failure(*symlink_command, contains="contract module entry directory is outside its declared root")
+    if list(symlink_target.iterdir()):
+        raise RuntimeError("rejected module entry wrote through the symlink")
+    nested_build = output / "nested"
+    nested_build.mkdir()
+    (nested_build / "link").symlink_to(symlink_target, target_is_directory=True)
+    run_failure(*command("nested"), contains="DISPATCH_MODULE requires a valid target name")
+    if list(symlink_target.iterdir()):
+        raise RuntimeError("invalid target wrote through an ancestor symlink")
+    run(*command("unknown"))
+    run_failure(
+        cmake, "--build", str(output / "unknown"), "--target", "moduleprobe_artifacts", "-j", build_jobs(),
+        contains="probe.missing",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -1337,6 +1413,12 @@ def main() -> None:
         ),
         source=args.source.resolve(),
         output=args.output.resolve(),
+    )
+    validate_module_entry(
+        cmake=args.cmake,
+        source=args.source.resolve().parent / "module_entry",
+        output=args.output.resolve() / "module-entry",
+        contract_package=args.contract_package,
     )
 
 

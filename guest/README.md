@@ -118,6 +118,29 @@ forge_add_contract(
 ```
 
 `ID` identifies the library in ABI module-owner diagnostics.
+
+A contract whose annotated class lives in an exported C++ module can select
+that module instead of maintaining a source file containing only an import:
+
+```cmake
+forge_add_contract_library(
+   product_contract
+   ID product.contract
+   MODULE_BASE_DIRS include
+   MODULE_SOURCES include/product/contract.cppm
+   SOURCES contract.cpp
+   PUBLIC_LIBRARIES Forge::forge_contract_runtime
+)
+forge_add_contract(product DISPATCH_MODULE product.contract LIBRARIES product_contract)
+```
+
+`DISPATCH_MODULE` names a primary module supplied through `LIBRARIES`. It is
+exclusive with `SOURCES` and `DISPATCH_SOURCE`; module implementations belong
+to their ordinary library target. Forge creates the import source in the build
+directory and uses its existing Abigen/dispatcher path. There is no second
+contract class, handwritten dispatcher or separately reconstructed module graph.
+The compiler and Abigen report unavailable modules through their normal diagnostics.
+
 `PUBLIC_HEADERS` declares rare macro-only public headers as a standard CMake
 header file set; private textual dependencies remain compiler-discovered.
 `PUBLIC_LIBRARIES` and `PRIVATE_LIBRARIES` create ordinary CMake dependency

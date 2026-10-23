@@ -114,6 +114,12 @@ forge_add_contract(
 ```
 
 `forge_add_contract()` is called only in the standalone guest project.
+For an annotated contract class exported by a module, use
+`forge_add_contract(product DISPATCH_MODULE product.contract LIBRARIES product_contract)`.
+Its `.cppm` and paired implementation belong to the ordinary contract library;
+the SDK generates the import-only dispatch source in the build directory.
+Do not maintain an empty product `entry.cpp` or a forwarding contract class for
+this case. `DISPATCH_MODULE` is exclusive with `SOURCES` and `DISPATCH_SOURCE`.
 `forge_add_contract_project()` may be used by a native project as an optional
 launcher; it configures the guest project but never reads its target graph.
 When shared sources live above the guest directory, pass the product root to
