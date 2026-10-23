@@ -46,31 +46,31 @@ BOOST_AUTO_TEST_CASE(envelope_roundtrip_and_tampering) {
    auto bytes = expression::encode_artifact(value);
    BOOST_CHECK(expression::decode_artifact(bytes) == value);
    bytes.push_back(0);
-   BOOST_CHECK_THROW(expression::decode_artifact(bytes), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::decode_artifact(bytes), expression::exceptions::invalid_program);
    bytes = expression::encode_artifact(value);
    bytes.back() ^= 1;
-   BOOST_CHECK_THROW(expression::decode_artifact(bytes), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::decode_artifact(bytes), expression::exceptions::invalid_program);
    bytes.resize(12);
-   BOOST_CHECK_THROW(expression::decode_artifact(bytes), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::decode_artifact(bytes), expression::exceptions::invalid_program);
 }
 
 BOOST_AUTO_TEST_CASE(version_budget_and_declarations_are_admitted_before_use) {
    auto value = envelope();
    ++value.semantics;
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_profile);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_profile);
    value = envelope();
    value.budget.nodes = 0;
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_profile);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_profile);
    value = envelope();
    value.variables = {{"z"}, {"a"}};
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_program);
    value.variables = {{"a"}, {"a"}};
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_program);
    value.variables = {{"a", static_cast<expression::type>(255)}};
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_program);
    value = envelope();
    value.result = expression::type::string;
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::invalid_program);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::invalid_program);
 }
 
 BOOST_AUTO_TEST_CASE(maximum_declarations_and_expression_have_bounded_roundtrip) {
@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE(maximum_declarations_and_expression_have_bounded_roundtrip)
    value.digest = expression::artifact_digest(value);
    BOOST_CHECK(expression::decode_artifact(expression::encode_artifact(value)) == value);
    value.expression.push_back(1);
-   BOOST_CHECK_THROW(expression::artifact_digest(value), expression::exceptions::resource_exhausted);
+   BOOST_CHECK_THROW((void)expression::artifact_digest(value), expression::exceptions::resource_exhausted);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
