@@ -160,6 +160,7 @@ sidecars or relabel pre-format binary results as v2 acceptance. WAMR pin remains
 
 The interpret package fixture separately exercises real `jit_profile` execution,
 `get_debug()`, an owning value observer moved after backend teardown and unknown
-PCs. It intentionally has no sampler and does not prove positive native-PC
-mapping or signal-delivery behavior. The canonical public profiling tests own
-those checks.
+PCs. With JIT enabled, it also builds and runs all canonical public profiling
+tests against the freshly installed, relocated interpreter target. These retain
+their original sampling timers and assertions for positive native-PC mapping,
+signal delivery, cancellation and observer lifetime.

@@ -4698,6 +4698,10 @@ add_test(
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_interpret_component/verify_relocation.cmake
 )
 set_tests_properties(test_forge_package_vm_wasm_interpret_component PROPERTIES DEPENDS test_forge_package_install)
+if(FORGE_ENABLE_VM_WASM_LLVM_JIT)
+   set_tests_properties(test_forge_package_vm_wasm_interpret_component PROPERTIES
+      LABELS "vm_wasm_interpret;package;jit;instruction_profile" RUN_SERIAL TRUE)
+endif()
 add_test(
    NAME test_forge_package_db_core_component
    COMMAND ${CMAKE_CTEST_COMMAND}
