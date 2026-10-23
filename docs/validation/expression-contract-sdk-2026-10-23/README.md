@@ -25,6 +25,10 @@ or token settlement was tested.
   use `$FORGE`, `$SPINE` and `$QUALIFICATION` for the corresponding source and
   local qualification roots; they are descriptive placeholders.
 
+[Cleanup receipt](cleanup-result.json) records removal of five task build
+directories (5.85 GiB allocated), after stopping the task Bazel server and
+checking for open files. Foreign builds were not removed.
+
 Raw build logs, worker/backend/runtime manifests, installed native and guest
 SDK packages, and generated WASM/ABI/manifests were retained locally before
 cleaning the task build directories. The SDK reused a matching base sysroot;
