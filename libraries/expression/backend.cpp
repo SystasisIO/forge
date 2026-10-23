@@ -5,6 +5,7 @@
 #include <array>
 #include <limits>
 #include <new>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "checker/type_checker_builder_factory.h"
 #include "checker/type_checker_subset_factory.h"
 #include "common/ast.h"
+#include "common/ast_proto.h"
 #include "common/ast_traverse.h"
 #include "common/ast_visitor_base.h"
 #include "common/decl.h"
@@ -33,6 +35,8 @@
 #include "runtime/runtime_options.h"
 #include "runtime/standard_runtime_builder_factory.h"
 #include "google/protobuf/arena.h"
+#include "google/protobuf/io/coded_stream.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 
 namespace forge::expression::detail::backend {
 namespace {
@@ -557,12 +561,130 @@ class cel_program final : public program {
    limits _budget;
 };
 
-preparation prepare_impl(std::string_view source, std::span<const declaration> declarations, limits budget) {
+constexpr std::size_t expression_byte_limit = 64U * 1024U;
+
+// Validate the upstream protobuf tree before conversion or type checking. This
+// owns no alternate tree: frames borrow the decoded CEL message for this pass.
+status admit_proto(const cel::expr::CheckedExpr& checked, const limits& budget) {
+   if (!checked.has_expr() || checked.has_source_info() || !checked.expr_version().empty()) {
+      return status::invalid_program;
+   }
+   if (checked.type_map().size() > budget.nodes || checked.reference_map().size() > budget.nodes) {
+      return status::resource_exhausted;
+   }
+   struct frame {
+      const cel::expr::Expr* expression;
+      std::size_t depth;
+   };
+   std::vector<frame> pending{{&checked.expr(), 1}};
+   std::set<std::int64_t> identifiers;
+   std::size_t nodes = 0;
+   const auto identify = [&](std::int64_t id) {
+      return id > 0 && id <= std::numeric_limits<std::int32_t>::max() && identifiers.insert(id).second;
+   };
+   const auto text = [&](const std::string& value) {
+      return value.size() <= limits{}.string_bytes && cel::internal::Utf8IsValid(view(value));
+   };
+   while (!pending.empty()) {
+      const auto current = pending.back();
+      pending.pop_back();
+      const auto& expr = *current.expression;
+      if (++nodes > budget.nodes || current.depth > budget.depth)
+         return status::resource_exhausted;
+      if (!identify(expr.id()))
+         return status::invalid_program;
+      const auto child = [&](const cel::expr::Expr& value) { pending.push_back({&value, current.depth + 1}); };
+      switch (expr.expr_kind_case()) {
+      case cel::expr::Expr::kConstExpr: {
+         const auto& constant = expr.const_expr();
+         switch (constant.constant_kind_case()) {
+         case cel::expr::Constant::kInt64Value:
+         case cel::expr::Constant::kUint64Value:
+         case cel::expr::Constant::kBoolValue:
+            break;
+         case cel::expr::Constant::kStringValue:
+            if (constant.string_value().size() > budget.string_bytes)
+               return status::resource_exhausted;
+            if (!text(constant.string_value()))
+               return status::invalid_program;
+            break;
+         default:
+            return status::invalid_program;
+         }
+         break;
+      }
+      case cel::expr::Expr::kIdentExpr:
+         if (expr.ident_expr().name().empty() || !text(expr.ident_expr().name()))
+            return status::invalid_program;
+         break;
+      case cel::expr::Expr::kSelectExpr:
+         if (expr.select_expr().field().size() > budget.string_bytes)
+            return status::resource_exhausted;
+         if (!expr.select_expr().has_operand() || expr.select_expr().test_only() ||
+             expr.select_expr().field().empty() || !text(expr.select_expr().field()))
+            return status::invalid_program;
+         child(expr.select_expr().operand());
+         break;
+      case cel::expr::Expr::kCallExpr:
+         if (expr.call_expr().function().empty() || !text(expr.call_expr().function()))
+            return status::invalid_program;
+         if (expr.call_expr().has_target())
+            child(expr.call_expr().target());
+         for (const auto& argument : expr.call_expr().args())
+            child(argument);
+         break;
+      case cel::expr::Expr::kListExpr:
+         if (expr.list_expr().elements_size() > budget.collection_elements)
+            return status::resource_exhausted;
+         if (!expr.list_expr().optional_indices().empty())
+            return status::invalid_program;
+         for (const auto& element : expr.list_expr().elements())
+            child(element);
+         break;
+      case cel::expr::Expr::kStructExpr:
+         if (!expr.struct_expr().message_name().empty())
+            return status::invalid_program;
+         if (expr.struct_expr().entries_size() > budget.collection_elements)
+            return status::resource_exhausted;
+         for (const auto& entry : expr.struct_expr().entries()) {
+            if (!identify(entry.id()) || !entry.has_map_key() || !entry.has_value() || entry.optional_entry())
+               return status::invalid_program;
+            child(entry.map_key());
+            child(entry.value());
+         }
+         break;
+      default:
+         return status::invalid_program;
+      }
+      // Avoid a wide malformed tree allocating work beyond the admitted cap.
+      if (pending.size() > budget.nodes - nodes)
+         return status::resource_exhausted;
+   }
+   return status::ok;
+}
+
+bool canonical_expression(const cel::Ast& ast, std::string& output) {
+   cel::expr::CheckedExpr checked;
+   if (!cel::AstToCheckedExpr(ast, &checked).ok())
+      return false;
+   checked.clear_source_info();
+   checked.clear_expr_version();
+   if (checked.ByteSizeLong() > expression_byte_limit)
+      return false;
+   output.clear();
+   google::protobuf::io::StringOutputStream stream(&output);
+   google::protobuf::io::CodedOutputStream coded(&stream);
+   coded.SetSerializationDeterministic(true);
+   return checked.SerializeToCodedStream(&coded) && !coded.HadError();
+}
+
+preparation prepare_impl(std::string_view source, std::span<const declaration> declarations, limits budget,
+                         bool loading = false, value_kind expected_result = value_kind::null) {
    if (!valid_limits(budget)) {
       return {.code = status::invalid_profile, .message = "invalid V1 profile limits"};
    }
    // Byte cap precedes parser/source construction, including Unicode decoding.
-   if (source.size() > budget.source_bytes) {
+   if ((!loading && source.size() > budget.source_bytes) || (loading && source.size() > expression_byte_limit)) {
       return {.code = status::resource_exhausted, .message = "source byte limit exceeded"};
    }
    if (declarations.size() > budget.variables) {
@@ -582,32 +704,57 @@ preparation prepare_impl(std::string_view source, std::span<const declaration> d
       return {.code = status::invalid_profile, .message = "duplicate variable declaration"};
    }
 
-   cel::ParserOptions parser_options;
-   parser_options.enable_pratt_parser = true;
-   parser_options.disable_standard_macros = true;
-   parser_options.enable_optional_syntax = false;
-   parser_options.fold_unary_operators = false;
-   parser_options.expression_size_codepoint_limit = static_cast<int>(budget.source_bytes);
-   // With macros disabled, source bytes bound raw parser expansion. Enforce
-   // the caller's smaller node limit with the typed pre-checker traversal,
-   // rather than parsing CEL's untyped InvalidArgument diagnostic text.
-   parser_options.expression_node_limit = static_cast<int>(limits{}.source_bytes);
-   parser_options.max_recursion_depth = static_cast<int>(limits{}.depth);
-   auto parser = cel::NewParserBuilder(parser_options)->Build();
-   if (!parser.ok()) {
-      return {.code = status::internal, .message = "CEL parser construction failed"};
+   std::unique_ptr<cel::Ast> parsed;
+   if (loading) {
+      if (source.empty())
+         return {.code = status::invalid_program, .message = "empty CEL artifact"};
+      cel::expr::CheckedExpr checked;
+      google::protobuf::io::ArrayInputStream input(source.data(), static_cast<int>(source.size()));
+      google::protobuf::io::CodedInputStream coded(&input);
+      coded.SetTotalBytesLimit(static_cast<int>(expression_byte_limit));
+      // Each expression level includes protobuf wrapper messages. This is a
+      // physical decode cap; the following pass enforces logical AST depth.
+      coded.SetRecursionLimit(static_cast<int>(limits{}.depth * 3 + 8));
+      if (!checked.ParseFromCodedStream(&coded) || !coded.ConsumedEntireMessage())
+         return {.code = status::invalid_program, .message = "invalid CEL artifact encoding"};
+      const auto admitted = admit_proto(checked, budget);
+      if (admitted != status::ok)
+         return {.code = admitted, .message = "CEL artifact structure rejected"};
+      // Never import the supplied type/reference maps as checked state. The
+      // upstream checker derives them afresh from this parsed-only AST.
+      auto converted = cel::CreateAstFromParsedExpr(checked.expr());
+      if (!converted.ok())
+         return {.code = status::invalid_program, .message = "CEL artifact conversion rejected"};
+      parsed = std::move(*converted);
+   } else {
+      cel::ParserOptions parser_options;
+      parser_options.enable_pratt_parser = true;
+      parser_options.disable_standard_macros = true;
+      parser_options.enable_optional_syntax = false;
+      parser_options.fold_unary_operators = false;
+      parser_options.expression_size_codepoint_limit = static_cast<int>(budget.source_bytes);
+      // With macros disabled, source bytes bound raw parser expansion. Enforce
+      // the caller's smaller node limit with the typed pre-checker traversal,
+      // rather than parsing CEL's untyped InvalidArgument diagnostic text.
+      parser_options.expression_node_limit = static_cast<int>(limits{}.source_bytes);
+      parser_options.max_recursion_depth = static_cast<int>(limits{}.depth);
+      auto parser = cel::NewParserBuilder(parser_options)->Build();
+      if (!parser.ok()) {
+         return {.code = status::internal, .message = "CEL parser construction failed"};
+      }
+      auto prepared_source = (*parser)->PrepareSource(view(source));
+      if (!prepared_source.ok()) {
+         return {.code = status::invalid_program, .message = "invalid CEL source"};
+      }
+      auto result = (*parser)->Parse(**prepared_source);
+      if (!result.ok()) {
+         const bool depth_limit = result.status().code() == absl::StatusCode::kCancelled;
+         return {.code = depth_limit ? status::resource_exhausted : status::invalid_program,
+                 .message = depth_limit ? "parser depth limit exceeded" : "CEL source rejected"};
+      }
+      parsed = std::move(*result);
    }
-   auto prepared_source = (*parser)->PrepareSource(view(source));
-   if (!prepared_source.ok()) {
-      return {.code = status::invalid_program, .message = "invalid CEL source"};
-   }
-   auto parsed = (*parser)->Parse(**prepared_source);
-   if (!parsed.ok()) {
-      const bool depth_limit = parsed.status().code() == absl::StatusCode::kCancelled;
-      return {.code = depth_limit ? status::resource_exhausted : status::invalid_program,
-              .message = depth_limit ? "parser depth limit exceeded" : "CEL source rejected"};
-   }
-   auto admitted = admit(**parsed, budget, owned, false);
+   auto admitted = admit(*parsed, budget, owned, false);
    if (admitted != status::ok) {
       return {.code = admitted, .message = "CEL structure rejected"};
    }
@@ -650,7 +797,7 @@ preparation prepare_impl(std::string_view source, std::span<const declaration> d
    if (!checker.ok()) {
       return {.code = status::internal, .message = "CEL checker construction failed"};
    }
-   auto checked = (*checker)->Check(std::move(*parsed));
+   auto checked = (*checker)->Check(std::move(parsed));
    if (!checked.ok() || !checked->IsValid()) {
       return {.code = status::invalid_program, .message = "CEL type checking rejected the expression"};
    }
@@ -665,6 +812,16 @@ preparation prepare_impl(std::string_view source, std::span<const declaration> d
       return {.code = admitted == status::ok ? status::invalid_program : admitted,
               .message = "CEL V1 profile rejected the expression"};
    }
+
+   const auto result_type = (*ast)->GetReturnType().primitive();
+   const auto result = result_type == cel::PrimitiveType::kInt64    ? value_kind::int64
+                       : result_type == cel::PrimitiveType::kUint64 ? value_kind::uint64
+                                                                    : value_kind::boolean;
+   std::string expression;
+   if (!canonical_expression(**ast, expression))
+      return {.code = status::resource_exhausted, .message = "CEL artifact byte limit exceeded"};
+   if (loading && (result != expected_result || expression != source))
+      return {.code = status::invalid_program, .message = "CEL artifact checked metadata rejected"};
 
    cel::RuntimeOptions options;
    options.enable_comprehension = false;
@@ -691,7 +848,9 @@ preparation prepare_impl(std::string_view source, std::span<const declaration> d
    if (!executable.ok()) {
       return {.code = status::invalid_program, .message = "CEL planning rejected the expression"};
    }
-   return {.executable = std::make_unique<cel_program>(std::move(*executable), std::move(owned), budget)};
+   return {.executable = std::make_unique<cel_program>(std::move(*executable), std::move(owned), budget),
+           .expression = std::move(expression),
+           .result = result};
 }
 
 } // namespace
@@ -713,6 +872,17 @@ preparation program::prepare(std::string_view source, std::span<const declaratio
       return {.code = status::resource_exhausted, .message = "native allocation failed"};
    } catch (...) {
       return {.code = status::internal, .message = "native preparation failed"};
+   }
+}
+
+preparation program::load(std::string_view expression, std::span<const declaration> declarations, limits budget,
+                          value_kind result) {
+   try {
+      return prepare_impl(expression, declarations, budget, true, result);
+   } catch (const std::bad_alloc&) {
+      return {.code = status::resource_exhausted, .message = "native allocation failed"};
+   } catch (...) {
+      return {.code = status::internal, .message = "native artifact loading failed"};
    }
 }
 

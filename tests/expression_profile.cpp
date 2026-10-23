@@ -5,6 +5,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/system/system_error.hpp>
@@ -23,6 +24,7 @@
 #include <semaphore>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <type_traits>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -31,6 +33,7 @@
 
 import forge.expression.program;
 import forge.expression.exceptions;
+import forge.expression.artifact_codec;
 import forge.asio.blocking;
 import forge.asio.runtime;
 
@@ -134,6 +137,12 @@ boost::asio::awaitable<void> cancel_after_started(boost::asio::cancellation_sign
    boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds{100});
    co_await timer.async_wait(boost::asio::use_awaitable);
    cancellation.emit(boost::asio::cancellation_type::terminal);
+}
+
+boost::asio::awaitable<void> stop_after_started(std::stop_source& cancellation) {
+   boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds{100});
+   co_await timer.async_wait(boost::asio::use_awaitable);
+   cancellation.request_stop();
 }
 
 template <typename T> T integer(std::string_view text) {
@@ -517,6 +526,108 @@ BOOST_AUTO_TEST_CASE(expression_inflight_cancellation_is_typed_and_retires_the_w
    const auto error = completed.get();
    BOOST_REQUIRE(error != nullptr);
    BOOST_CHECK_EXCEPTION(std::rethrow_exception(error), forge::exceptions::base, error_is<errors::code::cancelled>);
+   BOOST_CHECK_EXCEPTION((void)runtime.memory(), forge::exceptions::base, error_is<errors::code::worker_unavailable>);
+   forge::asio::blocking::run(caller, runtime.shutdown_async());
+}
+
+BOOST_AUTO_TEST_CASE(expression_artifact_survives_a_fresh_worker) {
+   forge::raw::bytes saved;
+   {
+      expression::runtime runtime({.helper = std::filesystem::path{FORGE_EXPRESSION_WORKER}});
+      const std::array variables = {variable{"x"}};
+      expression::program compiled(runtime, "math.mul_div(x, 7, 3, rounding.ceil)", variables);
+      saved = expression::encode_artifact(compiled.artifact());
+   }
+   // Both the original program and its complete native worker have gone away.
+   expression::runtime runtime({.helper = std::filesystem::path{FORGE_EXPRESSION_WORKER}});
+   const auto artifact = expression::decode_artifact(saved);
+   expression::program loaded(runtime, artifact);
+   BOOST_CHECK(loaded.artifact() == artifact);
+   BOOST_CHECK_EQUAL(loaded.evaluate(variant_object{"x", std::int64_t{9007199254740993LL}}).value.as_int64(),
+                     21016798261062317LL);
+   forge::asio::runtime caller({.worker_threads = 1, .thread_name = "expression-load"});
+   auto asynchronous = forge::asio::blocking::run(caller, expression::program::load_async(runtime, artifact));
+   BOOST_CHECK_EQUAL(asynchronous.evaluate(variant_object{"x", 3}).value.as_int64(), 7);
+}
+
+BOOST_AUTO_TEST_CASE(expression_artifact_checks_fresh_types_even_after_rehashing) {
+   const std::array variables = {variable{"x"}};
+   const auto original = expression::program(shared_runtime(), "x + 1", variables).artifact();
+   auto forged = original;
+   forged.result = type::boolean;
+   forged.digest = expression::artifact_digest(forged);
+   BOOST_CHECK_EXCEPTION((void)expression::program(shared_runtime(), forged), forge::exceptions::base,
+                         error_is<errors::code::invalid_program>);
+   forged = original;
+   forged.variables.front().kind = type::uint64;
+   forged.digest = expression::artifact_digest(forged);
+   BOOST_CHECK_EXCEPTION((void)expression::program(shared_runtime(), forged), forge::exceptions::base,
+                         error_is<errors::code::invalid_program>);
+   forged = original;
+   forged.budget.nodes = 2;
+   forged.digest = expression::artifact_digest(forged);
+   BOOST_CHECK_EXCEPTION((void)expression::program(shared_runtime(), forged), forge::exceptions::base,
+                         error_is<errors::code::resource_exhausted>);
+   forged = original;
+   forged.expression.push_back(0); // Invalid protobuf, independently rejected by the child.
+   forged.digest = expression::artifact_digest(forged);
+   BOOST_CHECK_EXCEPTION((void)expression::program(shared_runtime(), forged), forge::exceptions::base,
+                         error_is<errors::code::invalid_program>);
+   BOOST_CHECK_EQUAL(expression::program(shared_runtime(), original).evaluate(variant_object{"x", 41}).value.as_int64(),
+                     42);
+}
+
+BOOST_AUTO_TEST_CASE(expression_operation_early_cancel_and_deadline_preserve_the_helper) {
+   expression::runtime runtime({.helper = std::filesystem::path{FORGE_EXPRESSION_WORKER}});
+   expression::program compiled(runtime, "42");
+   std::stop_source cancelled;
+   cancelled.request_stop();
+   expression::operation_options operation{.cancel = cancelled.get_token()};
+   BOOST_CHECK_EXCEPTION((void)compiled.evaluate({}, operation), forge::exceptions::base,
+                         error_is<errors::code::cancelled>);
+   BOOST_CHECK_EXCEPTION((void)expression::program(runtime, compiled.artifact(), operation), forge::exceptions::base,
+                         error_is<errors::code::cancelled>);
+   operation = {.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds{1}};
+   BOOST_CHECK_EXCEPTION((void)compiled.evaluate({}, operation), forge::exceptions::base,
+                         error_is<errors::code::deadline_exceeded>);
+   BOOST_CHECK_EQUAL(compiled.evaluate().value.as_int64(), 42);
+}
+
+BOOST_AUTO_TEST_CASE(expression_operation_cancel_while_queued_preserves_the_active_exchange) {
+   identified_worker fixture;
+   forge::asio::runtime caller({.worker_threads = 1, .thread_name = "expression-queue"});
+   expression::runtime runtime(caller, {.helper = fixture.helper, .timeout = std::chrono::seconds{5}});
+   expression::program compiled(runtime, "42");
+   BOOST_REQUIRE_EQUAL(::kill(fixture.pid(), SIGSTOP), 0);
+   auto resume = boost::scope::scope_exit{[&] { ::kill(fixture.pid(), SIGCONT); }};
+   auto active = boost::asio::co_spawn(caller.context(), compiled.evaluate_async(), boost::asio::use_future);
+   std::stop_source stop;
+   auto queued = boost::asio::co_spawn(caller.context(), compiled.evaluate_async({}, {.cancel = stop.get_token()}),
+                                       boost::asio::use_future);
+   forge::asio::blocking::run(caller, stop_after_started(stop));
+   BOOST_REQUIRE(queued.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_EXCEPTION((void)queued.get(), forge::exceptions::base, error_is<errors::code::cancelled>);
+   BOOST_REQUIRE_EQUAL(::kill(fixture.pid(), SIGCONT), 0);
+   resume.set_active(false);
+   BOOST_REQUIRE(active.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_EQUAL(active.get().value.as_int64(), 42);
+   BOOST_CHECK_EQUAL(compiled.evaluate().value.as_int64(), 42);
+   forge::asio::blocking::run(caller, runtime.shutdown_async());
+}
+
+BOOST_AUTO_TEST_CASE(expression_operation_absolute_deadline_bounds_a_dispatched_load) {
+   const auto artifact = expression::program(shared_runtime(), "42").artifact();
+   identified_worker fixture;
+   forge::asio::runtime caller({.worker_threads = 1, .thread_name = "expression-load"});
+   expression::runtime runtime(caller, {.helper = fixture.helper, .timeout = std::chrono::seconds{5}});
+   BOOST_REQUIRE_EQUAL(::kill(fixture.pid(), SIGSTOP), 0);
+   const auto started = std::chrono::steady_clock::now();
+   const expression::operation_options operation{.deadline = started + std::chrono::milliseconds{100}};
+   BOOST_CHECK_EXCEPTION(
+       (void)forge::asio::blocking::run(caller, expression::program::load_async(runtime, artifact, operation)),
+       forge::exceptions::base, error_is<errors::code::deadline_exceeded>);
+   BOOST_CHECK_LT(
+       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), 2000);
    BOOST_CHECK_EXCEPTION((void)runtime.memory(), forge::exceptions::base, error_is<errors::code::worker_unavailable>);
    forge::asio::blocking::run(caller, runtime.shutdown_async());
 }

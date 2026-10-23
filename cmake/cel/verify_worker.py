@@ -168,7 +168,7 @@ def main():
     if set(libraries) - SYSTEM_LIBRARIES:
         raise RuntimeError("Worker links unqualified shared runtimes/libraries: " + ", ".join(sorted(set(libraries) - SYSTEM_LIBRARIES)))
     link_map = args.link_map.read_text()
-    if "libforge_asio.a" in link_map or re.search(r"libforge_expression\.a(?:\[[^]]+\])?\(runtime(?:_impl)?\.cpp\.o\)", link_map):
+    if "libforge_asio.a" in link_map or re.search(r"libforge_expression\.a(?:\[[^]]+\])?\((?:runtime(?:_impl)?|artifact_codec)\.cpp\.o\)", link_map):
         raise RuntimeError("The single-thread worker extracted the parent Asio/process runtime")
     objects = [match.group(1) for match in re.finditer(r"^\[\s*\d+\]\s+(.+)$", link_map, re.MULTILINE)]
     if not objects or not any("libforge_expression_backend.a" in item for item in objects):

@@ -304,7 +304,7 @@ def main():
         copy_changed(source, library / "details" / source.name)
     copy_changed(owner / "BUILD.bazel", package / "BUILD.bazel")
     if args.test:
-        for relative in ("expression_arithmetic.cpp", "expression_arithmetic_cases.inc"):
+        for relative in ("expression_arithmetic.cpp", "expression_arithmetic_cases.inc", "expression_artifact_backend.cpp"):
             copy_changed(root / "tests" / relative, package / "tests" / relative)
     environment = os.environ.copy()
     for name in ("CPATH", "CPLUS_INCLUDE_PATH", "C_INCLUDE_PATH"):
@@ -344,6 +344,7 @@ def main():
         if flag.startswith("-fsanitize="):
             command += ["--linkopt=" + flag, "--host_linkopt=" + flag]
     if args.test:
+        command.append("//forge_native:artifact_test")
         command.append("--test_output=errors")
     else:
         command.append("--output_groups=default,linkdeps,linkopts")

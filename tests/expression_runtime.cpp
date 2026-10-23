@@ -1,10 +1,12 @@
 #include <boost/test/unit_test.hpp>
+#include "../libraries/expression/details/cancellation_delivery.hxx"
 #include <array>
 #include <chrono>
 #include <cstdlib>
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <stop_token>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -74,6 +76,29 @@ std::string balanced_sum(std::size_t leaves) {
 
 BOOST_AUTO_TEST_SUITE(expression_runtime)
 
+BOOST_AUTO_TEST_CASE(cancellation_delivery_refusal_cannot_escape_a_stop_callback) {
+   using delivery_error = expression::detail::cancellation_delivery_error;
+   auto error = std::atomic{delivery_error::none};
+   bool delivered = false;
+   expression::detail::deliver_cancellation([&] { delivered = true; }, error);
+   BOOST_CHECK(delivered);
+   BOOST_CHECK(error.load() == delivery_error::none);
+   std::stop_source allocation_failure;
+   const auto allocation_callback =
+       std::stop_callback{allocation_failure.get_token(), [&]() noexcept {
+                             expression::detail::deliver_cancellation([] { throw std::bad_alloc{}; }, error);
+                          }};
+   BOOST_CHECK(allocation_failure.request_stop());
+   BOOST_CHECK(error.load() == delivery_error::resource_exhausted);
+   error.store(delivery_error::none);
+   std::stop_source service_failure;
+   const auto service_callback = std::stop_callback{service_failure.get_token(), [&]() noexcept {
+                                                       expression::detail::deliver_cancellation([] { throw 1; }, error);
+                                                    }};
+   BOOST_CHECK(service_failure.request_stop());
+   BOOST_CHECK(error.load() == delivery_error::unavailable);
+}
+
 BOOST_AUTO_TEST_CASE(worker_faults_are_classified_and_drained) {
    helper_fixture fixtures;
    const auto absent = fixtures.script("eof", "exit 0");
@@ -121,6 +146,18 @@ BOOST_AUTO_TEST_CASE(real_worker_exhaustion_reaches_the_public_error_boundary) {
    BOOST_CHECK_EQUAL(open_descriptors(), before);
    expression::runtime fresh({.helper = FORGE_EXPRESSION_WORKER});
    BOOST_CHECK_EQUAL(expression::program(fresh, "7 * 6").evaluate().value.as_int64(), 42);
+}
+
+BOOST_AUTO_TEST_CASE(large_checked_artifact_passes_public_prepare_and_load_transport) {
+   expression::runtime runtime({.helper = FORGE_EXPRESSION_WORKER});
+   expression::program compiled(runtime, balanced_sum(256));
+   const auto artifact = compiled.artifact();
+   BOOST_REQUIRE_GT(artifact.expression.size(), 1024U);
+   BOOST_REQUIRE_LE(artifact.expression.size(), expression::max_expression_bytes);
+   BOOST_CHECK_EQUAL(compiled.evaluate().value.as_int64(), 256);
+   expression::program loaded(runtime, artifact);
+   BOOST_CHECK(loaded.artifact() == artifact);
+   BOOST_CHECK_EQUAL(loaded.evaluate().value.as_int64(), 256);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

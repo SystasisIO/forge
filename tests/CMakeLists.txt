@@ -1,22 +1,5 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-if(TARGET forge_expression)
-   add_executable(test_forge_expression unit/main.cpp expression_profile.cpp expression_runtime.cpp)
-   target_link_libraries(test_forge_expression PRIVATE forge_expression Boost::included_unit_test_framework)
-   target_compile_definitions(test_forge_expression PRIVATE
-      FORGE_EXPRESSION_WORKER="$<TARGET_FILE:forge_expression_worker>")
-   add_dependencies(test_forge_expression forge_expression_worker)
-   add_test(NAME test_forge_expression COMMAND test_forge_expression)
-   add_executable(test_forge_expression_worker unit/main.cpp expression_worker.cpp)
-   target_link_libraries(test_forge_expression_worker PRIVATE forge_expression Boost::included_unit_test_framework)
-   target_compile_definitions(test_forge_expression_worker PRIVATE
-      FORGE_EXPRESSION_WORKER="$<TARGET_FILE:forge_expression_worker>")
-   add_dependencies(test_forge_expression_worker forge_expression_worker)
-   add_test(NAME test_forge_expression_worker COMMAND test_forge_expression_worker)
-   set_tests_properties(test_forge_expression_worker PROPERTIES TIMEOUT 300 LABELS "expression;macos")
-   add_test(NAME test_forge_expression_oracle COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/expression_arithmetic_oracle.py" --check)
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/expression.cmake")
 
 add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
 target_link_libraries(test_forge_auth_attestation PRIVATE

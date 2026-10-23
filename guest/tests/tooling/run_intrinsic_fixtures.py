@@ -58,11 +58,13 @@ def main() -> None:
 
     assert manifest["schema_version"] == 1
     assert manifest["interface_version"] == 1
-    assert len(imports) == 200
+    assert len(imports) == 203
     assert len(names) == len(set(names))
     assert len(database) == 60
     assert database.keys() == golden.keys()
-    assert set(names) == set(full_golden)
+    baseline_imports = [entry for entry in imports if entry["capability"] != "expression_v1"]
+    extensions = [entry for entry in imports if entry["capability"] == "expression_v1"]
+    assert {entry["import"] for entry in baseline_imports} == set(full_golden)
     assert set(manifest["capabilities"]) == {
         "bls",
         "call",
@@ -72,12 +74,25 @@ def main() -> None:
         "instant_finality",
         "privileged",
         "runtime",
+        "expression_v1",
     }
 
-    public_imports = [entry for entry in imports if entry["capability"] != "runtime"]
+    public_imports = [entry for entry in baseline_imports if entry["capability"] != "runtime"]
     runtime_imports = [entry for entry in imports if entry["capability"] == "runtime"]
     assert len(public_imports) == 152
     assert len(runtime_imports) == 48
+    assert len(extensions) == 3
+    assert {entry["import"] for entry in extensions} == {
+        "expression_compile_v1", "expression_import_v1", "expression_evaluate_v1"
+    }
+    for entry in extensions:
+        assert entry["interface_version"] == 1
+        assert entry["identifier"] == entry["import"]
+        assert entry["module"] == "env"
+        assert entry["header"] == "expression_v1"
+        assert entry["protocol_feature"] is None
+        assert entry["wasm_parameters"] == ["i32"] * 4
+        assert entry["wasm_result"] == "i32"
 
     for name, entry in database.items():
         expected_parameters, expected_result = golden[name]
@@ -90,7 +105,7 @@ def main() -> None:
         assert entry["wasm_parameters"] == expected_parameters
         assert entry["wasm_result"] == expected_result
 
-    for entry in imports:
+    for entry in baseline_imports:
         expected = full_golden[entry["import"]]
         for field, value in expected.items():
             assert entry[field] == value, f"{entry['import']} has unexpected {field}"

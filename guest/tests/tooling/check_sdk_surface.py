@@ -69,18 +69,26 @@ def main() -> None:
     surface = json.loads(args.manifest.read_text(encoding="utf-8"))
     registry = json.loads(args.registry.read_text(encoding="utf-8"))
     registry_imports = registry["imports"]
-    imports = [item for item in registry_imports if item["capability"] != "runtime"]
+    extension_capabilities = set(surface.get("extensions", {}))
+    imports = [item for item in registry_imports if item["capability"] not in {"runtime"} | extension_capabilities]
     expected = surface["intrinsics"]
 
     if len(imports) != expected["count"]:
         fail(f"intrinsic count mismatch: expected {expected['count']}, got {len(imports)}")
     if registry["interface_version"] != expected["interface_version"]:
         fail("contract interface version mismatch")
-    public_capabilities = [capability for capability in registry["capabilities"] if capability != "runtime"]
+    public_capabilities = [capability for capability in registry["capabilities"]
+                           if capability not in {"runtime"} | extension_capabilities]
     if public_capabilities != expected["capabilities"]:
         fail("contract capability set mismatch")
     if len({item["import"] for item in registry_imports}) != len(registry_imports):
         fail("duplicate intrinsic import name")
+    for capability, extension in surface.get("extensions", {}).items():
+        entries = [item for item in registry_imports if item["capability"] == capability]
+        if len(entries) != extension["count"] or any(
+            item["interface_version"] != extension["interface_version"] for item in entries
+        ):
+            fail(f"optional intrinsic capability mismatch: {capability}")
 
     actual_signatures = [
         (

@@ -5,8 +5,16 @@
 #include <type_traits>
 
 using interface = forge::contract::host::interface;
+using expression_v1 = forge::contract::host::expression_v1;
 
 static_assert(forge::contract::host::interface_version == 1);
+static_assert(!std::is_base_of_v<interface, expression_v1>);
+static_assert(std::same_as<decltype(&expression_v1::expression_compile_v1),
+                           std::uint32_t (expression_v1::*)(const char*, std::uint32_t, char*, std::uint32_t)>);
+static_assert(std::same_as<decltype(&expression_v1::expression_import_v1),
+                           std::uint32_t (expression_v1::*)(const char*, std::uint32_t, char*, std::uint32_t)>);
+static_assert(std::same_as<decltype(&expression_v1::expression_evaluate_v1),
+                           std::uint32_t (expression_v1::*)(const char*, std::uint32_t, char*, std::uint32_t)>);
 static_assert(std::same_as<decltype(&interface::send_inline), void (interface::*)(char*, std::uint32_t)>);
 static_assert(
     std::same_as<decltype(&interface::sha256), void (interface::*)(const char*, std::uint32_t, capi_checksum256*)>);

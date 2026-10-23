@@ -12,6 +12,7 @@
 
 import forge.expression.program;
 import forge.expression.exceptions;
+import forge.expression.artifact_codec;
 
 namespace {
 
@@ -104,6 +105,22 @@ void concurrent_evaluation(expression::runtime& runtime) {
    require(passed, "concurrent evaluation failed");
 }
 
+void portable_roundtrip(expression::runtime& runtime) {
+   const std::array variables = {expression::variable{"amount"}};
+   const expression::program original(runtime, "amount + 2", variables);
+   const auto saved = expression::encode_artifact(original.artifact());
+   auto artifact = expression::decode_artifact(saved);
+   expression::runtime restarted({.helper = std::filesystem::path{FORGE_EXPRESSION_WORKER}});
+   const expression::program loaded(restarted, artifact);
+   require(loaded.evaluate(forge::variant_object{"amount", std::int64_t{9007199254740993LL}}).value.as_int64() ==
+               9007199254740995LL,
+           "portable checked artifact did not survive a different worker");
+   require(expression::encode_artifact(loaded.artifact()) == saved, "loading changed the canonical artifact");
+   artifact.result = expression::type::boolean;
+   artifact.digest = expression::artifact_digest(artifact);
+   expect_error(errors::code::invalid_program, [&] { (void)expression::program(restarted, artifact); });
+}
+
 } // namespace
 
 int main() {
@@ -115,12 +132,13 @@ int main() {
       arithmetic(runtime);
       typed_errors(runtime);
       concurrent_evaluation(runtime);
+      portable_roundtrip(runtime);
       const auto memory = runtime.memory();
       require(memory.capacity == 64 * 1024 * 1024 && memory.used <= memory.peak && memory.peak <= memory.capacity,
               "worker memory snapshot exceeded its capacity");
       require(memory.used > 0 && memory.failures == 0, "ordinary installed calls exhausted worker memory");
-      std::cout << "Installed expression: exact arithmetic, named rounding, typed errors, concurrency and worker "
-                   "memory snapshot PASS\n";
+      std::cout << "Installed expression: exact arithmetic, rounding, errors, concurrency, portable artifacts and "
+                   "worker memory snapshot PASS\n";
       return 0;
    } catch (const std::exception& error) {
       std::cerr << "Installed expression consumer failed: " << error.what() << '\n';

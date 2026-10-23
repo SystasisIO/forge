@@ -1,6 +1,9 @@
 module;
 
+#include "details/cancellation_delivery.hxx"
+
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -13,7 +16,9 @@ module;
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
+#include <stop_token>
 #include <span>
 #include <spawn.h>
 #include <string>
@@ -68,6 +73,8 @@ int isolated_descriptor(int fd) {
       std::rethrow_exception(error);
    } catch (const forge::exceptions::base&) {
       throw;
+   } catch (const std::bad_alloc&) {
+      FORGE_THROW_EXCEPTION(exceptions::resource_exhausted, "expression control allocation failed");
    } catch (const boost::system::system_error& failure) {
       if (failure.code() == boost::asio::error::operation_aborted)
          FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression exchange cancelled");
@@ -257,7 +264,7 @@ boost::asio::awaitable<runtime::impl::outcome> runtime::impl::transfer(worker_pr
       } catch (...) {
          FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "invalid expression worker response prefix");
       }
-      if (response_size == 0 || response_size > 1024)
+      if (response_size == 0 || response_size > worker_protocol::frame_limit)
          FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "invalid expression worker response length");
       co_await boost::asio::async_read(socket, boost::asio::buffer(buffer.data(), response_size),
                                        boost::asio::redirect_error(boost::asio::use_awaitable, error));
@@ -296,91 +303,156 @@ boost::asio::awaitable<runtime::impl::admission> runtime::impl::acquire() {
 
 boost::asio::awaitable<worker_protocol::response> runtime::impl::invoke(worker_protocol::request request,
                                                                         const forge::variant_object& values,
-                                                                        std::uint64_t* accepted_program) {
-   const auto deadline = std::chrono::steady_clock::now() + configuration.timeout;
-   boost::asio::steady_timer timer(strand, deadline);
-   admission admitted;
-   std::exception_ptr admission_error;
+                                                                        std::uint64_t* accepted_program,
+                                                                        operation_options operation) {
+   if (operation.cancel.stop_requested())
+      FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression operation cancelled");
+   const auto owner_deadline = std::chrono::steady_clock::now() + configuration.timeout;
+   const auto deadline = operation.deadline ? std::min(owner_deadline, *operation.deadline) : owner_deadline;
+   if (std::chrono::steady_clock::now() >= deadline)
+      FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
+   auto timer = std::make_shared<boost::asio::steady_timer>(strand, deadline);
+   auto delivery_error =
+       std::make_shared<std::atomic<detail::cancellation_delivery_error>>(detail::cancellation_delivery_error::none);
+   const auto check_delivery = [&] {
+      switch (delivery_error->load(std::memory_order_acquire)) {
+      case detail::cancellation_delivery_error::resource_exhausted:
+         FORGE_THROW_EXCEPTION(exceptions::resource_exhausted, "expression cancellation delivery allocation failed");
+      case detail::cancellation_delivery_error::unavailable:
+         FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression cancellation delivery failed");
+      default:
+         break;
+      }
+   };
+   worker_protocol::response response;
    try {
-      using namespace boost::asio::experimental::awaitable_operators;
-      auto completed = co_await (acquire() || timer.async_wait(boost::asio::use_awaitable));
-      if (completed.index() == 0)
-         admitted = std::move(std::get<0>(completed));
-      else
-         FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
-   } catch (...) {
-      admission_error = std::current_exception();
-   }
-   if (admission_error) {
-      const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
-      if (cancellation.cancelled() != boost::asio::cancellation_type::none)
+      // Cancellation touches only this operation's timer. A request waiting for
+      // admission must never stop another caller's active worker exchange.
+      const auto cancellation = std::stop_callback{
+          operation.cancel, [weak = std::weak_ptr{timer}, executor = strand, delivery_error]() noexcept {
+             detail::deliver_cancellation(
+                 [&] {
+                    boost::asio::post(executor, [weak, delivery_error]() noexcept {
+                       detail::deliver_cancellation(
+                           [&] {
+                              if (const auto timer = weak.lock())
+                                 timer->cancel();
+                           },
+                           *delivery_error);
+                    });
+                 },
+                 *delivery_error);
+          }};
+      boost::system::error_code timer_error;
+      admission admitted;
+      std::exception_ptr admission_error;
+      try {
+         using namespace boost::asio::experimental::awaitable_operators;
+         auto completed = co_await (
+             acquire() || timer->async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, timer_error)));
+         if (completed.index() == 0)
+            admitted = std::move(std::get<0>(completed));
+         else if (operation.cancel.stop_requested())
+            FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression admission cancelled");
+         else
+            FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
+      } catch (...) {
+         admission_error = std::current_exception();
+      }
+      if (admission_error) {
+         const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+         if (cancellation.cancelled() != boost::asio::cancellation_type::none)
+            FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression admission cancelled");
+         exchange_error(admission_error);
+      }
+      if (admitted.error)
+         exchange_error(admitted.error);
+      if (stopped.load())
+         FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression worker is stopped");
+      if (operation.cancel.stop_requested())
          FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression admission cancelled");
-      exchange_error(admission_error);
-   }
-   if (admitted.error)
-      exchange_error(admitted.error);
-   if (stopped.load())
-      FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression worker is stopped");
-   if (std::chrono::steady_clock::now() >= deadline)
-      FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
-   if (sequence == std::numeric_limits<std::uint64_t>::max()) {
-      stop();
-      FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression exchange identity exhausted");
-   }
-   request.sequence = ++sequence;
-   saw_exhaustion = false;
-   (void)exhausted();
-   saw_exhaustion = false;
-   // Encode borrowed sync inputs or the async caller's owned input before IO.
-   // A local validation error has sent nothing and leaves the worker usable.
-   const auto size = worker_protocol::encode_into(request, values, buffer);
-   if (std::chrono::steady_clock::now() >= deadline)
-      FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
-   // Admission's losing timer has completed before its next use. The same
-   // absolute deadline covers queued time, serialization and actual IPC.
-   timer.expires_at(deadline);
-   outcome result;
-   bool timed_out = false;
-   try {
-      using namespace boost::asio::experimental::awaitable_operators;
-      auto completed = co_await (transfer(request, size) || timer.async_wait(boost::asio::use_awaitable));
-      if (completed.index() == 0)
-         result = std::move(std::get<0>(completed));
-      else
-         timed_out = true;
+      if (std::chrono::steady_clock::now() >= deadline)
+         FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
+      if (sequence == std::numeric_limits<std::uint64_t>::max()) {
+         stop();
+         FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression exchange identity exhausted");
+      }
+      request.sequence = ++sequence;
+      saw_exhaustion = false;
+      (void)exhausted();
+      saw_exhaustion = false;
+      // Encode borrowed sync inputs or the async caller's owned input before IO.
+      // A local validation error has sent nothing and leaves the worker usable.
+      const auto size = worker_protocol::encode_into(request, values, buffer);
+      if (operation.cancel.stop_requested())
+         FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression admission cancelled");
+      if (std::chrono::steady_clock::now() >= deadline)
+         FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression admission deadline exceeded");
+      // Admission's losing timer has completed before its next use. The same
+      // absolute deadline covers queued time, serialization and actual IPC.
+      timer->expires_at(deadline);
+      outcome result;
+      bool timed_out = false;
+      bool interrupted = false;
+      try {
+         using namespace boost::asio::experimental::awaitable_operators;
+         auto completed =
+             co_await (transfer(request, size) ||
+                       timer->async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, timer_error)));
+         if (completed.index() == 0)
+            result = std::move(std::get<0>(completed));
+         else {
+            const auto inherited = co_await boost::asio::this_coro::cancellation_state;
+            interrupted =
+                operation.cancel.stop_requested() || inherited.cancelled() != boost::asio::cancellation_type::none;
+            timed_out = !interrupted;
+         }
+      } catch (...) {
+         result.error = std::current_exception();
+      }
+      if (timed_out || interrupted || result.error ||
+          delivery_error->load(std::memory_order_acquire) != detail::cancellation_delivery_error::none) {
+         const auto memory_failure = exhausted();
+         const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+         const auto cancelled =
+             operation.cancel.stop_requested() || cancellation.cancelled() != boost::asio::cancellation_type::none;
+         // This is an operation-local child coroutine. Shield only its mandatory
+         // physical cleanup, preserving the public caller's cancellation policy.
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
+         stop();
+         co_await reap();
+         check_delivery();
+         if (memory_failure)
+            FORGE_THROW_EXCEPTION(exceptions::resource_exhausted, "expression worker exhausted native memory");
+         if (timed_out)
+            FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression worker deadline exceeded");
+         if (cancelled)
+            FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression exchange cancelled");
+         exchange_error(result.error);
+      }
+      if (accepted_program &&
+          (request.op == worker_protocol::operation::prepare || request.op == worker_protocol::operation::load) &&
+          result.reply.code == worker_protocol::status::ok && result.reply.prepared_id != 0) {
+         // The preallocated program state is held by the joined outer prepare
+         // coroutine. Publish ownership before any reply-delivery cancellation.
+         *accepted_program = result.reply.prepared_id;
+      }
+      response = std::move(result.reply);
    } catch (...) {
-      result.error = std::current_exception();
+      // Unregistering above joins request_stop's callback before inspecting its
+      // refusal. The existing absolute deadline bounds a failed post fallback.
+      check_delivery();
+      throw;
    }
-   if (timed_out || result.error) {
-      const auto memory_failure = exhausted();
-      const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
-      const auto cancelled = cancellation.cancelled() != boost::asio::cancellation_type::none;
-      // This is an operation-local child coroutine. Shield only its mandatory
-      // physical cleanup, preserving the public caller's cancellation policy.
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-      stop();
-      co_await reap();
-      if (memory_failure)
-         FORGE_THROW_EXCEPTION(exceptions::resource_exhausted, "expression worker exhausted native memory");
-      if (timed_out)
-         FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "expression worker deadline exceeded");
-      if (cancelled)
-         FORGE_THROW_EXCEPTION(exceptions::cancelled, "expression exchange cancelled");
-      exchange_error(result.error);
-   }
-   if (accepted_program && request.op == worker_protocol::operation::prepare &&
-       result.reply.code == worker_protocol::status::ok && result.reply.prepared_id != 0) {
-      // The preallocated program state is held by the joined outer prepare
-      // coroutine. Publish ownership before any reply-delivery cancellation.
-      *accepted_program = result.reply.prepared_id;
-   }
-   co_return result.reply;
+   check_delivery();
+   co_return response;
 }
 
 boost::asio::awaitable<worker_protocol::response> runtime::impl::submit(std::shared_ptr<impl> owner,
                                                                         worker_protocol::request request,
                                                                         const forge::variant_object& values,
-                                                                        std::uint64_t* accepted_program) {
+                                                                        std::uint64_t* accepted_program,
+                                                                        operation_options operation) {
    if (!owner)
       FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression runtime is unavailable");
    if (owner->stopped.load())
@@ -397,8 +469,9 @@ boost::asio::awaitable<worker_protocol::response> runtime::impl::submit(std::sha
    // Only the caller coroutine retains the context. The joined strand child
    // borrows it, so completion cannot destroy an owned IO runtime on itself.
    try {
-      co_return co_await boost::asio::co_spawn(
-          owner->strand, owner->invoke(std::move(request), values, accepted_program), boost::asio::use_awaitable);
+      co_return co_await boost::asio::co_spawn(owner->strand,
+                                               owner->invoke(std::move(request), values, accepted_program, operation),
+                                               boost::asio::use_awaitable);
    } catch (...) {
       exchange_error(std::current_exception());
    }

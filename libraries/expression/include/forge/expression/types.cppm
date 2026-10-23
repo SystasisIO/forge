@@ -7,28 +7,34 @@ module;
 
 export module forge.expression.types;
 
+import forge.raw.enum_wire_type;
+
 export namespace forge::expression {
 
 inline constexpr std::uint32_t profile_version = 1;
 
-enum class type { int64, uint64, boolean, string, list_int64, list_uint64, map_int64, map_uint64 };
+enum class type : std::uint8_t { int64, uint64, boolean, string, list_int64, list_uint64, map_int64, map_uint64 };
 
 struct variable {
    std::string name;
    type kind = type::int64;
+
+   bool operator==(const variable&) const = default;
 };
 
 // These defaults are also V1 ceilings. A caller may select smaller limits.
 // The runtime separately bounds the helper's complete native allocation pool.
 struct limits {
-   std::size_t source_bytes = 8192;
-   std::size_t nodes = 1024;
-   std::size_t depth = 48;
-   std::size_t variables = 64;
-   std::size_t collection_elements = 256;
-   std::size_t string_bytes = 1024;
-   std::size_t total_input_bytes = 65536;
-   std::size_t ast_events = 8192;
+   std::uint32_t source_bytes = 8192;
+   std::uint32_t nodes = 1024;
+   std::uint32_t depth = 48;
+   std::uint32_t variables = 64;
+   std::uint32_t collection_elements = 256;
+   std::uint32_t string_bytes = 1024;
+   std::uint32_t total_input_bytes = 65536;
+   std::uint32_t ast_events = 8192;
+
+   bool operator==(const limits&) const = default;
 };
 
 enum class rounding : std::int64_t { trunc = 0, floor = 1, ceil = 2, half_even = 3 };
@@ -39,3 +45,12 @@ BOOST_DESCRIBE_STRUCT(limits, (),
                        ast_events))
 
 } // namespace forge::expression
+
+export namespace forge::raw {
+
+template <> struct enum_wire_type<forge::expression::type> {
+   using type = std::uint8_t;
+   static constexpr bool shared = true;
+};
+
+} // namespace forge::raw

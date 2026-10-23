@@ -12,6 +12,7 @@ module;
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -34,11 +35,21 @@ namespace forge::tooling::testing {
 
 host::host(execution_limits limits) : impl_{std::make_unique<impl>(limits)} {}
 
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+host::host(forge::expression::runtime& expressions, execution_limits limits)
+    : impl_{std::make_unique<impl>(expressions, limits)} {}
+#endif
+
 host::~host() = default;
 
 invocation_result host::invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
                                std::uint64_t action, std::vector<std::uint8_t> data) {
    return impl_->invoke(code, receiver, first_receiver, action, std::move(data));
+}
+
+invocation_result host::invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
+                               std::uint64_t action, std::vector<std::uint8_t> data, invocation_options options) {
+   return impl_->invoke(code, receiver, first_receiver, action, std::move(data), std::move(options));
 }
 
 void host::configure(oracle_state state) {

@@ -28,7 +28,9 @@ Public calls use that persistent child; the consumer does not link CEL directly.
 
 The executable checks integer results above 2^53, a 10^30 intermediate, unsigned
 range, all named rounding modes, lazy branches, typed error codes and concurrent
-use of one immutable program. The runtime memory snapshot must retain the explicit
+use of one immutable program. It also saves a portable checked artifact, loads it
+in a different real worker, compares its canonical bytes and result, and rejects
+forged result metadata even after recomputing its digest. The runtime memory snapshot must retain the explicit
 64 MiB worker capacity and satisfy `used <= peak <= capacity` without allocation
 failures for these ordinary calls. Actual allocation-failure enforcement is a
 separate focused gate; this consumer does not substitute snapshot checks for it.

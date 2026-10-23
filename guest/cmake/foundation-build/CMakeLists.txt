@@ -253,11 +253,24 @@ forge_guest_add_implementation_archive(
 )
 
 set(_contract "${FORGE_SOURCE_DIR}/guest/libraries/contract")
+set(_expression "${FORGE_SOURCE_DIR}/libraries/expression")
+add_library(forge_guest_expression_values_modules OBJECT)
+target_sources(forge_guest_expression_values_modules PUBLIC
+   FILE_SET CXX_MODULES
+   BASE_DIRS "${_expression}/include"
+   FILES
+      "${_expression}/include/forge/expression/types.cppm"
+      "${_expression}/include/forge/expression/artifact.cppm"
+)
+forge_guest_configure_target(forge_guest_expression_values_modules)
+target_link_libraries(forge_guest_expression_values_modules PRIVATE forge_guest_raw_modules forge_guest_crypto_modules)
+
 forge_guest_add_implementation_archive(
    forge_guest_contract
    MODULE_DIRS "${_contract}/include"
    MODULES
       "${_contract}/include/forge/contract/intrinsics.cppm"
+      "${_contract}/include/forge/contract/expression.cppm"
       "${_contract}/include/forge/contract/contract.cppm"
       "${_contract}/include/forge/contract/datastream.cppm"
       "${_contract}/include/forge/contract/varint.cppm"
@@ -299,6 +312,7 @@ forge_guest_add_implementation_archive(
       "${_contract}/crypto_ext.cpp"
       "${_contract}/deferred_transaction.cpp"
       "${_contract}/dispatcher.cpp"
+      "${_contract}/expression.cpp"
       "${_contract}/instant_finality.cpp"
       "${_contract}/intrinsics.cpp"
       "${_contract}/multi_index.cpp"
@@ -316,6 +330,7 @@ forge_guest_add_implementation_archive(
       forge_guest_crypto_modules
       forge_guest_chain_savanna_values_modules
       forge_guest_chain_protocol_modules
+      forge_guest_expression_values_modules
 )
 
 set(_runtime "${FORGE_SOURCE_DIR}/guest/libraries/runtime")

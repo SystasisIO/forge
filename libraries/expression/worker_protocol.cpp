@@ -21,13 +21,13 @@ namespace {
 
 template <typename T, typename Values> auto request_fields(T& value, Values& values) {
    return std::tie(value.version, value.sequence, value.op, value.source, value.declarations, value.limits,
-                   value.prepared_id, value.probe_bytes, values);
+                   value.prepared_id, value.probe_bytes, value.expression, value.result, values);
 }
 
 template <typename T> auto response_fields(T& value) {
    return std::tie(value.version, value.sequence, value.code, value.kind, value.i64, value.u64, value.boolean,
                    value.ast_events, value.prepared_id, value.heap_live, value.heap_peak, value.heap_cap,
-                   value.heap_failures);
+                   value.heap_failures, value.expression, value.result);
 }
 
 template <typename T> struct owned_tuple;
@@ -119,10 +119,10 @@ raw::unpack_limits decode_limits(std::size_t size) {
    if (size == 0 || size > frame_limit) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_input, "invalid expression worker input frame");
    }
-   return {.max_container_elements = 20000,
-           .max_total_container_elements = 20000,
+   return {.max_container_elements = 65536,
+           .max_total_container_elements = 100000,
            .max_bytes = static_cast<std::uint32_t>(size),
-           .first_container_elements = 20000};
+           .first_container_elements = 65536};
 }
 
 } // namespace
@@ -156,7 +156,7 @@ request decode_request(std::span<const std::uint8_t> input) {
    using fields = owned_tuple_t<decltype(request_fields(result, result.values))>;
    request_fields(result, result.values) = raw::unpack_exact<fields>(input, decode_limits(input.size()));
    validate_request(result.version, result.sequence);
-   if (result.op > operation::memory_probe) {
+   if (result.op > operation::load) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_input, "unknown expression worker operation");
    }
    return result;

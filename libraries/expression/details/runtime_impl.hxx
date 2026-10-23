@@ -30,9 +30,11 @@ struct runtime::impl {
    boost::asio::awaitable<admission> acquire();
    boost::asio::awaitable<outcome> transfer(worker_protocol::request&, std::size_t);
    boost::asio::awaitable<worker_protocol::response> invoke(worker_protocol::request, const forge::variant_object&,
-                                                            std::uint64_t* accepted_program = nullptr);
-   static boost::asio::awaitable<worker_protocol::response>
-   submit(std::shared_ptr<impl>, worker_protocol::request, const forge::variant_object&, std::uint64_t* = nullptr);
+                                                            std::uint64_t* accepted_program = nullptr,
+                                                            operation_options = {});
+   static boost::asio::awaitable<worker_protocol::response> submit(std::shared_ptr<impl>, worker_protocol::request,
+                                                                   const forge::variant_object&,
+                                                                   std::uint64_t* = nullptr, operation_options = {});
 
    void release(std::uint64_t) noexcept;
    boost::asio::awaitable<void> release_pending();

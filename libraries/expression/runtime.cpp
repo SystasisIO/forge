@@ -78,19 +78,19 @@ runtime& runtime::operator=(runtime&& other) noexcept {
 }
 
 worker_protocol::response runtime::exchange(const std::shared_ptr<impl>& owner, worker_protocol::request request,
-                                            const forge::variant_object& values, std::uint64_t* accepted_program) {
+                                            const forge::variant_object& values, std::uint64_t* accepted_program,
+                                            operation_options operation) {
    if (!owner)
       FORGE_THROW_EXCEPTION(exceptions::worker_unavailable, "expression runtime is unavailable");
    owner->require_host();
    return forge::asio::blocking::run(owner->executor,
-                                     impl::submit(owner, std::move(request), values, accepted_program));
+                                     impl::submit(owner, std::move(request), values, accepted_program, operation));
 }
 
-boost::asio::awaitable<worker_protocol::response> runtime::async_exchange(std::shared_ptr<impl> owner,
-                                                                          worker_protocol::request request,
-                                                                          forge::variant_object values,
-                                                                          std::uint64_t* accepted_program) {
-   co_return co_await impl::submit(std::move(owner), std::move(request), values, accepted_program);
+boost::asio::awaitable<worker_protocol::response>
+runtime::async_exchange(std::shared_ptr<impl> owner, worker_protocol::request request, forge::variant_object values,
+                        std::uint64_t* accepted_program, operation_options operation) {
+   co_return co_await impl::submit(std::move(owner), std::move(request), values, accepted_program, operation);
 }
 
 void runtime::release(const std::shared_ptr<impl>& owner, std::uint64_t id) noexcept {

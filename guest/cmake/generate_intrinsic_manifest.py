@@ -22,11 +22,13 @@ CAPABILITIES = {
     "call",
     "instant_finality",
     "runtime",
+    "expression_v1",
 }
 
 PUBLIC_INTRINSIC_COUNT = 152
 RUNTIME_INTRINSIC_COUNT = 48
 RUNTIME_HEADER = "runtime"
+EXTENSION_COUNTS = {"expression_v1": 3}
 
 EOSIO_HEADERS = (
     "action",
@@ -233,19 +235,23 @@ def parse_registry(path: pathlib.Path) -> list[dict]:
             }
         )
 
-    expected_count = PUBLIC_INTRINSIC_COUNT + RUNTIME_INTRINSIC_COUNT
+    expected_count = PUBLIC_INTRINSIC_COUNT + RUNTIME_INTRINSIC_COUNT + sum(EXTENSION_COUNTS.values())
     if len(entries) != expected_count:
         raise SystemExit(f"intrinsic registry must contain {expected_count} declarations, found {len(entries)}")
     if len({entry["identifier"] for entry in entries}) != len(entries):
         raise SystemExit("intrinsic registry contains duplicate identifiers")
     if {entry["capability"] for entry in entries} - CAPABILITIES:
         raise SystemExit("intrinsic registry contains an unknown capability")
-    if {entry["header"] for entry in entries} - (set(EOSIO_HEADERS) | {RUNTIME_HEADER}):
+    if {entry["header"] for entry in entries} - (set(EOSIO_HEADERS) | {RUNTIME_HEADER} | EXTENSION_COUNTS.keys()):
         raise SystemExit("intrinsic registry contains an unknown EOSIO header")
-    if sum(entry["header"] != RUNTIME_HEADER for entry in entries) != PUBLIC_INTRINSIC_COUNT:
+    if sum(entry["header"] in EOSIO_HEADERS for entry in entries) != PUBLIC_INTRINSIC_COUNT:
         raise SystemExit(f"intrinsic registry must contain {PUBLIC_INTRINSIC_COUNT} public declarations")
     if sum(entry["header"] == RUNTIME_HEADER for entry in entries) != RUNTIME_INTRINSIC_COUNT:
         raise SystemExit(f"intrinsic registry must contain {RUNTIME_INTRINSIC_COUNT} runtime declarations")
+    for capability, count in EXTENSION_COUNTS.items():
+        extension = [entry for entry in entries if entry["capability"] == capability]
+        if len(extension) != count or any(entry["header"] != capability for entry in extension):
+            raise SystemExit(f"intrinsic capability {capability} must contain {count} declarations")
     return entries
 
 

@@ -2,7 +2,7 @@
 
 // Canonical union of CDT 69599db and Spring e6a99f6 contract imports.
 // db_get_i64 keeps CDT's historical const-qualified output buffer for source compatibility.
-#define FORGE_CONTRACT_INTRINSICS(FORGE_CONTRACT_INTRINSIC)                                                            \
+#define FORGE_CONTRACT_BASE_INTRINSICS(FORGE_CONTRACT_INTRINSIC)                                                       \
    FORGE_CONTRACT_INTRINSIC(1, core, action, none, read_action_data, env, read_action_data, std::uint32_t,             \
                             (void* msg, std::uint32_t len))                                                            \
    FORGE_CONTRACT_INTRINSIC(1, core, action, none, action_data_size, env, action_data_size, std::uint32_t, ())         \
@@ -454,3 +454,22 @@
                             (std::uint64_t low_a, std::uint64_t high_a, std::uint64_t low_b, std::uint64_t high_b))    \
    FORGE_CONTRACT_INTRINSIC(1, runtime, runtime, none, __unordtf2, env, __unordtf2, std::int32_t,                      \
                             (std::uint64_t low_a, std::uint64_t high_a, std::uint64_t low_b, std::uint64_t high_b))
+
+// Optional Forge capability. It does not extend the required CDT/Spring host interface.
+#define FORGE_CONTRACT_EXPRESSION_V1_INTRINSICS(FORGE_CONTRACT_INTRINSIC)                                              \
+   FORGE_CONTRACT_INTRINSIC(1, expression_v1, expression_v1, none, expression_compile_v1, env,                       \
+                            expression_compile_v1, std::uint32_t,                                                    \
+                            (const char* request, std::uint32_t request_size, char* response,                         \
+                             std::uint32_t response_capacity))                                                      \
+   FORGE_CONTRACT_INTRINSIC(1, expression_v1, expression_v1, none, expression_import_v1, env,                        \
+                            expression_import_v1, std::uint32_t,                                                     \
+                            (const char* request, std::uint32_t request_size, char* response,                         \
+                             std::uint32_t response_capacity))                                                      \
+   FORGE_CONTRACT_INTRINSIC(1, expression_v1, expression_v1, none, expression_evaluate_v1, env,                      \
+                            expression_evaluate_v1, std::uint32_t,                                                   \
+                            (const char* request, std::uint32_t request_size, char* response,                         \
+                             std::uint32_t response_capacity))
+
+#define FORGE_CONTRACT_INTRINSICS(FORGE_CONTRACT_INTRINSIC)                                                            \
+   FORGE_CONTRACT_BASE_INTRINSICS(FORGE_CONTRACT_INTRINSIC)                                                            \
+   FORGE_CONTRACT_EXPRESSION_V1_INTRINSICS(FORGE_CONTRACT_INTRINSIC)

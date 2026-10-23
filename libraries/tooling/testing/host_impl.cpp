@@ -20,6 +20,7 @@ module;
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -53,6 +54,14 @@ import forge.crypto.digest.sha512;
 import forge.raw.raw;
 import forge.vm.wasm.interpret.backend;
 
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+import forge.expression.artifact;
+import forge.expression.exceptions;
+import forge.expression.program;
+import forge.tooling.testing.conversion;
+import forge.raw.exceptions;
+#endif
+
 #include "details/memory_driver.hxx"
 #include "details/compiler_builtins.hxx"
 #include "details/host_impl.hxx"
@@ -69,21 +78,6 @@ class exit_signal final {
    explicit exit_signal(std::int32_t value) : code{value} {}
 
    std::int32_t code = 0;
-};
-
-class wasm_allocator_guard final {
- public:
-   explicit wasm_allocator_guard(forge::vm::wasm::interpret::wasm_allocator& allocator) : allocator_{allocator} {}
-
-   wasm_allocator_guard(const wasm_allocator_guard&) = delete;
-   wasm_allocator_guard& operator=(const wasm_allocator_guard&) = delete;
-
-   ~wasm_allocator_guard() {
-      allocator_.free();
-   }
-
- private:
-   forge::vm::wasm::interpret::wasm_allocator& allocator_;
 };
 
 struct packed_code_hash_result {
@@ -324,6 +318,12 @@ void host::impl::run(boost::asio::awaitable<void> operation) {
    forge::asio::blocking::run(runtime_, std::move(operation));
 }
 
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+host::impl::impl(forge::expression::runtime& expressions, execution_limits limits) : impl(limits) {
+   expressions_ = &expressions;
+}
+#endif
+
 host::impl::impl(execution_limits limits)
     : runtime_{forge::asio::runtime_options{.worker_threads = 1, .thread_name = "contract-db-test"}}, limits_{limits},
       driver_{std::make_shared<memory_driver>()} {
@@ -348,7 +348,6 @@ host::impl::~impl() {
       } catch (...) {
       }
    }
-   allocator_.free();
 }
 
 void host::impl::register_intrinsics() {
@@ -363,14 +362,35 @@ void host::impl::register_intrinsics() {
    static_cast<void>(registered);
 }
 
-void host::impl::begin_invocation(std::uint64_t receiver, std::uint64_t first_receiver,
-                                  std::vector<std::uint8_t> data) {
+void host::impl::begin_invocation(std::uint64_t receiver, std::uint64_t first_receiver, std::vector<std::uint8_t> data,
+                                  invocation_options options) {
    if (transaction_) {
       fail_database("contract database invocation is already active");
    }
+   if (options.cancel.stop_requested())
+      FORGE_THROW_EXCEPTION(exceptions::execution_cancelled, "contract execution cancelled");
+   const auto now = std::chrono::steady_clock::now();
+   const auto timeout = std::chrono::duration_cast<std::chrono::steady_clock::duration>(limits_.timeout);
+   auto deadline = timeout >= std::chrono::steady_clock::time_point::max() - now
+                       ? std::chrono::steady_clock::time_point::max()
+                       : now + timeout;
+   if (options.deadline && *options.deadline < deadline)
+      deadline = *options.deadline;
+   if (deadline <= now)
+      FORGE_THROW_EXCEPTION(exceptions::execution_timeout, "contract execution timed out");
+   // Finish the only allocating state copy before a transaction exists.
+   // Publishing the prepared snapshot and invocation inputs cannot then throw.
+   static_assert(std::is_nothrow_move_constructible_v<forge::db::object::transaction>);
+   static_assert(std::is_nothrow_move_constructible_v<oracle_state>);
+   static_assert(std::is_nothrow_move_assignable_v<oracle_state>);
+   static_assert(std::is_nothrow_move_assignable_v<decltype(state_before_invocation_)>);
+   static_assert(std::is_nothrow_move_assignable_v<decltype(action_data_)>);
+   static_assert(std::is_nothrow_move_assignable_v<invocation_result>);
+   auto snapshot = std::optional<oracle_state>{std::in_place, state_};
    transaction_.emplace(run(store_->begin_transaction()));
-   invocation_deadline_ = std::chrono::steady_clock::now() + limits_.timeout;
-   state_before_invocation_ = state_;
+   state_before_invocation_ = std::move(snapshot);
+   invocation_deadline_ = deadline;
+   invocation_cancel_ = std::move(options.cancel);
    receiver_ = receiver;
    first_receiver_ = first_receiver;
    read_only_ = false;
@@ -388,6 +408,7 @@ void host::impl::commit_invocation() {
    transaction_.reset();
    state_before_invocation_.reset();
    invocation_deadline_.reset();
+   invocation_cancel_ = {};
 }
 
 void host::impl::rollback_invocation() {
@@ -398,12 +419,15 @@ void host::impl::rollback_invocation() {
       state_before_invocation_.reset();
    }
    invocation_deadline_.reset();
+   invocation_cancel_ = {};
 }
 
 std::chrono::steady_clock::duration host::impl::remaining_execution_time() const {
    if (!invocation_deadline_) {
       FORGE_THROW_EXCEPTION(exceptions::database_error, "contract execution is not active");
    }
+   if (invocation_cancel_.stop_requested())
+      FORGE_THROW_EXCEPTION(exceptions::execution_cancelled, "contract execution cancelled");
    const auto now = std::chrono::steady_clock::now();
    if (now >= *invocation_deadline_) {
       FORGE_THROW_EXCEPTION(exceptions::execution_timeout, "contract execution timed out");
@@ -412,12 +436,15 @@ std::chrono::steady_clock::duration host::impl::remaining_execution_time() const
 }
 
 invocation_result host::impl::invoke(std::span<const std::uint8_t> code, std::uint64_t receiver,
-                                     std::uint64_t first_receiver, std::uint64_t action,
-                                     std::vector<std::uint8_t> data) {
-   begin_invocation(receiver, first_receiver, std::move(data));
-   auto bytes = forge::vm::wasm::interpret::wasm_code{code.begin(), code.end()};
+                                     std::uint64_t first_receiver, std::uint64_t action, std::vector<std::uint8_t> data,
+                                     invocation_options options) {
+   begin_invocation(receiver, first_receiver, std::move(data), std::move(options));
    try {
-      auto vm = backend{bytes, *this, &allocator_};
+      auto bytes = forge::vm::wasm::interpret::wasm_code{code.begin(), code.end()};
+      auto pointer = forge::vm::wasm::interpret::wasm_code_ptr{bytes.data(), bytes.size()};
+      auto vm =
+          backend{pointer, bytes.size(), nullptr, forge::vm::wasm::interpret::compatibility_options{}, false, false};
+      vm.validate();
       execute(vm, "apply", receiver, first_receiver, action);
       commit_invocation();
    } catch (const exit_signal& signal) {
@@ -426,12 +453,97 @@ invocation_result host::impl::invoke(std::span<const std::uint8_t> code, std::ui
    } catch (const forge::vm::wasm::interpret::exceptions::timeout&) {
       rollback_invocation();
       FORGE_THROW_EXCEPTION(exceptions::execution_timeout, "contract execution timed out");
+   } catch (const forge::vm::wasm::interpret::exceptions::canceled&) {
+      rollback_invocation();
+      FORGE_THROW_EXCEPTION(exceptions::execution_cancelled, "contract execution cancelled");
    } catch (...) {
       const auto failure = std::current_exception();
       rollback_invocation();
       std::rethrow_exception(failure);
    }
    return result_;
+}
+
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+namespace {
+
+template <typename T> T expression_request(std::span<const char> bytes) {
+   namespace expression = forge::expression;
+   if (bytes.size() > expression::max_wire_bytes)
+      FORGE_THROW_EXCEPTION(expression::exceptions::resource_exhausted, "expression request exceeds the wire limit");
+   try {
+      return forge::raw::unpack_exact<T>(
+          std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()},
+          forge::raw::unpack_limits{.max_container_elements = expression::limits{}.collection_elements,
+                                    .max_total_container_elements = expression::max_wire_bytes,
+                                    .max_bytes = expression::max_wire_bytes});
+   } catch (const forge::raw::exceptions::range_error&) {
+      FORGE_THROW_EXCEPTION(expression::exceptions::invalid_input, "invalid expression request encoding");
+   } catch (const forge::raw::exceptions::codec_error&) {
+      FORGE_THROW_EXCEPTION(expression::exceptions::invalid_input, "invalid expression request encoding");
+   } catch (const forge::raw::exceptions::allocation_limit&) {
+      FORGE_THROW_EXCEPTION(expression::exceptions::resource_exhausted, "expression request allocation limit exceeded");
+   }
+}
+
+template <typename T> std::uint32_t expression_response(const T& value, std::span<char> destination) {
+   auto sizing = forge::datastream<std::size_t>{};
+   forge::raw::pack(sizing, value);
+   const auto size = sizing.tellp();
+   if (size > forge::expression::max_wire_bytes || size > destination.size())
+      FORGE_THROW_EXCEPTION(forge::expression::exceptions::resource_exhausted,
+                            "expression response exceeds the output capacity");
+   auto output = forge::datastream<char*>{destination.data(), size};
+   forge::raw::pack(output, value);
+   return static_cast<std::uint32_t>(output.tellp());
+}
+
+} // namespace
+#endif
+
+std::uint32_t host::impl::expression_compile_v1(std::span<const char> request, std::span<char> response) {
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   if (expressions_) {
+      static_cast<void>(remaining_execution_time());
+      const auto input = expression_request<forge::expression::compilation>(request);
+      if (input.profile != forge::expression::profile_version ||
+          input.semantics != forge::expression::semantics_version)
+         FORGE_THROW_EXCEPTION(forge::expression::exceptions::invalid_profile, "unsupported expression profile");
+      const auto operation = forge::expression::operation_options{invocation_deadline_, invocation_cancel_};
+      const auto program =
+          forge::expression::program{*expressions_, input.source, input.variables, input.budget, operation};
+      return expression_response(program.artifact(), response);
+   }
+#endif
+   FORGE_THROW_EXCEPTION(exceptions::expression_unavailable, "expression capability is unavailable");
+}
+
+std::uint32_t host::impl::expression_import_v1(std::span<const char> request, std::span<char> response) {
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   if (expressions_) {
+      static_cast<void>(remaining_execution_time());
+      const auto input = expression_request<forge::expression::artifact>(request);
+      const auto operation = forge::expression::operation_options{invocation_deadline_, invocation_cancel_};
+      const auto program = forge::expression::program{*expressions_, input, operation};
+      return expression_response(program.artifact(), response);
+   }
+#endif
+   FORGE_THROW_EXCEPTION(exceptions::expression_unavailable, "expression capability is unavailable");
+}
+
+std::uint32_t host::impl::expression_evaluate_v1(std::span<const char> request, std::span<char> response) {
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   if (expressions_) {
+      static_cast<void>(remaining_execution_time());
+      const auto input = expression_request<forge::expression::calculation>(request);
+      const auto operation = forge::expression::operation_options{invocation_deadline_, invocation_cancel_};
+      const auto program = forge::expression::program{*expressions_, input.program, operation};
+      const auto values = forge::core::conversion<forge::variant_object>{input.inputs}.finish();
+      const auto evaluated = program.evaluate(values, operation);
+      return expression_response(forge::core::conversion<forge::expression::result>{evaluated}.finish(), response);
+   }
+#endif
+   FORGE_THROW_EXCEPTION(exceptions::expression_unavailable, "expression capability is unavailable");
 }
 
 void host::impl::configure(oracle_state state) {
@@ -607,35 +719,35 @@ std::int64_t host::impl::call(std::uint64_t receiver, std::uint64_t flags, std::
    }
 
    auto code = forge::vm::wasm::interpret::wasm_code{target->second.begin(), target->second.end()};
-   auto nested_allocator = forge::vm::wasm::interpret::wasm_allocator{};
-   auto allocator_guard = wasm_allocator_guard{nested_allocator};
-   auto vm = backend{code, *this, &nested_allocator};
+   auto pointer = forge::vm::wasm::interpret::wasm_code_ptr{code.data(), code.size()};
+   auto vm = backend{pointer, code.size(), nullptr, forge::vm::wasm::interpret::compatibility_options{}, false, false};
+   vm.validate();
    if (vm.get_module().get_exported_function("__forge_call") == std::numeric_limits<std::uint32_t>::max()) {
       return -1;
    }
 
    const auto previous_receiver = receiver_;
    const auto previous_read_only = read_only_;
-   const auto previous_call_data = std::move(call_data_);
-   const auto previous_call_return = std::move(call_return_value_);
+   auto previous_call_data = std::move(call_data_);
+   auto previous_call_return = std::move(call_return_value_);
    try {
       receiver_ = receiver;
       read_only_ = previous_read_only || (flags & std::uint64_t{1}) != 0U;
       call_data_.assign(as_bytes(data).begin(), as_bytes(data).end());
       call_return_value_.clear();
       execute(vm, "__forge_call", previous_receiver, receiver);
-      const auto result = std::move(call_return_value_);
+      auto result = std::move(call_return_value_);
       receiver_ = previous_receiver;
       read_only_ = previous_read_only;
-      call_data_ = previous_call_data;
-      call_return_value_ = previous_call_return;
-      last_call_return_value_ = result;
-      return static_cast<std::int64_t>(result.size());
+      call_data_ = std::move(previous_call_data);
+      call_return_value_ = std::move(previous_call_return);
+      last_call_return_value_ = std::move(result);
+      return static_cast<std::int64_t>(last_call_return_value_.size());
    } catch (...) {
       receiver_ = previous_receiver;
       read_only_ = previous_read_only;
-      call_data_ = previous_call_data;
-      call_return_value_ = previous_call_return;
+      call_data_ = std::move(previous_call_data);
+      call_return_value_ = std::move(previous_call_return);
       throw;
    }
 }
@@ -1274,7 +1386,8 @@ std::int32_t host::impl::db_store_i64(std::uint64_t scope, std::uint64_t table_n
    return cache(row_kind::primary, forge::db::ids::to_object_id(created.id), owner.id);
 }
 
-void host::impl::db_update_i64(std::int32_t iterator, std::uint64_t payer, forge::vm::wasm::interpret::span<const char> value) {
+void host::impl::db_update_i64(std::int32_t iterator, std::uint64_t payer,
+                               forge::vm::wasm::interpret::span<const char> value) {
    require_writable();
    auto& entry = require_iterator(iterator, row_kind::primary);
    const auto owner = run(transaction_->get(entry.table_id));

@@ -22,6 +22,7 @@
 
 import forge.expression.worker_protocol;
 import forge.expression.exceptions;
+import forge.expression.artifact;
 
 namespace {
 
@@ -129,12 +130,13 @@ class direct_worker {
          return {state, {}, markers()};
       }
       const auto response_size = protocol::decode_length(prefix);
-      BOOST_REQUIRE_LE(response_size, 1024U);
+      BOOST_REQUIRE_LE(response_size, protocol::frame_limit);
       state = transfer(false, std::span{_buffer}.first(response_size), deadline);
       if (state != outcome::response) {
          return {state, {}, markers()};
       }
       auto reply = protocol::decode_response(std::span{_buffer}.first(response_size));
+      BOOST_REQUIRE_LE(reply.expression.size(), expression::max_expression_bytes);
       BOOST_REQUIRE_EQUAL(reply.sequence, request.sequence);
       BOOST_REQUIRE_EQUAL(reply.heap_cap, _capacity);
       BOOST_REQUIRE_LE(reply.heap_live, reply.heap_cap);

@@ -17,11 +17,11 @@ export import forge.expression.types;
 // expression format, a network API or a portable prepared-program identifier.
 export namespace forge::expression::worker_protocol {
 
-inline constexpr std::uint32_t version = 1;
+inline constexpr std::uint32_t version = 2;
 inline constexpr std::size_t frame_limit = 128U * 1024U;
 inline constexpr std::size_t prefix_bytes = sizeof(std::uint32_t);
 
-enum class operation : std::uint8_t { hello, prepare, evaluate, release, stop, memory_probe };
+enum class operation : std::uint8_t { hello, prepare, evaluate, release, stop, memory_probe, load };
 enum class status : std::uint8_t {
    ok,
    invalid_profile,
@@ -42,6 +42,8 @@ struct request {
    forge::expression::limits limits;
    std::uint64_t prepared_id = 0;
    std::uint64_t probe_bytes = 0;
+   std::vector<std::uint8_t> expression;
+   forge::expression::type result = forge::expression::type::int64;
    forge::variant_object values;
 };
 
@@ -59,6 +61,8 @@ struct response {
    std::uint64_t heap_peak = 0;
    std::uint64_t heap_cap = 0;
    std::uint64_t heap_failures = 0;
+   std::vector<std::uint8_t> expression;
+   forge::expression::type result = forge::expression::type::int64;
 };
 
 // The parent can encode the caller's borrowed object directly into its bounded

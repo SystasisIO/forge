@@ -196,10 +196,44 @@ protocol::response prepare(const protocol::request& request, program_table& prog
                                 budget.string_bytes,
                                 budget.total_input_bytes,
                                 budget.ast_events};
-   auto prepared = backend::program::prepare(request.source, std::span{declarations.data(), count}, limits);
+   auto expected = backend::value_kind::null;
+   switch (request.result) {
+   case type::int64:
+      expected = backend::value_kind::int64;
+      break;
+   case type::uint64:
+      expected = backend::value_kind::uint64;
+      break;
+   case type::boolean:
+      expected = backend::value_kind::boolean;
+      break;
+   default:
+      break;
+   }
+   auto prepared =
+       request.op == protocol::operation::load
+           ? backend::program::load(
+                 std::string_view{reinterpret_cast<const char*>(request.expression.data()), request.expression.size()},
+                 std::span{declarations.data(), count}, limits, expected)
+           : backend::program::prepare(request.source, std::span{declarations.data(), count}, limits);
    response.code = convert(prepared.code);
    if (response.code == protocol::status::ok) {
       if (!prepared.executable) {
+         response.code = protocol::status::internal;
+         return response;
+      }
+      response.expression.assign(prepared.expression.begin(), prepared.expression.end());
+      switch (prepared.result) {
+      case backend::value_kind::int64:
+         response.result = type::int64;
+         break;
+      case backend::value_kind::uint64:
+         response.result = type::uint64;
+         break;
+      case backend::value_kind::boolean:
+         response.result = type::boolean;
+         break;
+      default:
          response.code = protocol::status::internal;
          return response;
       }
@@ -268,6 +302,7 @@ protocol::response execute(const protocol::request& request, program_table& prog
    }
    switch (request.op) {
    case protocol::operation::prepare:
+   case protocol::operation::load:
       return prepare(request, programs, next_id);
    case protocol::operation::evaluate:
       return evaluate(request, programs);
@@ -331,7 +366,7 @@ int run_worker() noexcept {
       bool stopped = false;
       std::array<std::uint8_t, protocol::prefix_bytes> prefix;
       std::array<std::uint8_t, protocol::frame_limit> input;
-      std::array<std::uint8_t, 1024> output;
+      std::array<std::uint8_t, protocol::frame_limit> output;
       while (!stopped) {
          const auto read = read_exact(prefix);
          if (read == read_result::closed) {

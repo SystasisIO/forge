@@ -541,6 +541,12 @@ install(
 install(DIRECTORY libraries/contract/include/ DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules")
 install(
    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/expression/include/forge/expression/types.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/expression/include/forge/expression/artifact.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/expression"
+)
+install(
+   FILES
       libraries/contract/include/forge/contract/intrinsics.hpp
       libraries/contract/include/forge/contract/serialize.hpp
    DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/include/forge/contract"

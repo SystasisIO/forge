@@ -10,6 +10,7 @@ add_library(
    crypto_ext.cpp
    deferred_transaction.cpp
    dispatcher.cpp
+   expression.cpp
    instant_finality.cpp
    intrinsics.cpp
    multi_index.cpp
@@ -27,6 +28,7 @@ target_sources(
       BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
       FILES
          include/forge/contract/intrinsics.cppm
+         include/forge/contract/expression.cppm
          include/forge/contract/contract.cppm
          include/forge/contract/datastream.cppm
          include/forge/contract/varint.cppm
@@ -73,5 +75,6 @@ target_link_libraries(
       forge_guest_codec_base64
       forge_guest_codec_base58
       forge_guest_codec_hex
+      forge_guest_expression_values_modules
 )
 target_compile_features(forge_guest_contract PUBLIC cxx_std_23)

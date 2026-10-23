@@ -1,10 +1,29 @@
+add_library(forge_expression_values STATIC)
+target_sources(forge_expression_values PUBLIC
+   FILE_SET CXX_MODULES
+   BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
+   FILES
+      include/forge/expression/types.cppm
+      include/forge/expression/artifact.cppm
+)
+target_include_directories(forge_expression_values PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
+target_link_libraries(forge_expression_values PUBLIC forge_raw forge_crypto_digest Boost::headers)
+forge_target_contract_guest_component(forge_expression_values ID forge.expression.values)
+
+if(NOT FORGE_ENABLE_EXPRESSION)
+   return()
+endif()
+
 include(ForgeCEL)
 find_package(Boost 1.90 REQUIRED CONFIG COMPONENTS process)
 
-add_library(forge_expression STATIC program.cpp runtime.cpp runtime_impl.cpp worker_protocol.cpp)
+add_library(forge_expression STATIC artifact_codec.cpp program.cpp runtime.cpp runtime_impl.cpp worker_protocol.cpp)
+set(FORGE_expression_DISABLED_MODULES types artifact)
 forge_target_modules(forge_expression expression)
+unset(FORGE_expression_DISABLED_MODULES)
 target_include_directories(forge_expression PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
-target_link_libraries(forge_expression PUBLIC forge_exceptions forge_variant forge_asio PRIVATE forge_raw Boost::process)
+target_link_libraries(forge_expression PUBLIC forge_expression_values forge_exceptions forge_variant forge_asio
+   PRIVATE forge_raw Boost::process)
 
 # Only the isolated executable owns CEL, its allocator and its C++ runtime.
 # Parent applications never link or interpose the worker's allocation symbols.
@@ -50,3 +69,7 @@ set_property(TARGET forge_expression_worker APPEND PROPERTY LINK_DEPENDS
    "${PROJECT_SOURCE_DIR}/cmake/cel/sources.json")
 
 install(TARGETS forge_expression_worker RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev EXCLUDE_FROM_ALL)
+
+if(FORGE_CONTRACT_SDK_HOST_PROFILE AND BUILD_TESTING)
+   include("${PROJECT_SOURCE_DIR}/tests/expression.cmake")
+endif()

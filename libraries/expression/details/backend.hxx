@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace forge::expression::detail::backend {
@@ -80,6 +81,8 @@ class program {
    // symbolizer returns system-owned allocations, outside the private pool.
    static void initialize_diagnostics() noexcept;
    static preparation prepare(std::string_view source, std::span<const declaration> declarations, limits budget = {});
+   static preparation load(std::string_view expression, std::span<const declaration> declarations, limits budget,
+                           value_kind result);
    // Immutable prepared state; each call owns its arena and activation.
    virtual evaluation evaluate(std::span<const named_value> values) const = 0;
 };
@@ -88,6 +91,8 @@ struct preparation {
    std::unique_ptr<program> executable;
    status code = status::ok;
    std::string_view message;
+   std::string expression;
+   value_kind result = value_kind::null;
 };
 
 } // namespace forge::expression::detail::backend

@@ -138,11 +138,43 @@ performs physical cleanup. No request is silently re-executed. A fresh
 runtime is the explicit recovery boundary. Deadline, cancellation, admission
 and worker availability have separate Forge exception codes.
 
-Prepared programs are currently process-local values. V1 does not accept
-publisher-supplied `CheckedExpr`, serialize canonical programs, define monetary
-units, publish tariffs, access a network/database, or add a Contract SDK
-intrinsic. Profile versioning of persisted/on-chain artifacts remains a later
-explicit contract; no C++ pointer is a portable program identifier.
+## Portable programs and Contract SDK
+
+`forge.expression.artifact` belongs to the existing expression library. Its
+neutral `Forge::forge_expression_values` target is available without CEL and is
+compiled from the same physical module sources in native and guest builds.
+The artifact stores format/profile/semantics versions, sorted typed declarations,
+fixed-width budgets, the scalar result kind, canonical CEL `CheckedExpr` bytes
+and a domain-separated Forge SHA-256 digest. It contains no process handle,
+native plan or pointer. Checked expression bytes are bounded to 64 KiB, the
+complete artifact to 96 KiB and an SDK exchange to 128 KiB. These encoded limits
+apply in addition to the logical profile limits; not every combination of their
+individual maxima fits the encoded envelope.
+
+`program::artifact()` exports this value; `program(runtime, artifact)` and
+`program::load_async` load it into an explicitly selected runtime. Envelope/hash
+validation belongs to the parent. The isolated child checks the bounded tree,
+reconstructs an unchecked AST from its expression alone, runs the upstream CEL
+checker, and compares the regenerated canonical checked representation. It does
+not trust supplied type/overload maps or reparse source text. Unknown versions,
+noncanonical encodings, forged metadata and unadmitted results are rejected.
+The digest identifies bytes; it is neither a publisher signature nor proof of
+correct execution.
+
+The optional `forge.contract.expression` SDK module provides `compile`, `load`
+and `evaluate` for a whole expression. Three versioned blob intrinsics form a
+separate extension of the canonical registry. The base 200 imports and the
+five-import Compute profile are unchanged; a host must explicitly provide this
+capability. A host without it refuses calls. SDK arguments use Raw's finite
+variant schema for the eight admitted input types; native host conversion to
+Forge variant is owned by `forge.tooling.testing.conversion`.
+
+The existing test host can receive an expression runtime explicitly. Its shared
+invocation deadline and cancellation cover WASM initialization, nested calls and
+native expression work. CEL event budgets remain distinct from chain CPU billing.
+Money, tariff publication, authority, stored state and financial effects are
+consumer responsibilities. In particular, the test host is not a substitute for
+Spine consensus, resource accounting or token settlement.
 
 ## Dependencies and verification
 
@@ -173,7 +205,14 @@ installation prefix. Worker installation requires prefix-relative `LIBDIR` and
 `BINDIR`; absolute or escaping destinations are rejected during configuration.
 No executable is selected from the current directory or
 an ambient PATH. The parent no longer links the CEL archive or its private
-allocator. Prepared programs cannot be moved between runtimes or persisted.
+allocator. Prepared handles remain process-local; use the checked artifact to
+persist or load a program into a different runtime.
+
+The private parent/worker protocol is now version 2 because prepare replies
+include the checked expression and a load operation was added. Parent and worker
+must be deployed together; an older worker fails the handshake. This private
+transport has no stored-data migration. Persisted artifacts have independent
+format/profile/semantics versions, each currently 1.
 
 The earlier native-profile evidence remains historical. Current isolated-memory
 and installed-package gates are recorded in the

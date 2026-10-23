@@ -15,7 +15,17 @@ struct interface {
 #define FORGE_CONTRACT_INTRINSIC(version, capability, header, feature, identifier, wasm_module, wasm_name, result,     \
                                  parameters)                                                                           \
    virtual result identifier parameters = 0;
-   FORGE_CONTRACT_INTRINSICS(FORGE_CONTRACT_INTRINSIC)
+   FORGE_CONTRACT_BASE_INTRINSICS(FORGE_CONTRACT_INTRINSIC)
+#undef FORGE_CONTRACT_INTRINSIC
+};
+
+struct expression_v1 {
+   virtual ~expression_v1() = default;
+
+#define FORGE_CONTRACT_INTRINSIC(version, capability, header, feature, identifier, wasm_module, wasm_name, result,     \
+                                 parameters)                                                                           \
+   virtual result identifier parameters = 0;
+   FORGE_CONTRACT_EXPRESSION_V1_INTRINSICS(FORGE_CONTRACT_INTRINSIC)
 #undef FORGE_CONTRACT_INTRINSIC
 };
 

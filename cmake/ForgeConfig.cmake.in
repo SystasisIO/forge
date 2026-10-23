@@ -28,6 +28,7 @@ set(
    chrono
    exceptions
    expression
+   expression_values
    reflect
    schema
    variant
@@ -168,10 +169,14 @@ macro(_forge_add_component component)
       if("${component}" STREQUAL "exceptions")
          _forge_add_component(core)
       elseif("${component}" STREQUAL "expression")
+         _forge_add_component(expression_values)
          _forge_add_component(asio)
          _forge_add_component(exceptions)
          _forge_add_component(raw)
          _forge_add_component(variant)
+      elseif("${component}" STREQUAL "expression_values")
+         _forge_add_component(raw)
+         _forge_add_component(crypto_digest)
       elseif("${component}" STREQUAL "reflect")
          _forge_add_component(core)
       elseif("${component}" STREQUAL "schema")
@@ -306,6 +311,9 @@ macro(_forge_add_component component)
             set(Forge_tooling_testing_FOUND FALSE)
             set(Forge_NOT_FOUND_MESSAGE "Forge tooling_testing component requires Forge built with tooling")
          else()
+            if(Forge_BUILT_WITH_EXPRESSION)
+               _forge_add_component(expression)
+            endif()
             _forge_add_component(asio)
             _forge_add_component(chain_protocol)
             _forge_add_component(codec_hex)
@@ -944,7 +952,7 @@ if(_FORGE_BOOST_MODULES)
 endif()
 
 if("log" IN_LIST _FORGE_COMPONENTS)
-   find_package(boost_stacktrace_basic CONFIG QUIET)
+   find_package(boost_stacktrace_basic ${Boost_VERSION} EXACT CONFIG QUIET HINTS "${Boost_DIR}/..")
 endif()
 
 if(
