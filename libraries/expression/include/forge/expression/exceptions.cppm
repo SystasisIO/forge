@@ -16,6 +16,10 @@ enum class code : std::uint16_t {
    resource_exhausted = 4,
    evaluation_failed = 5,
    internal = 6,
+   worker_unavailable = 7,
+   deadline_exceeded = 8,
+   cancelled = 9,
+   busy = 10,
 };
 
 using invalid_profile = forge::exceptions::coded_exception<code, code::invalid_profile>;
@@ -24,6 +28,10 @@ using invalid_input = forge::exceptions::coded_exception<code, code::invalid_inp
 using resource_exhausted = forge::exceptions::coded_exception<code, code::resource_exhausted>;
 using evaluation_failed = forge::exceptions::coded_exception<code, code::evaluation_failed>;
 using internal = forge::exceptions::coded_exception<code, code::internal>;
+using worker_unavailable = forge::exceptions::coded_exception<code, code::worker_unavailable>;
+using deadline_exceeded = forge::exceptions::coded_exception<code, code::deadline_exceeded>;
+using cancelled = forge::exceptions::coded_exception<code, code::cancelled>;
+using busy = forge::exceptions::coded_exception<code, code::busy>;
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.expression")
 

@@ -1217,6 +1217,9 @@ endif()
 
 add_library(forge STATIC forge.cpp)
 add_library(Forge::forge ALIAS forge)
+if(TARGET forge_expression_worker)
+   add_dependencies(forge forge_expression_worker)
+endif()
 
 target_include_directories(forge PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 

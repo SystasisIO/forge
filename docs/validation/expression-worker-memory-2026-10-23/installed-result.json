@@ -1,0 +1,29 @@
+{
+  "schema": "forge.expression.installed.v1",
+  "status": "PASS",
+  "root": "/private/tmp/forge-expression-installed-20261023/gate",
+  "source_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1",
+  "build_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory",
+  "configuration": "Release",
+  "platform": "Darwin-25.1.0-arm64-arm-64bit-Mach-O",
+  "denials": {
+    "source": 1,
+    "build": 1,
+    "old_prefix": 1,
+    "bazel": 71
+  },
+  "producer_worker_sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+  "provenance": {
+    "worker_manifest_sha256": "ed80eb21bcd7f2f1200c04660a5b409ef9ce4ee13223f16869479f377e7433e8",
+    "backend_manifest_sha256": "b5752605ebce268489d53eb9feb4e3712251f8c244b70c34538340f62ac09cb5",
+    "runtime_manifest_sha256": "78a3d2836a30bc448168f86e25a5f6a5bc31333b7418dc68fa41269366b8fd8b",
+    "source_pins_sha256": "d1a9548c9f7bddb1cb20118c2ae63262d68450d1146ea7d9b632005d2b201cbc",
+    "verified_notices": 46
+  },
+  "verified_notices": 46,
+  "original_prefix_absent": true,
+  "installed_worker_sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+  "relocated_prefix": "/private/tmp/forge-expression-installed-20261023/gate/relocated",
+  "consumer_sha256": "0eb040460fddb142c1cefb6e34e171015b036e0442b81045d8281bbdc3bf1d53",
+  "total_seconds": 10.495105
+}

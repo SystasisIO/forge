@@ -1,0 +1,2577 @@
+{
+  "schema": "forge.expression.worker.runtime.v1",
+  "llvm_version": "22.1.8",
+  "upstream_sources": {
+    "version": "22.1.8",
+    "files": {
+      "libcxxabi/src/cxa_exception_storage.cpp": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/src/cxa_exception_storage.cpp",
+        "sha256": "7de17cefbedbf94d7282fe3cde0e23e592b90c1d5e50db5d63009d7cfc877721"
+      },
+      "libcxxabi/src/cxa_exception.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/src/cxa_exception.h",
+        "sha256": "f6867fd35fc8bafde2f9348a017a2ca9938f577d648d7258d9aef780064ddb52"
+      },
+      "libcxxabi/LICENSE.TXT": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/LICENSE.TXT",
+        "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+      },
+      "libcxx/LICENSE.TXT": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxx/LICENSE.TXT",
+        "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+      },
+      "libunwind/LICENSE.TXT": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libunwind/LICENSE.TXT",
+        "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+      },
+      "compiler-rt/LICENSE.TXT": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/compiler-rt/LICENSE.TXT",
+        "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+      },
+      "libc/hdr/float_macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/float_macros.h",
+        "sha256": "84967a9f6b97010c64f30641fdecc4ca84c9fd6efd955a3937e918e2d6b2cf10"
+      },
+      "libc/hdr/func/aligned_alloc.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/aligned_alloc.h",
+        "sha256": "327c966e69b44fdf0332df460182ddac2d83ab840bd2add168b284d3728bfbc3"
+      },
+      "libc/hdr/func/free.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/free.h",
+        "sha256": "af289ee06d318c55c54ce7618cbf0ccb9342997e0434db3b7a6ddfcbf398270e"
+      },
+      "libc/hdr/func/malloc.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/malloc.h",
+        "sha256": "218300fe45990e8dcdf1ad6bda891e2a93983d9af41da51a4256c80e72e5d78d"
+      },
+      "libc/hdr/limits_macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/limits_macros.h",
+        "sha256": "46031d2df427a3d6e25c3c4091a62529cc1ce9607376f5c22e1dc05cf2fbb668"
+      },
+      "libc/hdr/stdint_proxy.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/stdint_proxy.h",
+        "sha256": "661348f7d45c035e904ec99c4eb8dea9e09c860a31218c40e39c841cd5b7bcf5"
+      },
+      "libc/hdr/types/atexithandler_t.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/types/atexithandler_t.h",
+        "sha256": "1d067ae45c75e2c403509cc698e551e94bc1f29ea2d38085c8d1f0366614e556"
+      },
+      "libc/hdr/types/size_t.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/types/size_t.h",
+        "sha256": "a47c73b8a31d6b31bc9ddfc8681ea8d68221f0dc466bce66e7dc17b28309b3a9"
+      },
+      "libc/include/llvm-libc-macros/cfloat128-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/cfloat128-macros.h",
+        "sha256": "d9d3ff9c342e4a218f3dea6c8dc467a43a1d78688446217a4b36c6e96ddb5510"
+      },
+      "libc/include/llvm-libc-macros/cfloat16-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/cfloat16-macros.h",
+        "sha256": "4110a4b63fa76caf25ddd491c3ef08495af410f5c92afa6d43907ccf59782ba3"
+      },
+      "libc/include/llvm-libc-macros/float-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/float-macros.h",
+        "sha256": "daf1a4104c7ed73d89049f6a8d40660cef78951f01de6fcf688788eb5065bbd4"
+      },
+      "libc/include/llvm-libc-macros/float16-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/float16-macros.h",
+        "sha256": "e3e18a3d3884a221b996aef98620e4ee3e42d8809e390c6c274f73faf0da78c1"
+      },
+      "libc/include/llvm-libc-macros/limits-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/limits-macros.h",
+        "sha256": "e855b46230611b23c62e306ec8b732c06b04001edb3dc3a46cfac5625362f768"
+      },
+      "libc/include/llvm-libc-macros/stdfix-macros.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/stdfix-macros.h",
+        "sha256": "b760f61b4da46e9c8b763e891affe087dfb89553b6ecb4985567cb1b13c8aae8"
+      },
+      "libc/include/llvm-libc-types/__atexithandler_t.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/__atexithandler_t.h",
+        "sha256": "63b1548bd217f08e8a3f9524f798f6b7a171eff8a4f1c44bebfd3d4a04335fdd"
+      },
+      "libc/include/llvm-libc-types/cfloat128.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/cfloat128.h",
+        "sha256": "10d15329e8149cfefb6385f19cf14e4a86aca6cbf83cdcf36801fb5113af9aed"
+      },
+      "libc/include/llvm-libc-types/cfloat16.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/cfloat16.h",
+        "sha256": "bb0fb2145874d45a9c89505ead6f3a5bcf98c1c89e057b067e3f6b0ac0ccd11e"
+      },
+      "libc/include/llvm-libc-types/float128.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/float128.h",
+        "sha256": "940638bee993f2c4e5e96c66ea97478d1067131797a379db416b9d09240f4d82"
+      },
+      "libc/include/llvm-libc-types/size_t.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/size_t.h",
+        "sha256": "5a7a6ed640a5f29f7e63d936980d77e087c1ba60eba572f61dc59d83a71b293f"
+      },
+      "libc/src/__support/CPP/array.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/array.h",
+        "sha256": "dfda1b4f82e9b261acf54dd720a73c6cc9713109a95a4f8a9d3cd15a1ed155cb"
+      },
+      "libc/src/__support/CPP/bit.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/bit.h",
+        "sha256": "ba59641b9efd37a358b95cd943ddf26a9019768b7edf984983c8615bd106fcc0"
+      },
+      "libc/src/__support/CPP/cstddef.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/cstddef.h",
+        "sha256": "2f744e654509271ee4d51aff901b08d0eb1da80f32321b4ae399dfb948d47a8c"
+      },
+      "libc/src/__support/CPP/iterator.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/iterator.h",
+        "sha256": "16e50508dcb40ed48e5f03fcc90aa29568222409fb5227ae2216f7066155796d"
+      },
+      "libc/src/__support/CPP/limits.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/limits.h",
+        "sha256": "268b3946d33d0adb83b2894511dcbec14ce71c6011f2cf313df5301d6aa4bb54"
+      },
+      "libc/src/__support/CPP/mutex.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/mutex.h",
+        "sha256": "adedde883a29b9c5836494330007f84c7e990ce9c56127e4e72bd265b410f535"
+      },
+      "libc/src/__support/CPP/new.cpp": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/new.cpp",
+        "sha256": "a817de7c3839196bca13d07f112440bd6f6a9a4defab36c8575ef78214d89928"
+      },
+      "libc/src/__support/CPP/new.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/new.h",
+        "sha256": "1c149d2654c20f6a0ad6efec2d10f0921052ca7a4f00c755626c99373fb5badf"
+      },
+      "libc/src/__support/CPP/type_traits.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits.h",
+        "sha256": "75bb93fa75f54abfcfbb05253cdd407ac476b0ce2fb4e8bb3892af32d4016b80"
+      },
+      "libc/src/__support/CPP/type_traits/add_lvalue_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_lvalue_reference.h",
+        "sha256": "922ccbd50ba6aa312dba09f34f5a273024dd60f5fcc164b143f3ee36df4b09a8"
+      },
+      "libc/src/__support/CPP/type_traits/add_pointer.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_pointer.h",
+        "sha256": "41129ca66f61c275f4f141dc1b51262dc7a177e951b2904803609864dd659a72"
+      },
+      "libc/src/__support/CPP/type_traits/add_rvalue_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_rvalue_reference.h",
+        "sha256": "22d9d1d1c7ddb951a850d5609856f702b650f020388d7c49940b0f0f06ad0178"
+      },
+      "libc/src/__support/CPP/type_traits/aligned_storage.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/aligned_storage.h",
+        "sha256": "c30bad387a0e992db668532acb6e6d1a311f2004ffbdb17b29c1ffc33fe6a795"
+      },
+      "libc/src/__support/CPP/type_traits/always_false.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/always_false.h",
+        "sha256": "ab9f97d0b3e128fc22f67086d7854b35dbeec1b8fdd7de66792e24f9f5132597"
+      },
+      "libc/src/__support/CPP/type_traits/bool_constant.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/bool_constant.h",
+        "sha256": "a4d91d87d201d6953c68fdbbfbcd6e009bfc1e4d3468f2779fcf468a39873032"
+      },
+      "libc/src/__support/CPP/type_traits/conditional.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/conditional.h",
+        "sha256": "9a4a2074bdc737b7e1ab586b5062617178da7def7b29b0d62b1f9c31c59c5656"
+      },
+      "libc/src/__support/CPP/type_traits/decay.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/decay.h",
+        "sha256": "1680751c40cc6f1ee9d30a8e672391bad151109d230b122594b0d546a7e2e21c"
+      },
+      "libc/src/__support/CPP/type_traits/enable_if.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/enable_if.h",
+        "sha256": "d5c360cbfc74283eb2ac17089607f740d0ee874cea6dba1bd598404364f924d6"
+      },
+      "libc/src/__support/CPP/type_traits/false_type.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/false_type.h",
+        "sha256": "a4b8de2e728c787d64f23ddc363de6c79d3873ba11446ea437b19da00d13972d"
+      },
+      "libc/src/__support/CPP/type_traits/has_unique_object_representations.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/has_unique_object_representations.h",
+        "sha256": "47c255fce1da848fdfacc0869b8f350066fe998439c821bf337a05c8faca37f3"
+      },
+      "libc/src/__support/CPP/type_traits/integral_constant.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/integral_constant.h",
+        "sha256": "43bf74239a5d69812c4aff16603aa80d2b39498a4628d7bbd4dd2be135473c70"
+      },
+      "libc/src/__support/CPP/type_traits/invoke.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/invoke.h",
+        "sha256": "1bcc5872ffb795c0385d3f1384d2fe3ecdac88346af0067d1aaf74ec1c89f394"
+      },
+      "libc/src/__support/CPP/type_traits/invoke_result.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/invoke_result.h",
+        "sha256": "bd95e0166f8e424f77c94aaa70660155fcd2d77af270b4021e5d5645bd4a176c"
+      },
+      "libc/src/__support/CPP/type_traits/is_arithmetic.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_arithmetic.h",
+        "sha256": "7c81ee9037216e29afbf75401d15773a53ec23fe49a4e5e5de6765ab1b7269a3"
+      },
+      "libc/src/__support/CPP/type_traits/is_array.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_array.h",
+        "sha256": "dc7c5f40390770e5c3864098411ab9bd712f3b01eb75720f05a4d0a671494767"
+      },
+      "libc/src/__support/CPP/type_traits/is_base_of.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_base_of.h",
+        "sha256": "beffe971074adaa39b08824e58e23d4052b1972d805c6d6ed75c6c4f33fea60a"
+      },
+      "libc/src/__support/CPP/type_traits/is_class.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_class.h",
+        "sha256": "42210e9500a70f4a8ee77fe2d8362d00e81e5fc50f6cb18705eca75456595499"
+      },
+      "libc/src/__support/CPP/type_traits/is_complex.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_complex.h",
+        "sha256": "7b2f538ccfab6f46392712214378a0128d14fb1af9e103f8a8ec087da641411e"
+      },
+      "libc/src/__support/CPP/type_traits/is_const.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_const.h",
+        "sha256": "529905320a2def61fbb656bcf65fa9f68984b74ff22d73fbb1d22fa530a7b1a9"
+      },
+      "libc/src/__support/CPP/type_traits/is_constant_evaluated.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_constant_evaluated.h",
+        "sha256": "17964d270de81197101c8d90485a361853f3c9ee27263ae37856e5ef95da777f"
+      },
+      "libc/src/__support/CPP/type_traits/is_convertible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_convertible.h",
+        "sha256": "731b42f6fb289be2efac5d6accb637bfdbadd5f41b13bb7a7285c9cb6af79f25"
+      },
+      "libc/src/__support/CPP/type_traits/is_copy_assignable.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_copy_assignable.h",
+        "sha256": "ba3c0c25ef47d917ada6b595787aab82c6ef1de3eed4279a4ea28399bd1bf343"
+      },
+      "libc/src/__support/CPP/type_traits/is_copy_constructible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_copy_constructible.h",
+        "sha256": "008981be8da6bbc3afed4a3821da1ea84dd972306b5d1f18f80c45a12093da42"
+      },
+      "libc/src/__support/CPP/type_traits/is_destructible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_destructible.h",
+        "sha256": "aa63de7204de21908593af635fbd0fae2b50a6d113137aa493cd6614158fd61d"
+      },
+      "libc/src/__support/CPP/type_traits/is_enum.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_enum.h",
+        "sha256": "e9cbccc3b8995b663fa71e0f607b6e75a5eae792592409b342cd80e5c90898a2"
+      },
+      "libc/src/__support/CPP/type_traits/is_fixed_point.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_fixed_point.h",
+        "sha256": "06c89f063a4f867729a9fe2d77d0f1e0f26b1e46c8b10e81b27ffcef196ed87b"
+      },
+      "libc/src/__support/CPP/type_traits/is_floating_point.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_floating_point.h",
+        "sha256": "3e60201074dcd81bc927ac3242b5658cdcdc03ab7100a56bfc87d7b4a80d8e62"
+      },
+      "libc/src/__support/CPP/type_traits/is_function.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_function.h",
+        "sha256": "d89f1c400b0825bba2fc6f7efe5225a3e41f1135fafbebbebbbc1f0650b1bbcd"
+      },
+      "libc/src/__support/CPP/type_traits/is_integral.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_integral.h",
+        "sha256": "be8fff4cc3666d8992d310ae833657084eddb14110f903302b656083b4a92cec"
+      },
+      "libc/src/__support/CPP/type_traits/is_lvalue_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_lvalue_reference.h",
+        "sha256": "cf4a9b93b5d0e5ea11bab046d57581fec1848a1081663a8a2903582984ccb2c9"
+      },
+      "libc/src/__support/CPP/type_traits/is_member_pointer.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_member_pointer.h",
+        "sha256": "3bc303a9f8791e316cc3fe74cc51789db05b96220e118d00184bf0555a929dd2"
+      },
+      "libc/src/__support/CPP/type_traits/is_move_assignable.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_move_assignable.h",
+        "sha256": "afb2104c9eb287688d842e33b864807b20127b3512c540728673d393418f0350"
+      },
+      "libc/src/__support/CPP/type_traits/is_move_constructible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_move_constructible.h",
+        "sha256": "c95843514b2015c82f60d4822620ee9f1f6e93086a7405b0ca997dce63c3390c"
+      },
+      "libc/src/__support/CPP/type_traits/is_null_pointer.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_null_pointer.h",
+        "sha256": "c9cb3e4d760b4668ebfe562c5ca8f0e3d2acfb9452e77d3dd3db3076f7cf0fb4"
+      },
+      "libc/src/__support/CPP/type_traits/is_object.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_object.h",
+        "sha256": "e6699d0bb2c281953850510233ba96ffb9f6652c653041746ef9a5b755b28943"
+      },
+      "libc/src/__support/CPP/type_traits/is_pointer.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_pointer.h",
+        "sha256": "c8e3190c920ef43b005aff035be389466a5e4541add7390e7b786e7ba809ef43"
+      },
+      "libc/src/__support/CPP/type_traits/is_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_reference.h",
+        "sha256": "0038d53f09e175cd3b4ebfb1cd64905e8e4163da73af93362af36bef185676cb"
+      },
+      "libc/src/__support/CPP/type_traits/is_rvalue_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_rvalue_reference.h",
+        "sha256": "ed403b81ecbf4c43c0e2b27aeae0ba94dec98f8f4f2dd548a274d0e85c4353f7"
+      },
+      "libc/src/__support/CPP/type_traits/is_same.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_same.h",
+        "sha256": "74daede907df025779b94241e9fa10d53260ed24c52f38cb56c93fd9076e22d8"
+      },
+      "libc/src/__support/CPP/type_traits/is_scalar.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_scalar.h",
+        "sha256": "7bd3331a0355f28480aada6b9721607ce71e1266a629413d3d16dd0bad789d08"
+      },
+      "libc/src/__support/CPP/type_traits/is_signed.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_signed.h",
+        "sha256": "94fbbd7b03f8a0379d13a59077befba31d6679a3af13ecae5185ffe574321da8"
+      },
+      "libc/src/__support/CPP/type_traits/is_trivially_constructible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_constructible.h",
+        "sha256": "2653f581cdf445832dc72705c17369c327764b6cb6796ade2a0edadf35950c83"
+      },
+      "libc/src/__support/CPP/type_traits/is_trivially_copyable.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_copyable.h",
+        "sha256": "50060eeec4366f16e648bcacf9abff8ea0d0ec089699c6d6e217851f5dc66a4f"
+      },
+      "libc/src/__support/CPP/type_traits/is_trivially_destructible.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_destructible.h",
+        "sha256": "1df8de725bb5dbd8cc6e11e639271a8f7e913073f51c0e134b53b7b9142ba899"
+      },
+      "libc/src/__support/CPP/type_traits/is_union.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_union.h",
+        "sha256": "fb6acc5fb26edf7f5d22bd91463cad0db6c09402d1f3a7089f5758b1350fc276"
+      },
+      "libc/src/__support/CPP/type_traits/is_unsigned.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_unsigned.h",
+        "sha256": "db5759d754379c10a527356730278da675063dee07e31835436e5d24256005b3"
+      },
+      "libc/src/__support/CPP/type_traits/is_void.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_void.h",
+        "sha256": "bc64bdc46ec4d650429c8f7a3d782e5809385e8c76c7e2c1f1e6fc3c325d27a5"
+      },
+      "libc/src/__support/CPP/type_traits/make_signed.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/make_signed.h",
+        "sha256": "e709c3a504402d84894365aeac63f2697f41388117aaf24e03183efaeb16d8c2"
+      },
+      "libc/src/__support/CPP/type_traits/make_unsigned.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/make_unsigned.h",
+        "sha256": "29f471097b205e69b11320c40f58e7411b1160de4815cb9b499fc68bc68b33ea"
+      },
+      "libc/src/__support/CPP/type_traits/remove_all_extents.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_all_extents.h",
+        "sha256": "4daf6b639b3036f35d2bd8fccf3466901aad767508302831d3f15838371b6789"
+      },
+      "libc/src/__support/CPP/type_traits/remove_cv.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_cv.h",
+        "sha256": "d2ff553aa2b7107a7ba7c6688bf89177004e6773fbb8e69a58ff2891d5e6675b"
+      },
+      "libc/src/__support/CPP/type_traits/remove_cvref.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_cvref.h",
+        "sha256": "dbd0593b8c1b29496690fa9408f049843b62906fcf32831b463c79556e4b9460"
+      },
+      "libc/src/__support/CPP/type_traits/remove_extent.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_extent.h",
+        "sha256": "7ae0793eb6e0daf115424f47b7256e79b810801c1e878018df08fc9067e2265d"
+      },
+      "libc/src/__support/CPP/type_traits/remove_reference.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_reference.h",
+        "sha256": "995e117692af3b126160c3ea7520e206f6694c35ae5d43d79cc995dbce855cee"
+      },
+      "libc/src/__support/CPP/type_traits/true_type.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/true_type.h",
+        "sha256": "a2fa1d166c63b4bb4e8952c8374d0eddbf61f3cff4702ae09fde1b2a2b171b49"
+      },
+      "libc/src/__support/CPP/type_traits/type_identity.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/type_identity.h",
+        "sha256": "b2d8ceca585983753db2acb1e96b5fe4e72d5de57f336cfa7e80fe20511ea1c1"
+      },
+      "libc/src/__support/CPP/type_traits/void_t.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/void_t.h",
+        "sha256": "f89033a8d0598d1e957fa995289d8303259f27c1445bcaaa0c305ffcca61a066"
+      },
+      "libc/src/__support/CPP/utility/declval.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/utility/declval.h",
+        "sha256": "f3869c2bda6765a7df97abe0ec63ec02616dbbe56df5101675375536279a8f65"
+      },
+      "libc/src/__support/CPP/utility/forward.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/utility/forward.h",
+        "sha256": "4289b79740595823b703136e09330a1e86f1a77a1a694a37507fc3a89c67d5f4"
+      },
+      "libc/src/__support/alloc-checker.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/alloc-checker.h",
+        "sha256": "358e1e83e9f60956ef00bb8101d11959add383a50dffc4e66fa5d07c43d8f1a6"
+      },
+      "libc/src/__support/blockstore.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/blockstore.h",
+        "sha256": "d9345a5fb62eb1041c69f7727f4c745e8da035bed26c8ab2a6c5cda90d57d15e"
+      },
+      "libc/src/__support/common.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/common.h",
+        "sha256": "acbc74aa26f2a403e46c05bd1f52537203a302cd4f4cd738e0bb224e5cfbc22b"
+      },
+      "libc/src/__support/endian_internal.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/endian_internal.h",
+        "sha256": "774d303da34408660699a3b3fd754aecd4975b6de778eeee25ec99ce48e88c1f"
+      },
+      "libc/src/__support/fixedvector.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/fixedvector.h",
+        "sha256": "896ca1f56144864f61f7c4446532018d94c9e55b8ce6dcad041809a80e03a68b"
+      },
+      "libc/src/__support/libc_assert.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/libc_assert.h",
+        "sha256": "aefb07ff46f0a73d6c80070791a27d36aa23640ce16b024cce4b18660a829407"
+      },
+      "libc/src/__support/macros/attributes.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/attributes.h",
+        "sha256": "b21c56a327797d376a3d64c10a82ef33f032b46fd0252accec0ceb60d6208d2e"
+      },
+      "libc/src/__support/macros/config.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/config.h",
+        "sha256": "561fbccf826192c961fdba05d2eb09e444bde33f46979015db4379aa021e3cc8"
+      },
+      "libc/src/__support/macros/optimization.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/optimization.h",
+        "sha256": "feac37982a8901b108a21a541a94b6994cfd0531de32edd046da25827ee3418d"
+      },
+      "libc/src/__support/macros/properties/architectures.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/architectures.h",
+        "sha256": "e09525988d5318cc302bc38266c8eecc77b1c93a4ae82ecd4ebb9290abe1c8d9"
+      },
+      "libc/src/__support/macros/properties/compiler.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/compiler.h",
+        "sha256": "83fe28dbec8b4e778a1ca5b0db9f134251ddd388e9e9ad4d330145e92e288539"
+      },
+      "libc/src/__support/macros/properties/complex_types.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/complex_types.h",
+        "sha256": "65e63f890b0a49aa3484af23ea021f48a4252679b6de199144ff6fea3ebea416"
+      },
+      "libc/src/__support/macros/properties/cpu_features.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/cpu_features.h",
+        "sha256": "b5f52bd9699575bf179e03ae168f0a06ac7d7bb081d698d2b02266bc23fab7fc"
+      },
+      "libc/src/__support/macros/properties/os.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/os.h",
+        "sha256": "da82ac476c0ba817f603852e18515d06487fe93af59e067739b35b47dce321f2"
+      },
+      "libc/src/__support/macros/properties/types.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/types.h",
+        "sha256": "e73dc777e0cd1d39188a3a03508ddb9346949c6fff78eefde642de1b8eb43cbb"
+      },
+      "libc/src/__support/macros/sanitizer.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/sanitizer.h",
+        "sha256": "bbf6cb8f7da84175d87e50ab0f3898e7ddce797522355fd3e04a23c31472f250"
+      },
+      "libc/src/__support/threads/mutex.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/threads/mutex.h",
+        "sha256": "9104ab5dd23a26072838e7e296989626a10d00e66a054293d48aeed579110b6f"
+      },
+      "libc/src/__support/threads/mutex_common.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/threads/mutex_common.h",
+        "sha256": "8de713d425ccdb1d85e8bdcbae1688190ec6da93ed363b0d3249e51c1208f722"
+      },
+      "libc/src/stdlib/atexit.cpp": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/atexit.cpp",
+        "sha256": "39a55c3464176c87bd22f8f778e885686d7f86d1f735343e3f9a0d560b751a4a"
+      },
+      "libc/src/stdlib/atexit.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/atexit.h",
+        "sha256": "b2691e9725e129113867aa91445ccd5e2b21bac7d47cf63fb5ff0a5f3b9edd2f"
+      },
+      "libc/src/stdlib/exit_handler.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/exit_handler.h",
+        "sha256": "75edae3e15445e5517439a2dc7c9dddc1dcc25a2f342b8da1a62d30466d8617d"
+      },
+      "libc/src/string/memory_utils/aarch64/inline_memset.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/aarch64/inline_memset.h",
+        "sha256": "eefc78007ca47c3b596b9f6a3ded80940500d6758709d38204ce69ddb32671ee"
+      },
+      "libc/src/string/memory_utils/inline_memset.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/inline_memset.h",
+        "sha256": "0e0bb4f57d56657388fc2a5665ee5c0869a49159c5368c43f8be5efd9a317059"
+      },
+      "libc/src/string/memory_utils/op_aarch64.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_aarch64.h",
+        "sha256": "65ed6d6b82f4d5d57562c99e9349ae3c3c2511fac2417ff09d5c2cdcfedec63b"
+      },
+      "libc/src/string/memory_utils/op_builtin.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_builtin.h",
+        "sha256": "0b54ee6db1eaf6865b14590312f6d74b0e0e9ecb0b0978521d1f6cce0f9fbaf7"
+      },
+      "libc/src/string/memory_utils/op_generic.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_generic.h",
+        "sha256": "0d4d176688115e71dd65259de4ddcd97956f3388923d726e45fd426ce1e3bff4"
+      },
+      "libc/src/string/memory_utils/utils.h": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/utils.h",
+        "sha256": "f2f5b860bd54a24294a0318015981ab3bc4b70d049781972b7644f04f9e35b34"
+      },
+      "libc/LICENSE.TXT": {
+        "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/LICENSE.TXT",
+        "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+      }
+    }
+  },
+  "single_thread_only": true,
+  "compile_command": [
+    "/opt/homebrew/opt/llvm/bin/clang++",
+    "-std=c++23",
+    "-O2",
+    "-g0",
+    "-fvisibility=hidden",
+    "-D_LIBCXXABI_HAS_NO_THREADS",
+    "-D_LIBCPP_BUILDING_LIBRARY",
+    "-femulated-tls",
+    "-fno-c++-static-destructors",
+    "-H",
+    "-isysroot",
+    "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "-mmacosx-version-min=15.0",
+    "-I/opt/homebrew/Cellar/llvm/22.1.8/include",
+    "-c",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libcxxabi/src/cxa_exception_storage.cpp",
+    "-o",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/cxa_exception_storage.o"
+  ],
+  "source_unmodified": true,
+  "libc_compile_commands": [
+    [
+      "/opt/homebrew/opt/llvm/bin/clang++",
+      "-std=c++23",
+      "-O2",
+      "-g0",
+      "-fvisibility=hidden",
+      "-femulated-tls",
+      "-fno-c++-static-destructors",
+      "-DLIBC_COPT_PUBLIC_PACKAGING",
+      "-DLIBC_COPT_USE_C_ASSERT",
+      "-DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE",
+      "-DLIBC_FULL_BUILD",
+      "-DLIBC_NAMESPACE=__llvm_libc",
+      "-H",
+      "-MD",
+      "-MF",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/atexit.d",
+      "-isysroot",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-mmacosx-version-min=15.0",
+      "-I/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc",
+      "-c",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/stdlib/atexit.cpp",
+      "-o",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/atexit.o"
+    ],
+    [
+      "/opt/homebrew/opt/llvm/bin/clang++",
+      "-std=c++23",
+      "-O2",
+      "-g0",
+      "-fvisibility=hidden",
+      "-femulated-tls",
+      "-fno-c++-static-destructors",
+      "-DLIBC_COPT_PUBLIC_PACKAGING",
+      "-DLIBC_COPT_USE_C_ASSERT",
+      "-DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE",
+      "-DLIBC_FULL_BUILD",
+      "-DLIBC_NAMESPACE=__llvm_libc",
+      "-H",
+      "-MD",
+      "-MF",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/new.d",
+      "-isysroot",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-mmacosx-version-min=15.0",
+      "-I/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc",
+      "-c",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/new.cpp",
+      "-o",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/new.o"
+    ]
+  ],
+  "libc_depfiles": {
+    "atexit.d": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/atexit.d",
+      "sha256": "2db9489fc19d0757ff1888bc29d413ee23407c2e6b0ffe8d586fe3d83e330136"
+    },
+    "new.d": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/new.d",
+      "sha256": "4fa1935ad8852575aaf26aef660b33c29bef1d11cf98b8060548174f73550da3"
+    }
+  },
+  "libc_imports": {
+    "atexit.o": [
+      "__llvm_libc_delete_sized",
+      "_calloc"
+    ],
+    "new.o": [
+      "_free"
+    ]
+  },
+  "libc_resolved_dependencies": [
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/Availability.h",
+      "sha256": "19778e53358af735e2eeb61696c3f961c5d843e25bb2b1222540dffcc08b65e3"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityInternal.h",
+      "sha256": "6f42591c6ea98c9a67b204bc4257b971f9653bcf86c003ca384caea8483c15bd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityInternalLegacy.h",
+      "sha256": "c870957de1ab12b504c5d3d54f894630dee0aac25acd29946438aa6729005a31"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityVersions.h",
+      "sha256": "9905d2d9d8154dd0cf539c7695db500f2d87cad8651a021c6a75bdedbae25463"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_abort.h",
+      "sha256": "ad37627745fd324a640fa93c5f9909250c036d577457090a1e72ee939cd7fc7b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_assert.h",
+      "sha256": "ccdc2096f863f41cd0d4ffda8e737ad211a15a3b72b3cc9046376e142aa36d9b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_bounds.h",
+      "sha256": "a812392ac98f78ea54686c9ec1971522fc6464073a5f024d3e11eeb4ecbd2679"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_mb_cur_max.h",
+      "sha256": "bfcdbdea8a728e790ca47166549ffc4fd159dd1ff3af6170ad202a1ebb6127dc"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_static_assert.h",
+      "sha256": "8b2be61bd4bc65c9ad62a661a98165a34414ce962aff97e563f876ea2efa42c3"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_stdlib.h",
+      "sha256": "3a08bba562642ce27a7163221e00e367fc9dc5e848006555f3e8ff47b984e204"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_intmax_t.h",
+      "sha256": "215f90a4efdca4991735be55a1ff701964dde07d8b4a8382ec8ed41ecbf5f115"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint16_t.h",
+      "sha256": "adf29323b0ecb87cbc43ac3ff25c096de7a214ceb90007c2828616151c66ad37"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint32_t.h",
+      "sha256": "951131475ec815813c8ff40d5e875029cd968334fd3a42d5a65fbe7851d1718c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint64_t.h",
+      "sha256": "a5692cddb9c42d1b55ebcd6fa445b212c4b0c46db4583aaf3293ed6386d3d0d6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint8_t.h",
+      "sha256": "0a5c0353c8410f5e502db7971d987ac83a9ec3148905f10984c78152f541de68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uintmax_t.h",
+      "sha256": "0b154b16a3945edff78f00321d90a662d522e197c08e7de3b68f0ea44ae0d042"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types.h",
+      "sha256": "532c4b0f11274f6b10875db65e154e6cedaa20fdd189f5f40a8780c9a4c39449"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/alloca.h",
+      "sha256": "5e956d0cffbf6d069d2cc9cee52686e1e7b73e3e2939cfb3fd3a7ca096bd8980"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_endian.h",
+      "sha256": "488530aceccfa1f364f2850a5f2956e22436db8b12b33d2a41567c4ac9d60788"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_mcontext.h",
+      "sha256": "6af56aec1a82613dbd54b09d95eaf96fa7b9443a4cf4c7e9ba689f6de6047186"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_types.h",
+      "sha256": "4f0bde85f9a41cc7d30fff22ebd7e8f4eb206a55a926eda012a2e7481e3524fa"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/endian.h",
+      "sha256": "60bd5d1363d89d52e5cfc95b83a35d392a8315835f9d60089d4e05b8f4d1cc68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/signal.h",
+      "sha256": "de0bc923b92bd88f3bd8bcd38b20f8123277732d7d3309cb2a5bdc60bb4dd8c6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/types.h",
+      "sha256": "b9eccd5a3feb3a62e22e42936656c8822e7e3e8708d759b1512deee05f682f0d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/assert.h",
+      "sha256": "ce61ce31a18d5e82f70bd637441629ddb0b48c31871bb280ea6457fe7eff2d32"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/libkern/_OSByteOrder.h",
+      "sha256": "f0febaef6f9ec75339ebdd896dab2a6d1a1934628d76098f165f1db1b4b74c14"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/libkern/arm/_OSByteOrder.h",
+      "sha256": "7c686aa04afa38a20a0163eccca9941aeb8328779884c2603d8a9a773896a677"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/mach/arm/_structs.h",
+      "sha256": "d2bd0ff228eb6e45bbe2ef027312a0348a173e5a1af54d41313d9520900ef103"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/mach/machine/_structs.h",
+      "sha256": "410350f04225bf139bd89f1a99418a55734e4ab2101bb93dc301f790a130f59c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_endian.h",
+      "sha256": "17eb7d38845502ce04aac3ab709dffeb4ec253781051b5d7894703e9786730de"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_mcontext.h",
+      "sha256": "9d3425653d2a1623d785dee4601c3c00e05f4797d7e840b00f17d529f8c6c51e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_types.h",
+      "sha256": "f27264f8fdec9f164b4fc2b556f666ed7c5c0e5b88fd9f23db0b731ffa6cf864"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/endian.h",
+      "sha256": "37f9e1c8599a729e605477a5b6a77cea727fa66816e4585d0dd32e3ba377f450"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/signal.h",
+      "sha256": "09b1798034cf3b5217df3e415d6053df9c2e16b858036fc11888e63f4493f53f"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/types.h",
+      "sha256": "76e7c59451d996fe674a6fc7e518366609a95875c9b9aec9fd590a3ac138dddd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_malloc.h",
+      "sha256": "28b33ab4f20da030c11fd248d8a340c1af80d18d0c331c8248fd4da677760949"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_malloc_type.h",
+      "sha256": "8cf89bcedf5e86bd0733f9f0b3292c1dff7d17c5966d475cb2fe1871e904bece"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_ptrcheck.h",
+      "sha256": "d3c4e809117b24467e9313cc348c0495aad8780cea6bf58177743b9be09c3591"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/stddef.h",
+      "sha256": "1e871643e931a1fe9ba76c2cc55dd32aa1a4b4cdf4584901b65b6203db321d2b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/stdint.h",
+      "sha256": "9d070aad02d9f2ba1f2248d093b4194b62cf8d363778c737d1110f4736e5ed3c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/stdlib.h",
+      "sha256": "7995a2df951dd1fdbd9fd4ec38900b79ef1797655ff239728fdbac56bb9bd7ff"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/__endian.h",
+      "sha256": "8697850f0ec13e9082081e9b8dda8f94053970f3546e4a8d42738b16400eac91"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_endian.h",
+      "sha256": "fcb57b694d555b2a8646e35bc68cc6864deecbc8d5528cd40bf764b1ff14d3fd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_posix_availability.h",
+      "sha256": "452bff9ae32655a49b65802e29b21c67a546be1446553f908ef9850a694746bd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_attr_t.h",
+      "sha256": "987973d4e4f0c84a929fb1288755637453d88bf1410b778f81b2550ea4ad211c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_types.h",
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_symbol_aliasing.h",
+      "sha256": "59c7a35e5c9579e6e46092db768a73bea7c0fb63651d43611c5c7cd4af99efc1"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ct_rune_t.h",
+      "sha256": "17b8b91c92c4929111a4e854a38a04c3d07fe0da2a31f3692e1407db6a69de63"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_dev_t.h",
+      "sha256": "4ba3d19759544b9f7bf424d2a16a518ff586e31ed968d525440e678cfbb07a5d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_id_t.h",
+      "sha256": "fb7255c9872e2a805c206796326e21d47146e22c93c09752126d7166bdaba5e5"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int16_t.h",
+      "sha256": "e40d40ad59c6dc98577b2c7cfdba1121ebfee17b29e093cbd10b7936df496d8e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int32_t.h",
+      "sha256": "77127195e57f1690402377ddd72e3dcda684ddf591346f08ef4772dddcbbc281"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int64_t.h",
+      "sha256": "a2427b34e5e83996bd28d83cec920cf3b82a366af90e767234557bd11fa33a18"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int8_t.h",
+      "sha256": "607f6beede0251eb801e763493df26fd45d46eb951e4ff9cac17f1ac951b8cc0"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_intptr_t.h",
+      "sha256": "b2a7ba9b9b2d357d75e59114874658f893b23ea6d1357815b027d8189075daba"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_mode_t.h",
+      "sha256": "7c4261bde41387fc23aefe5dee1e6298ae6b6f5592bca51947fdd9736e0640a6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_null.h",
+      "sha256": "3e021525d2a711070e9c78ea2791e020ef6105c51121d8496d617f89a83d2f92"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_pid_t.h",
+      "sha256": "052a6dbbec8e30623c2d33dd373992f6c5d0c57c57ed4949d2b48c4ab0976487"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ptrdiff_t.h",
+      "sha256": "0b544d00a01bd306ca6d2f44c13422a140e37ed2498f88ea0602ccc520d6e55a"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_rune_t.h",
+      "sha256": "36cd7e6c6ce34e125b4c52f005262d38eba8ef8486c7cac7adedcc5d37cc3b49"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_sigaltstack.h",
+      "sha256": "2bc87d34186fe6524fe89fa1e2d878462c6688134d03880b8bfa1486db297687"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_sigset_t.h",
+      "sha256": "df99c73ecdbde1fcb3a4a22169871e036240452472b8ea70f287456d42593972"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_size_t.h",
+      "sha256": "3e1bcf6c23ad00e0fe2b5a4683e687299baf51cf26b0a4ebc73db6140378acc2"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_timeval.h",
+      "sha256": "f723018fec267200e915777897515b5d7ed20901bcb294873f94b1d835f9ae45"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int16_t.h",
+      "sha256": "9dabbd8280c28416a5ba115355678d2540588df1a7251bd9b4a13e30c309a71b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int32_t.h",
+      "sha256": "196cba7a865c086bba457758d3b2605a4c1299c54a758366b7d420a585895f1d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int64_t.h",
+      "sha256": "d096eee54a5acc2c3cd5cf71256d69198ada8f8d82cdb0a717bc8ed65650ad93"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int8_t.h",
+      "sha256": "7505dbbdf3ecca2b8e585871ad81c0e67a3cb63c97c47abe73fe262e071a3ebb"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ucontext.h",
+      "sha256": "d67fecbd5fba1fc876b41b0a69ff080e3d47c9884f3ea4012f8a334ffda62681"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_uid_t.h",
+      "sha256": "d2140a65a17943a857381757c0b73a920f35ade41dc9809437c168be457c276a"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_uintptr_t.h",
+      "sha256": "f435cf25e4f06dace9c1884c066392bafd204c6d71f16696e71acde5912bc81f"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_va_list.h",
+      "sha256": "688c84ca73e82898609ae7282c820e896e4b82b7dc14f4fc92b4263df5827de2"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_wchar_t.h",
+      "sha256": "f0c3da0beecb5feb19ddede0ea9d5fbb9274e7b1de1b7cb91f64196ac1395008"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types.h",
+      "sha256": "863c4f07045775002b63b7e616742d9f746e4a02da4441442d8fe1138bbd0ff9"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/appleapiopts.h",
+      "sha256": "efd9793f56c08917cf1ddf5108b78240ede88a5bbc8977d6fdaf1684b6b01c1c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/cdefs.h",
+      "sha256": "12c3f06e56e972e13185e7d0463a605ec893b67e2e28c09381162e7d6016a69e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/resource.h",
+      "sha256": "67b82d1a9c0d5e788bcfed206e5a63d519e9f05879f475e736827e4131959f68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/signal.h",
+      "sha256": "171af7545ef750627aeba02c1de838c05e2cf396e2f49881ea74dba6990c44a3"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/wait.h",
+      "sha256": "b77f7dd6f592eba8b0d51c15c7b975472fdad50c12ea296f74f062cbf98dcbf7"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/float_macros.h",
+      "sha256": "84967a9f6b97010c64f30641fdecc4ca84c9fd6efd955a3937e918e2d6b2cf10"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/func/aligned_alloc.h",
+      "sha256": "327c966e69b44fdf0332df460182ddac2d83ab840bd2add168b284d3728bfbc3"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/func/free.h",
+      "sha256": "af289ee06d318c55c54ce7618cbf0ccb9342997e0434db3b7a6ddfcbf398270e"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/func/malloc.h",
+      "sha256": "218300fe45990e8dcdf1ad6bda891e2a93983d9af41da51a4256c80e72e5d78d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/limits_macros.h",
+      "sha256": "46031d2df427a3d6e25c3c4091a62529cc1ce9607376f5c22e1dc05cf2fbb668"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/stdint_proxy.h",
+      "sha256": "661348f7d45c035e904ec99c4eb8dea9e09c860a31218c40e39c841cd5b7bcf5"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/types/atexithandler_t.h",
+      "sha256": "1d067ae45c75e2c403509cc698e551e94bc1f29ea2d38085c8d1f0366614e556"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/hdr/types/size_t.h",
+      "sha256": "a47c73b8a31d6b31bc9ddfc8681ea8d68221f0dc466bce66e7dc17b28309b3a9"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/cfloat128-macros.h",
+      "sha256": "d9d3ff9c342e4a218f3dea6c8dc467a43a1d78688446217a4b36c6e96ddb5510"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/cfloat16-macros.h",
+      "sha256": "4110a4b63fa76caf25ddd491c3ef08495af410f5c92afa6d43907ccf59782ba3"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/float-macros.h",
+      "sha256": "daf1a4104c7ed73d89049f6a8d40660cef78951f01de6fcf688788eb5065bbd4"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/float16-macros.h",
+      "sha256": "e3e18a3d3884a221b996aef98620e4ee3e42d8809e390c6c274f73faf0da78c1"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/limits-macros.h",
+      "sha256": "e855b46230611b23c62e306ec8b732c06b04001edb3dc3a46cfac5625362f768"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-macros/stdfix-macros.h",
+      "sha256": "b760f61b4da46e9c8b763e891affe087dfb89553b6ecb4985567cb1b13c8aae8"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-types/__atexithandler_t.h",
+      "sha256": "63b1548bd217f08e8a3f9524f798f6b7a171eff8a4f1c44bebfd3d4a04335fdd"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-types/cfloat128.h",
+      "sha256": "10d15329e8149cfefb6385f19cf14e4a86aca6cbf83cdcf36801fb5113af9aed"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-types/cfloat16.h",
+      "sha256": "bb0fb2145874d45a9c89505ead6f3a5bcf98c1c89e057b067e3f6b0ac0ccd11e"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-types/float128.h",
+      "sha256": "940638bee993f2c4e5e96c66ea97478d1067131797a379db416b9d09240f4d82"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/include/llvm-libc-types/size_t.h",
+      "sha256": "5a7a6ed640a5f29f7e63d936980d77e087c1ba60eba572f61dc59d83a71b293f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/array.h",
+      "sha256": "dfda1b4f82e9b261acf54dd720a73c6cc9713109a95a4f8a9d3cd15a1ed155cb"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/bit.h",
+      "sha256": "ba59641b9efd37a358b95cd943ddf26a9019768b7edf984983c8615bd106fcc0"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/cstddef.h",
+      "sha256": "2f744e654509271ee4d51aff901b08d0eb1da80f32321b4ae399dfb948d47a8c"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/iterator.h",
+      "sha256": "16e50508dcb40ed48e5f03fcc90aa29568222409fb5227ae2216f7066155796d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/limits.h",
+      "sha256": "268b3946d33d0adb83b2894511dcbec14ce71c6011f2cf313df5301d6aa4bb54"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/mutex.h",
+      "sha256": "adedde883a29b9c5836494330007f84c7e990ce9c56127e4e72bd265b410f535"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/new.cpp",
+      "sha256": "a817de7c3839196bca13d07f112440bd6f6a9a4defab36c8575ef78214d89928"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/new.h",
+      "sha256": "1c149d2654c20f6a0ad6efec2d10f0921052ca7a4f00c755626c99373fb5badf"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/add_lvalue_reference.h",
+      "sha256": "922ccbd50ba6aa312dba09f34f5a273024dd60f5fcc164b143f3ee36df4b09a8"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/add_pointer.h",
+      "sha256": "41129ca66f61c275f4f141dc1b51262dc7a177e951b2904803609864dd659a72"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/add_rvalue_reference.h",
+      "sha256": "22d9d1d1c7ddb951a850d5609856f702b650f020388d7c49940b0f0f06ad0178"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/aligned_storage.h",
+      "sha256": "c30bad387a0e992db668532acb6e6d1a311f2004ffbdb17b29c1ffc33fe6a795"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/always_false.h",
+      "sha256": "ab9f97d0b3e128fc22f67086d7854b35dbeec1b8fdd7de66792e24f9f5132597"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/bool_constant.h",
+      "sha256": "a4d91d87d201d6953c68fdbbfbcd6e009bfc1e4d3468f2779fcf468a39873032"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/conditional.h",
+      "sha256": "9a4a2074bdc737b7e1ab586b5062617178da7def7b29b0d62b1f9c31c59c5656"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/decay.h",
+      "sha256": "1680751c40cc6f1ee9d30a8e672391bad151109d230b122594b0d546a7e2e21c"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/enable_if.h",
+      "sha256": "d5c360cbfc74283eb2ac17089607f740d0ee874cea6dba1bd598404364f924d6"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/false_type.h",
+      "sha256": "a4b8de2e728c787d64f23ddc363de6c79d3873ba11446ea437b19da00d13972d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/has_unique_object_representations.h",
+      "sha256": "47c255fce1da848fdfacc0869b8f350066fe998439c821bf337a05c8faca37f3"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/integral_constant.h",
+      "sha256": "43bf74239a5d69812c4aff16603aa80d2b39498a4628d7bbd4dd2be135473c70"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/invoke.h",
+      "sha256": "1bcc5872ffb795c0385d3f1384d2fe3ecdac88346af0067d1aaf74ec1c89f394"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/invoke_result.h",
+      "sha256": "bd95e0166f8e424f77c94aaa70660155fcd2d77af270b4021e5d5645bd4a176c"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_arithmetic.h",
+      "sha256": "7c81ee9037216e29afbf75401d15773a53ec23fe49a4e5e5de6765ab1b7269a3"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_array.h",
+      "sha256": "dc7c5f40390770e5c3864098411ab9bd712f3b01eb75720f05a4d0a671494767"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_base_of.h",
+      "sha256": "beffe971074adaa39b08824e58e23d4052b1972d805c6d6ed75c6c4f33fea60a"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_class.h",
+      "sha256": "42210e9500a70f4a8ee77fe2d8362d00e81e5fc50f6cb18705eca75456595499"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_complex.h",
+      "sha256": "7b2f538ccfab6f46392712214378a0128d14fb1af9e103f8a8ec087da641411e"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_const.h",
+      "sha256": "529905320a2def61fbb656bcf65fa9f68984b74ff22d73fbb1d22fa530a7b1a9"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_constant_evaluated.h",
+      "sha256": "17964d270de81197101c8d90485a361853f3c9ee27263ae37856e5ef95da777f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_convertible.h",
+      "sha256": "731b42f6fb289be2efac5d6accb637bfdbadd5f41b13bb7a7285c9cb6af79f25"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_copy_assignable.h",
+      "sha256": "ba3c0c25ef47d917ada6b595787aab82c6ef1de3eed4279a4ea28399bd1bf343"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_copy_constructible.h",
+      "sha256": "008981be8da6bbc3afed4a3821da1ea84dd972306b5d1f18f80c45a12093da42"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_destructible.h",
+      "sha256": "aa63de7204de21908593af635fbd0fae2b50a6d113137aa493cd6614158fd61d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_enum.h",
+      "sha256": "e9cbccc3b8995b663fa71e0f607b6e75a5eae792592409b342cd80e5c90898a2"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_fixed_point.h",
+      "sha256": "06c89f063a4f867729a9fe2d77d0f1e0f26b1e46c8b10e81b27ffcef196ed87b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_floating_point.h",
+      "sha256": "3e60201074dcd81bc927ac3242b5658cdcdc03ab7100a56bfc87d7b4a80d8e62"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_function.h",
+      "sha256": "d89f1c400b0825bba2fc6f7efe5225a3e41f1135fafbebbebbbc1f0650b1bbcd"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_integral.h",
+      "sha256": "be8fff4cc3666d8992d310ae833657084eddb14110f903302b656083b4a92cec"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_lvalue_reference.h",
+      "sha256": "cf4a9b93b5d0e5ea11bab046d57581fec1848a1081663a8a2903582984ccb2c9"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_member_pointer.h",
+      "sha256": "3bc303a9f8791e316cc3fe74cc51789db05b96220e118d00184bf0555a929dd2"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_move_assignable.h",
+      "sha256": "afb2104c9eb287688d842e33b864807b20127b3512c540728673d393418f0350"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_move_constructible.h",
+      "sha256": "c95843514b2015c82f60d4822620ee9f1f6e93086a7405b0ca997dce63c3390c"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_null_pointer.h",
+      "sha256": "c9cb3e4d760b4668ebfe562c5ca8f0e3d2acfb9452e77d3dd3db3076f7cf0fb4"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_object.h",
+      "sha256": "e6699d0bb2c281953850510233ba96ffb9f6652c653041746ef9a5b755b28943"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_pointer.h",
+      "sha256": "c8e3190c920ef43b005aff035be389466a5e4541add7390e7b786e7ba809ef43"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_reference.h",
+      "sha256": "0038d53f09e175cd3b4ebfb1cd64905e8e4163da73af93362af36bef185676cb"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_rvalue_reference.h",
+      "sha256": "ed403b81ecbf4c43c0e2b27aeae0ba94dec98f8f4f2dd548a274d0e85c4353f7"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_same.h",
+      "sha256": "74daede907df025779b94241e9fa10d53260ed24c52f38cb56c93fd9076e22d8"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_scalar.h",
+      "sha256": "7bd3331a0355f28480aada6b9721607ce71e1266a629413d3d16dd0bad789d08"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_signed.h",
+      "sha256": "94fbbd7b03f8a0379d13a59077befba31d6679a3af13ecae5185ffe574321da8"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_trivially_constructible.h",
+      "sha256": "2653f581cdf445832dc72705c17369c327764b6cb6796ade2a0edadf35950c83"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_trivially_copyable.h",
+      "sha256": "50060eeec4366f16e648bcacf9abff8ea0d0ec089699c6d6e217851f5dc66a4f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_trivially_destructible.h",
+      "sha256": "1df8de725bb5dbd8cc6e11e639271a8f7e913073f51c0e134b53b7b9142ba899"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_union.h",
+      "sha256": "fb6acc5fb26edf7f5d22bd91463cad0db6c09402d1f3a7089f5758b1350fc276"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_unsigned.h",
+      "sha256": "db5759d754379c10a527356730278da675063dee07e31835436e5d24256005b3"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/is_void.h",
+      "sha256": "bc64bdc46ec4d650429c8f7a3d782e5809385e8c76c7e2c1f1e6fc3c325d27a5"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/make_signed.h",
+      "sha256": "e709c3a504402d84894365aeac63f2697f41388117aaf24e03183efaeb16d8c2"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/make_unsigned.h",
+      "sha256": "29f471097b205e69b11320c40f58e7411b1160de4815cb9b499fc68bc68b33ea"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/remove_all_extents.h",
+      "sha256": "4daf6b639b3036f35d2bd8fccf3466901aad767508302831d3f15838371b6789"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/remove_cv.h",
+      "sha256": "d2ff553aa2b7107a7ba7c6688bf89177004e6773fbb8e69a58ff2891d5e6675b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/remove_cvref.h",
+      "sha256": "dbd0593b8c1b29496690fa9408f049843b62906fcf32831b463c79556e4b9460"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/remove_extent.h",
+      "sha256": "7ae0793eb6e0daf115424f47b7256e79b810801c1e878018df08fc9067e2265d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/remove_reference.h",
+      "sha256": "995e117692af3b126160c3ea7520e206f6694c35ae5d43d79cc995dbce855cee"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/true_type.h",
+      "sha256": "a2fa1d166c63b4bb4e8952c8374d0eddbf61f3cff4702ae09fde1b2a2b171b49"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/type_identity.h",
+      "sha256": "b2d8ceca585983753db2acb1e96b5fe4e72d5de57f336cfa7e80fe20511ea1c1"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits/void_t.h",
+      "sha256": "f89033a8d0598d1e957fa995289d8303259f27c1445bcaaa0c305ffcca61a066"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/type_traits.h",
+      "sha256": "75bb93fa75f54abfcfbb05253cdd407ac476b0ce2fb4e8bb3892af32d4016b80"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/utility/declval.h",
+      "sha256": "f3869c2bda6765a7df97abe0ec63ec02616dbbe56df5101675375536279a8f65"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/CPP/utility/forward.h",
+      "sha256": "4289b79740595823b703136e09330a1e86f1a77a1a694a37507fc3a89c67d5f4"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/alloc-checker.h",
+      "sha256": "358e1e83e9f60956ef00bb8101d11959add383a50dffc4e66fa5d07c43d8f1a6"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/blockstore.h",
+      "sha256": "d9345a5fb62eb1041c69f7727f4c745e8da035bed26c8ab2a6c5cda90d57d15e"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/common.h",
+      "sha256": "acbc74aa26f2a403e46c05bd1f52537203a302cd4f4cd738e0bb224e5cfbc22b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/endian_internal.h",
+      "sha256": "774d303da34408660699a3b3fd754aecd4975b6de778eeee25ec99ce48e88c1f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/fixedvector.h",
+      "sha256": "896ca1f56144864f61f7c4446532018d94c9e55b8ce6dcad041809a80e03a68b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/libc_assert.h",
+      "sha256": "aefb07ff46f0a73d6c80070791a27d36aa23640ce16b024cce4b18660a829407"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/attributes.h",
+      "sha256": "b21c56a327797d376a3d64c10a82ef33f032b46fd0252accec0ceb60d6208d2e"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/config.h",
+      "sha256": "561fbccf826192c961fdba05d2eb09e444bde33f46979015db4379aa021e3cc8"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/optimization.h",
+      "sha256": "feac37982a8901b108a21a541a94b6994cfd0531de32edd046da25827ee3418d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/architectures.h",
+      "sha256": "e09525988d5318cc302bc38266c8eecc77b1c93a4ae82ecd4ebb9290abe1c8d9"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/compiler.h",
+      "sha256": "83fe28dbec8b4e778a1ca5b0db9f134251ddd388e9e9ad4d330145e92e288539"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/complex_types.h",
+      "sha256": "65e63f890b0a49aa3484af23ea021f48a4252679b6de199144ff6fea3ebea416"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/cpu_features.h",
+      "sha256": "b5f52bd9699575bf179e03ae168f0a06ac7d7bb081d698d2b02266bc23fab7fc"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/os.h",
+      "sha256": "da82ac476c0ba817f603852e18515d06487fe93af59e067739b35b47dce321f2"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/properties/types.h",
+      "sha256": "e73dc777e0cd1d39188a3a03508ddb9346949c6fff78eefde642de1b8eb43cbb"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/macros/sanitizer.h",
+      "sha256": "bbf6cb8f7da84175d87e50ab0f3898e7ddce797522355fd3e04a23c31472f250"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/threads/mutex.h",
+      "sha256": "9104ab5dd23a26072838e7e296989626a10d00e66a054293d48aeed579110b6f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/__support/threads/mutex_common.h",
+      "sha256": "8de713d425ccdb1d85e8bdcbae1688190ec6da93ed363b0d3249e51c1208f722"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/stdlib/atexit.cpp",
+      "sha256": "39a55c3464176c87bd22f8f778e885686d7f86d1f735343e3f9a0d560b751a4a"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/stdlib/atexit.h",
+      "sha256": "b2691e9725e129113867aa91445ccd5e2b21bac7d47cf63fb5ff0a5f3b9edd2f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/stdlib/exit_handler.h",
+      "sha256": "75edae3e15445e5517439a2dc7c9dddc1dcc25a2f342b8da1a62d30466d8617d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/aarch64/inline_memset.h",
+      "sha256": "eefc78007ca47c3b596b9f6a3ded80940500d6758709d38204ce69ddb32671ee"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/inline_memset.h",
+      "sha256": "0e0bb4f57d56657388fc2a5665ee5c0869a49159c5368c43f8be5efd9a317059"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/op_aarch64.h",
+      "sha256": "65ed6d6b82f4d5d57562c99e9349ae3c3c2511fac2417ff09d5c2cdcfedec63b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/op_builtin.h",
+      "sha256": "0b54ee6db1eaf6865b14590312f6d74b0e0e9ecb0b0978521d1f6cce0f9fbaf7"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/op_generic.h",
+      "sha256": "0d4d176688115e71dd65259de4ddcd97956f3388923d726e45fd426ce1e3bff4"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libc/src/string/memory_utils/utils.h",
+      "sha256": "f2f5b860bd54a24294a0318015981ab3bc4b70d049781972b7644f04f9e35b34"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__config",
+      "sha256": "74c873013495a1f6e4b14f1dfd67c39a6cd027028b4c3473c5287b8ddd22e3c2"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__config_site",
+      "sha256": "3ac5af56abfebec68f3ddc02f17f2312687441a5c3e0b11a450ef51480902413"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/abi.h",
+      "sha256": "58a7f864095cf65cbeb2345735d540fed641c5609eb4d856d97953336076dffe"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/availability.h",
+      "sha256": "ef92cff30b4b245cc5f6bdc7dcfb122f2eff2f474fd7475c7a36a19034989de6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/compiler.h",
+      "sha256": "0f04ae9d9082389e0e92e08645f7412b13ad8e0c2c19f6989698f699921006f5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/experimental.h",
+      "sha256": "591854d7040d9f0cf672ebb5c85d7b9ddd0daab7bc18286a3dff8eaa7024da53"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/hardening.h",
+      "sha256": "9759cbf013585a210d6d55be10828cd37c0ec17662c9877d8a48c2880f5d1045"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/language.h",
+      "sha256": "5ed01fa1a4c2470b977a5f3412fb9da2534fa1137179701435c4d996fd2f7d54"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/platform.h",
+      "sha256": "4439c19928256118efd471f9c6f03876203fde9234137c13ab26795ebbacbb6f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__math/abs.h",
+      "sha256": "341636b5293360e5251d138fe4743f0d3a29f09068070ef4d34be40b0750ad84"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/enable_if.h",
+      "sha256": "e1146435700e53985c2ddf9b6218dd3ad6c71743688a1ee037881b68447de4ca"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/integral_constant.h",
+      "sha256": "bc1a92ae8550e3c480d90ea583b79524d6c0ba0ef5faa4c3abf4afd1378437ea"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_integral.h",
+      "sha256": "1519de36ca5d6edf62871b2c080a91065f460ea48e6af38daeb5b1aaa9865d86"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/remove_cv.h",
+      "sha256": "76d2bcf641580f423c25d50b16088ee8cb880d20f80a511f1ffe03483035b7cf"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/stddef.h",
+      "sha256": "c7b1488287bc405c1eb1c44720ead99f0a810d09fe14f132592eaf34bf0da5f6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/stdlib.h",
+      "sha256": "9c4f5e0b45402e668facad3a0e0531c8f6b6aac99fad4cdc07d9aa83f6489d9c"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stdarg_va_list.h",
+      "sha256": "81c3055f7033e26e7f53705653bc9d69b5202f25c2692e03b3a4f77ff44a7d76"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_header_macro.h",
+      "sha256": "4cf46e8fbb809df048eecbbd63686fa741da27afa8db4245bd1f61c1fb1611dc"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_max_align_t.h",
+      "sha256": "3c1e4de47f4f06b35e2c5890d670052e84f716760505ff51b022fc8b21a9400f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_null.h",
+      "sha256": "b1d71b08563ab3d2c22a1e4f8ddf4d9a1111c89e9404b859a45c307e8ebc6c69"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_nullptr_t.h",
+      "sha256": "898b4465c5d3040d27e760e82983a751b1b0cae23ba280b18a1b81451841f9eb"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_offsetof.h",
+      "sha256": "e5f0f4ff8ff5fc6a1cc8b535f5065f1728eadd2bf1e1401f021f803ec7b4222f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_ptrdiff_t.h",
+      "sha256": "b4178a57f3711b7013cba747a72a2f178c29fa9364e77d75b2159754072ced43"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_size_t.h",
+      "sha256": "d86ddc0238da09b385846ebef814ffc50a44e40cf85d4e3793f485952b7e73ad"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_wchar_t.h",
+      "sha256": "1900d4998aef3698b06399ed686db0c21e26509b08638a25734fb97ae89b1001"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/arm_bf16.h",
+      "sha256": "87f7bc1cb7aa53a85347bd4e1855cccd45599408bb106e66515519c1033a6a3d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/arm_neon.h",
+      "sha256": "ed8fc4135aef7c5af5f30ca3715d96ee9ad5a2bc97f558214fadda5704742b26"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/arm_vector_types.h",
+      "sha256": "6fe5730cbf5b4760620d643e5b44c9abbb13969b168dd7733252158503003034"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stdarg.h",
+      "sha256": "ce6e43d79dc89b50208ecf259b1ffd519f5a78cd3a2c7fcaac6386f376b89fef"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stddef.h",
+      "sha256": "b3e62a046ddf28d09eedebe6eb9461cb7060e47cad2c69964b222c4eea10347e"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stdint.h",
+      "sha256": "f43783466c93f77a6464274ebf18f9e4cc46f0d90770ddee2993c6cf39f7514f"
+    }
+  ],
+  "resolved_headers": [
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/Availability.h",
+      "sha256": "19778e53358af735e2eeb61696c3f961c5d843e25bb2b1222540dffcc08b65e3"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityInternal.h",
+      "sha256": "6f42591c6ea98c9a67b204bc4257b971f9653bcf86c003ca384caea8483c15bd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityInternalLegacy.h",
+      "sha256": "c870957de1ab12b504c5d3d54f894630dee0aac25acd29946438aa6729005a31"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/AvailabilityVersions.h",
+      "sha256": "9905d2d9d8154dd0cf539c7695db500f2d87cad8651a021c6a75bdedbae25463"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_abort.h",
+      "sha256": "ad37627745fd324a640fa93c5f9909250c036d577457090a1e72ee939cd7fc7b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_bounds.h",
+      "sha256": "a812392ac98f78ea54686c9ec1971522fc6464073a5f024d3e11eeb4ecbd2679"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_mb_cur_max.h",
+      "sha256": "bfcdbdea8a728e790ca47166549ffc4fd159dd1ff3af6170ad202a1ebb6127dc"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_stdlib.h",
+      "sha256": "3a08bba562642ce27a7163221e00e367fc9dc5e848006555f3e8ff47b984e204"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_string.h",
+      "sha256": "f9ff67a1e82c3ce2f15d0a8bb3031b6d49ceaac149829cb9b769a9476391c63e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_strings.h",
+      "sha256": "76b984c39538b145bcb8a930538e07ce446e9d4ace00916d6110c775151d800e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_time.h",
+      "sha256": "a3dceadf2c95133018af363187829ca072d85a93d69f9682a2e4fb993902f28d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_intmax_t.h",
+      "sha256": "215f90a4efdca4991735be55a1ff701964dde07d8b4a8382ec8ed41ecbf5f115"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint16_t.h",
+      "sha256": "adf29323b0ecb87cbc43ac3ff25c096de7a214ceb90007c2828616151c66ad37"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint32_t.h",
+      "sha256": "951131475ec815813c8ff40d5e875029cd968334fd3a42d5a65fbe7851d1718c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint64_t.h",
+      "sha256": "a5692cddb9c42d1b55ebcd6fa445b212c4b0c46db4583aaf3293ed6386d3d0d6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uint8_t.h",
+      "sha256": "0a5c0353c8410f5e502db7971d987ac83a9ec3148905f10984c78152f541de68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types/_uintmax_t.h",
+      "sha256": "0b154b16a3945edff78f00321d90a662d522e197c08e7de3b68f0ea44ae0d042"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/_types.h",
+      "sha256": "532c4b0f11274f6b10875db65e154e6cedaa20fdd189f5f40a8780c9a4c39449"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/alloca.h",
+      "sha256": "5e956d0cffbf6d069d2cc9cee52686e1e7b73e3e2939cfb3fd3a7ca096bd8980"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_endian.h",
+      "sha256": "488530aceccfa1f364f2850a5f2956e22436db8b12b33d2a41567c4ac9d60788"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_limits.h",
+      "sha256": "b64325f6b5aba08a361b7b8e537df3d8d193538c1d6329a4c4a7e72f5aa63478"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_mcontext.h",
+      "sha256": "6af56aec1a82613dbd54b09d95eaf96fa7b9443a4cf4c7e9ba689f6de6047186"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/_types.h",
+      "sha256": "4f0bde85f9a41cc7d30fff22ebd7e8f4eb206a55a926eda012a2e7481e3524fa"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/endian.h",
+      "sha256": "60bd5d1363d89d52e5cfc95b83a35d392a8315835f9d60089d4e05b8f4d1cc68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/limits.h",
+      "sha256": "59fea4e9435607efb7bef02a226e05202b236e8434518bb130fc9aa0932ebdb8"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/signal.h",
+      "sha256": "de0bc923b92bd88f3bd8bcd38b20f8123277732d7d3309cb2a5bdc60bb4dd8c6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/arm/types.h",
+      "sha256": "b9eccd5a3feb3a62e22e42936656c8822e7e3e8708d759b1512deee05f682f0d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/errno.h",
+      "sha256": "ff95a158e0799dcf0622e83882e64d88f1783b98a91d9b206bcba2a12f8425e6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/libkern/_OSByteOrder.h",
+      "sha256": "f0febaef6f9ec75339ebdd896dab2a6d1a1934628d76098f165f1db1b4b74c14"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/libkern/arm/_OSByteOrder.h",
+      "sha256": "7c686aa04afa38a20a0163eccca9941aeb8328779884c2603d8a9a773896a677"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/limits.h",
+      "sha256": "4e09d7a2307887fe787c65e31d63747720c4d462b7ba3bf8f45e401d74f0b246"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/mach/arm/_structs.h",
+      "sha256": "d2bd0ff228eb6e45bbe2ef027312a0348a173e5a1af54d41313d9520900ef103"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/mach/machine/_structs.h",
+      "sha256": "410350f04225bf139bd89f1a99418a55734e4ab2101bb93dc301f790a130f59c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_endian.h",
+      "sha256": "17eb7d38845502ce04aac3ab709dffeb4ec253781051b5d7894703e9786730de"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_mcontext.h",
+      "sha256": "9d3425653d2a1623d785dee4601c3c00e05f4797d7e840b00f17d529f8c6c51e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/_types.h",
+      "sha256": "f27264f8fdec9f164b4fc2b556f666ed7c5c0e5b88fd9f23db0b731ffa6cf864"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/endian.h",
+      "sha256": "37f9e1c8599a729e605477a5b6a77cea727fa66816e4585d0dd32e3ba377f450"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/limits.h",
+      "sha256": "50345f1ab843fca787a38c552a84177e678d79dab86e714434f94f2546839357"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/signal.h",
+      "sha256": "09b1798034cf3b5217df3e415d6053df9c2e16b858036fc11888e63f4493f53f"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/machine/types.h",
+      "sha256": "76e7c59451d996fe674a6fc7e518366609a95875c9b9aec9fd590a3ac138dddd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_malloc.h",
+      "sha256": "28b33ab4f20da030c11fd248d8a340c1af80d18d0c331c8248fd4da677760949"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_malloc_type.h",
+      "sha256": "8cf89bcedf5e86bd0733f9f0b3292c1dff7d17c5966d475cb2fe1871e904bece"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/malloc/_ptrcheck.h",
+      "sha256": "d3c4e809117b24467e9313cc348c0495aad8780cea6bf58177743b9be09c3591"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/pthread/pthread.h",
+      "sha256": "9d621c730d1d96b600893b0e3e4c45822a24d565e7b6b166973c41a6a2eb02e7"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/pthread/pthread_impl.h",
+      "sha256": "42896cbc575d9099c53f8c0afbaa04f40b2d11d24f92af5ccd7dacdaf8690231"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/pthread/qos.h",
+      "sha256": "bfcfcf23501c328f5aa7f3bb39c0c8167730ab111393063c5b5fb4bd72d074f2"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/pthread/sched.h",
+      "sha256": "07d65b8d135be978a33579b5a333bd4576a8c6b36351ef510e0cca2aa0987020"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/stdint.h",
+      "sha256": "9d070aad02d9f2ba1f2248d093b4194b62cf8d363778c737d1110f4736e5ed3c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/stdlib.h",
+      "sha256": "7995a2df951dd1fdbd9fd4ec38900b79ef1797655ff239728fdbac56bb9bd7ff"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/string.h",
+      "sha256": "4b1b9c05bfe370d423d7a6bf9e74b189bcc7f59c1cd97f23d6d94f2f3df6a4bc"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/__endian.h",
+      "sha256": "8697850f0ec13e9082081e9b8dda8f94053970f3546e4a8d42738b16400eac91"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_endian.h",
+      "sha256": "fcb57b694d555b2a8646e35bc68cc6864deecbc8d5528cd40bf764b1ff14d3fd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_posix_availability.h",
+      "sha256": "452bff9ae32655a49b65802e29b21c67a546be1446553f908ef9850a694746bd"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_attr_t.h",
+      "sha256": "987973d4e4f0c84a929fb1288755637453d88bf1410b778f81b2550ea4ad211c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_cond_t.h",
+      "sha256": "1f44e579de86408da3f83e47918e11d62d41fdce1c0230a7e30f5c56414ef914"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_condattr_t.h",
+      "sha256": "167ad51c9e184c2f22e67dd7100e321305b11b3fe2cbeffd074015f20ce4e315"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_key_t.h",
+      "sha256": "aa386e8d73d64c95432c42133e1ce1a0f4e6b5769a4720ad38c81c71355e12b9"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_mutex_t.h",
+      "sha256": "9af87ec733f482f5bb59ff9c49b7884c6fd58444669fac8e64525da82f03cc91"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_mutexattr_t.h",
+      "sha256": "93686494113a5167f198d6a586c1ac1c5f87eb0ef5751b9c441db52df0e9edd9"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_once_t.h",
+      "sha256": "5ea5cc064b4770a6c776a0c84f9458f8089540a62244417de37309aa72c89fc9"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_rwlock_t.h",
+      "sha256": "1e20731f227b6c0c83d149c9564bceaa62220128d81c04833abd835d469115c7"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_rwlockattr_t.h",
+      "sha256": "f60fae1acfd6742846ffdd7a07a47996caab73ac12bb421b49a4aae3edb80d66"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_t.h",
+      "sha256": "7bcef3e2436e7a96bf0201e99bad5a11e6d495dbac85b10207441c05d7fb461e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_pthread/_pthread_types.h",
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_symbol_aliasing.h",
+      "sha256": "59c7a35e5c9579e6e46092db768a73bea7c0fb63651d43611c5c7cd4af99efc1"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_clock_t.h",
+      "sha256": "e7be094e48f450875288ef68a59409e530dbe2d9449c78ff3d9ea9d654e0e857"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ct_rune_t.h",
+      "sha256": "17b8b91c92c4929111a4e854a38a04c3d07fe0da2a31f3692e1407db6a69de63"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_dev_t.h",
+      "sha256": "4ba3d19759544b9f7bf424d2a16a518ff586e31ed968d525440e678cfbb07a5d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_id_t.h",
+      "sha256": "fb7255c9872e2a805c206796326e21d47146e22c93c09752126d7166bdaba5e5"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int16_t.h",
+      "sha256": "e40d40ad59c6dc98577b2c7cfdba1121ebfee17b29e093cbd10b7936df496d8e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int32_t.h",
+      "sha256": "77127195e57f1690402377ddd72e3dcda684ddf591346f08ef4772dddcbbc281"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int64_t.h",
+      "sha256": "a2427b34e5e83996bd28d83cec920cf3b82a366af90e767234557bd11fa33a18"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_int8_t.h",
+      "sha256": "607f6beede0251eb801e763493df26fd45d46eb951e4ff9cac17f1ac951b8cc0"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_intptr_t.h",
+      "sha256": "b2a7ba9b9b2d357d75e59114874658f893b23ea6d1357815b027d8189075daba"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_mach_port_t.h",
+      "sha256": "8f178c4c396766f74c2cf8240af9ca420aef38b67bd0d6b7b1ec84c2c48dfc91"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_mode_t.h",
+      "sha256": "7c4261bde41387fc23aefe5dee1e6298ae6b6f5592bca51947fdd9736e0640a6"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_null.h",
+      "sha256": "3e021525d2a711070e9c78ea2791e020ef6105c51121d8496d617f89a83d2f92"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_pid_t.h",
+      "sha256": "052a6dbbec8e30623c2d33dd373992f6c5d0c57c57ed4949d2b48c4ab0976487"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ptrdiff_t.h",
+      "sha256": "0b544d00a01bd306ca6d2f44c13422a140e37ed2498f88ea0602ccc520d6e55a"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_rune_t.h",
+      "sha256": "36cd7e6c6ce34e125b4c52f005262d38eba8ef8486c7cac7adedcc5d37cc3b49"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_sigaltstack.h",
+      "sha256": "2bc87d34186fe6524fe89fa1e2d878462c6688134d03880b8bfa1486db297687"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_sigset_t.h",
+      "sha256": "df99c73ecdbde1fcb3a4a22169871e036240452472b8ea70f287456d42593972"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_size_t.h",
+      "sha256": "3e1bcf6c23ad00e0fe2b5a4683e687299baf51cf26b0a4ebc73db6140378acc2"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ssize_t.h",
+      "sha256": "58eb3bdea24b27e6b5fb45e203e476faf2510b5c0aa81a0b45c17b528aa9c192"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_time_t.h",
+      "sha256": "c0a28cdc5c9c8cf99abea53556895bd8001a6cb13ae6ca9f366955500678b35a"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_timespec.h",
+      "sha256": "3314f260a6b3ce09c02df185ba2253577b2a268dac05d3cad55f76bb3e8019e8"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_timeval.h",
+      "sha256": "f723018fec267200e915777897515b5d7ed20901bcb294873f94b1d835f9ae45"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int16_t.h",
+      "sha256": "9dabbd8280c28416a5ba115355678d2540588df1a7251bd9b4a13e30c309a71b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int32_t.h",
+      "sha256": "196cba7a865c086bba457758d3b2605a4c1299c54a758366b7d420a585895f1d"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int64_t.h",
+      "sha256": "d096eee54a5acc2c3cd5cf71256d69198ada8f8d82cdb0a717bc8ed65650ad93"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_u_int8_t.h",
+      "sha256": "7505dbbdf3ecca2b8e585871ad81c0e67a3cb63c97c47abe73fe262e071a3ebb"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_ucontext.h",
+      "sha256": "d67fecbd5fba1fc876b41b0a69ff080e3d47c9884f3ea4012f8a334ffda62681"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_uid_t.h",
+      "sha256": "d2140a65a17943a857381757c0b73a920f35ade41dc9809437c168be457c276a"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_uintptr_t.h",
+      "sha256": "f435cf25e4f06dace9c1884c066392bafd204c6d71f16696e71acde5912bc81f"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_va_list.h",
+      "sha256": "688c84ca73e82898609ae7282c820e896e4b82b7dc14f4fc92b4263df5827de2"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types/_wchar_t.h",
+      "sha256": "f0c3da0beecb5feb19ddede0ea9d5fbb9274e7b1de1b7cb91f64196ac1395008"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/_types.h",
+      "sha256": "863c4f07045775002b63b7e616742d9f746e4a02da4441442d8fe1138bbd0ff9"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/appleapiopts.h",
+      "sha256": "efd9793f56c08917cf1ddf5108b78240ede88a5bbc8977d6fdaf1684b6b01c1c"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/cdefs.h",
+      "sha256": "12c3f06e56e972e13185e7d0463a605ec893b67e2e28c09381162e7d6016a69e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/errno.h",
+      "sha256": "80dc0ead0d8a003014c02d1f2bf63808000af9babc63a67ea1f36252c0a05212"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/qos.h",
+      "sha256": "3f1e1e9a2b707f22407df44ee8a8b270348d3b4b53313ec52d06a6198716e273"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/resource.h",
+      "sha256": "67b82d1a9c0d5e788bcfed206e5a63d519e9f05879f475e736827e4131959f68"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/signal.h",
+      "sha256": "171af7545ef750627aeba02c1de838c05e2cf396e2f49881ea74dba6990c44a3"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/syslimits.h",
+      "sha256": "170629c923b4ef2b7132dc8a9d71e9f010332bada56363f619b7c758e17d2c83"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/sys/wait.h",
+      "sha256": "b77f7dd6f592eba8b0d51c15c7b975472fdad50c12ea296f74f062cbf98dcbf7"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk/usr/include/time.h",
+      "sha256": "cf4912303943c5bda8404f5fd7a2a8219153353a49df2aeaddbb2dcd4b35c0bf"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/source/libcxxabi/src/cxa_exception.h",
+      "sha256": "f6867fd35fc8bafde2f9348a017a2ca9938f577d648d7258d9aef780064ddb52"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/__libunwind_config.h",
+      "sha256": "9c4d2213e9b6dd77da80d066e7a320ddbf3b62a8e511026e4c7a2e10ec9059f8"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__assert",
+      "sha256": "b3b9bee9d44249e90df489307daf510724b01ef46fede9f6959e6b57880830e4"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__assertion_handler",
+      "sha256": "f898f23fcba22ccc511c7e7c8675abc08cb63f4fdc4c79cadb45a13d8c349129"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__chrono/convert_to_timespec.h",
+      "sha256": "5355457b09a689ad3c9bbb47ea6babe7b2fe6110515fc3a5c230bebd94cdec13"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__chrono/duration.h",
+      "sha256": "f8176636e8e84fb09e2af6d093938c48506eabb1bbbcab9f16f60771daa6d885"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__compare/common_comparison_category.h",
+      "sha256": "8585a3800b10b0bbd709a8a7e8c65fd1d202440abe7946903b854ec82753afe0"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__compare/ordering.h",
+      "sha256": "c2d6412160bf8c3e13b7c3558eb703d8ec8535e815de17e30578cc5577fcefc3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__compare/synth_three_way.h",
+      "sha256": "269e22a4fe2c8a5cb41ab8519e7482930c88921091740f7d4de99967b624602c"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__compare/three_way_comparable.h",
+      "sha256": "567f1df23e337f0b69f9f7235e5de289b8efd41472db70d85c547fa5bad51dca"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/boolean_testable.h",
+      "sha256": "0e4f0847f07c4132993ebe7ff03b966f67cbc87aafe2410b74c49996372c6af8"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/common_reference_with.h",
+      "sha256": "c8a377ae7fd0ee94e04fd58f33ed1e8881581581145e8f7a120747ddf07e2dad"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/comparison_common_type.h",
+      "sha256": "da60ed981b3682c9fa4d397c903da5fa350f9f880f05d76ce437b794a86e5429"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/convertible_to.h",
+      "sha256": "e0130321b4cb81bb7ae90eecad5e75188a2d81e1f8841e15a421e34e1ebc731c"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/different_from.h",
+      "sha256": "862300e1f0e972a02d5cab4f81fcdba2eae92690c42e38cf1c77ffe175f4632d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/equality_comparable.h",
+      "sha256": "4cda12b7f3c0956e92213d434f255d966f4579f4f538feb6e104275151cf049a"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/same_as.h",
+      "sha256": "94e76a6f662c93d8d0dbe03fa901d79608ad8ea43f7276031c17c75f2aec0563"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__concepts/totally_ordered.h",
+      "sha256": "802bb6786faeb2401a6031f14a5d431cee4462a3dc845048d545a684a300ce26"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__config",
+      "sha256": "74c873013495a1f6e4b14f1dfd67c39a6cd027028b4c3473c5287b8ddd22e3c2"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__config_site",
+      "sha256": "3ac5af56abfebec68f3ddc02f17f2312687441a5c3e0b11a450ef51480902413"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/abi.h",
+      "sha256": "58a7f864095cf65cbeb2345735d540fed641c5609eb4d856d97953336076dffe"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/availability.h",
+      "sha256": "ef92cff30b4b245cc5f6bdc7dcfb122f2eff2f474fd7475c7a36a19034989de6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/compiler.h",
+      "sha256": "0f04ae9d9082389e0e92e08645f7412b13ad8e0c2c19f6989698f699921006f5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/experimental.h",
+      "sha256": "591854d7040d9f0cf672ebb5c85d7b9ddd0daab7bc18286a3dff8eaa7024da53"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/hardening.h",
+      "sha256": "9759cbf013585a210d6d55be10828cd37c0ec17662c9877d8a48c2880f5d1045"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/language.h",
+      "sha256": "5ed01fa1a4c2470b977a5f3412fb9da2534fa1137179701435c4d996fd2f7d54"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__configuration/platform.h",
+      "sha256": "4439c19928256118efd471f9c6f03876203fde9234137c13ab26795ebbacbb6f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__cstddef/nullptr_t.h",
+      "sha256": "b9f85c012045849937ca4f4d84fde347c0dc88dd4149b7ba6d55816214cbd10d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__cstddef/size_t.h",
+      "sha256": "24fcce5e6d3c4a731254461a28148abe1f571c2e8790ab50442446ded352846b"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__cxxabi_config.h",
+      "sha256": "e2e4db49c80aeefef76c1fbd58b2f5e1b4f9fe0f6a215bc75621c768f51dc409"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__exception/exception.h",
+      "sha256": "a95ead93486ae1317e1ec93d4d55b4f8b60d855ba667c2686134cb130536d0d4"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__exception/exception_ptr.h",
+      "sha256": "fc46ed2296eeb9886e35e876aba20e011b522cbe88ff6c88b7e33678ecfdafde"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__exception/nested_exception.h",
+      "sha256": "2ba877d31c67344a9d015dd192f38499fc1a1eb15a0e4b9ed261ee0e93774b2d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__exception/operations.h",
+      "sha256": "6b848debbabcfb77eb11850e72a79cb9821a01d5a01d972b99a92f75fc2f1862"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__exception/terminate.h",
+      "sha256": "ca0a3ef84356a5058c1b2d6f4f97bb3f742306ca2baf2c56df3b9188078b39fb"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__functional/hash.h",
+      "sha256": "de43dc017a9525afa65525bcb9395c12a78c2495ee8d33701f8f48acfbfeb8db"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__functional/unary_function.h",
+      "sha256": "2e953bccfd624f590e6e981485e19642053f547c54893a746053a020269bd990"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__fwd/array.h",
+      "sha256": "b9d6326666db62e674f4efe5adbef48e870a2381de08021e93548acec2a902e0"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__fwd/complex.h",
+      "sha256": "5befaf43df62169554fca10902604c781b5620e12fbf796e181284247fe597d3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__fwd/functional.h",
+      "sha256": "2d26baab5b231afc99459e1e25f3d51206ead48ee8b243df815b6499914041ce"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__fwd/pair.h",
+      "sha256": "f8fde246162f539b8f2e9db1aeb57dc97f9341ac797718db9bceabafc9b21fda"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__fwd/tuple.h",
+      "sha256": "1d7ae42f2804d06ef6f5b045bb78a64ec1dca68753b39ff4c53ef6febf1391c8"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__log_hardening_failure",
+      "sha256": "a926ce1e8d056a2e80cbb6be2ae2d0c0c3388c525c36ea4d3bc37fa56b806181"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__math/abs.h",
+      "sha256": "341636b5293360e5251d138fe4743f0d3a29f09068070ef4d34be40b0750ad84"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__memory/addressof.h",
+      "sha256": "23a9509a1c71b6a08bf936c0cd7526cddeea036dfd63dbc09a7d88e25d045756"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__memory/construct_at.h",
+      "sha256": "291e04d7298c47bfbf72aac34f5422c173018e5f4b440b304c512a7e3099e921"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__new/placement_new_delete.h",
+      "sha256": "1d4af0082dd3253fd23aad4b3c9f926848dc7bee4aef0ff092b3f88d156e8af1"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__thread/support/pthread.h",
+      "sha256": "8be652c7865ad4ec332b9cb904b8ef150b1af147227bed0137e65db7854e5921"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__thread/support.h",
+      "sha256": "5c8574d2cb73f85c05d849fde0322e19aa2c097d5215b3a1984d897f914d55bc"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__tuple/tuple_element.h",
+      "sha256": "8a39f58f71e2c3cd91c3959020a4e6353ad0a73e333d74bd6e2f20f998226920"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__tuple/tuple_like_no_subrange.h",
+      "sha256": "f02bf0857f3c852bb5ebeb1bbd08aefa90339e92d32e9a22842a73fd9ba30b83"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__tuple/tuple_size.h",
+      "sha256": "a987a840b895462d5afd2f93e7726a8dc8c9444d54df5ceb5e131df5449711bd"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/add_pointer.h",
+      "sha256": "c25f8672934ccd24a622e476fc74f2b3006a1e5f13710bc5ac001059b5af7b58"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/add_reference.h",
+      "sha256": "54d581bc52f40716aef077c8c7caa60db011fd2f0cb671f44e7e3b857f3c8bbc"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/common_reference.h",
+      "sha256": "cad43b316d9e1b209fc53f4781ba109de2a6ead9fc2d6f4e403282923a9b99b0"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/common_type.h",
+      "sha256": "cae9cf4521d0516234874905b777a373fd7aab667232d1fa70a61aa4cf5dbc73"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/conditional.h",
+      "sha256": "0a022b14b1be66a397e4e244aea1671dd95aec52c88a7a938b61094efeffe8fd"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/conjunction.h",
+      "sha256": "c1664a9b0620730d8645ac68853c280bc3de735edf4fc740dd04c286d71b3140"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/copy_cv.h",
+      "sha256": "87a6ed1b79d1d078ec7eab8ceb8336f6353dbfd18e7253cf94f0ee7611786d7b"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/copy_cvref.h",
+      "sha256": "d5c4e466562d61471f3e28afba82e66fe77a5dbff0d009ae2a85a35630ef18ea"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/decay.h",
+      "sha256": "2954dec2f67b37b27bf26f717a4d1b346f8ec996a9b3fbfb0fd5392615cae9e6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/enable_if.h",
+      "sha256": "e1146435700e53985c2ddf9b6218dd3ad6c71743688a1ee037881b68447de4ca"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/integral_constant.h",
+      "sha256": "bc1a92ae8550e3c480d90ea583b79524d6c0ba0ef5faa4c3abf4afd1378437ea"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/invoke.h",
+      "sha256": "eb40d81fad1cd1718b83d597765c61e5609a0cf48f2ac6a44843879f73fc4c83"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_arithmetic.h",
+      "sha256": "04983384c4beb1765c6e4736873f606cd1a259d7c8d335f4812e8af48e0cec83"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_array.h",
+      "sha256": "eec0091f699e8b7d1be6882d510374073409205f52091522b8164706665da549"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_assignable.h",
+      "sha256": "b4f4ddcf1d552fe1e276e764b56a23850bf41da3fd023f81a694702962bd9c51"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_base_of.h",
+      "sha256": "5de0e1fe39822912c88549b90f40ce6f0fbce2ee125ee92d5a4f48c7dd597559"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_class.h",
+      "sha256": "c6f5854dfb7338ee1a0b865aa2962abfed352d3b51c489f0fe7c8618cc62d789"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_const.h",
+      "sha256": "1661364960350d9bfe50ff848dc5b81333ced2c5e3219492eebf8360279aef45"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_constant_evaluated.h",
+      "sha256": "8da9d47af89ceae85e2b395dab809cedf98c9dfa8837d96804ab449c037bd8c3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_constructible.h",
+      "sha256": "977ec35da299048aa3657a264f8034e79c02be99ee2bfee85d779f1120294668"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_convertible.h",
+      "sha256": "18f942e759105a905254f880e5a03f377c641f9c0c8b81dc89d819a3205248de"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_core_convertible.h",
+      "sha256": "7875dfbb855242d2620731ca826a6a9d5f50a7bc9696bef78ff9349f078cfaa5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_enum.h",
+      "sha256": "3a814c6e94530228423599705d2ff1b035920ce5b6400674344ed491638de779"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_final.h",
+      "sha256": "c57bedb4fb0aa8117bce8e9d6c93bf440ced5b2becb166f3f917edcde4168426"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_floating_point.h",
+      "sha256": "7ca8d869d0b2ab5973b1122d6546b911b11fbbcb166fcdd29e494725fb08a384"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_implicitly_default_constructible.h",
+      "sha256": "36191cc0571c4e90ea6ce10df2d430a3d30ae5a20f08363c493bc63ddcdd83e6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_integral.h",
+      "sha256": "1519de36ca5d6edf62871b2c080a91065f460ea48e6af38daeb5b1aaa9865d86"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_member_pointer.h",
+      "sha256": "ef56611b228f6e1a3e21a9a0021aab9708f1183df117edc89231f5f155cd4cd4"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_nothrow_assignable.h",
+      "sha256": "b66f5257a7086c00a28f4b292977fa5a4e4c09ee12d3513d39243f67a63cb47d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_nothrow_constructible.h",
+      "sha256": "00a0e6bf1bbdf47458428b98b23374fb2506a2b3329a161ca4850868c31853f7"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_pointer.h",
+      "sha256": "d4fc63c365a495477a76b660f8db07ea6c98b25c28266d9273cbd6de0bdda9e3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_polymorphic.h",
+      "sha256": "9eb2acdb718651cdddac2842cdc322a377abcd26df2dd48c70510ebf1a81e10d"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_reference.h",
+      "sha256": "07a75363dd634bd9e640db3bb3e9d08f587b81e3f683446dd4c88d53529cb120"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_reference_wrapper.h",
+      "sha256": "1cee86d0487544d155e0ac26ce3088f4b85701f681e03597b56c59fd8f09d93f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_referenceable.h",
+      "sha256": "0199a91ddde378ce36450e98e78959299ba5b624cc635d5434f882acff52445e"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_same.h",
+      "sha256": "a786aaceae7534bfaffa74475b9675b52ffa8111e81f7ecc872a0a2c58f138c9"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_swappable.h",
+      "sha256": "6efee5530ff8667ae30293fc9b0e01b98941c41dc141ef71899d8e16730529c3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_trivially_copyable.h",
+      "sha256": "77dd6ee9281322fb0f8a5f791af6a9394cf6ee35ac74632a09f798ffe2561484"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_trivially_relocatable.h",
+      "sha256": "96ab460136026bfa757a974293b02b9cb3d07a7a35a1c6e0764c13c9a360cda8"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_unqualified.h",
+      "sha256": "c9f2173aba57dac53202ab03d2cab85016030f8a5c127b5c350ca94786caf234"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_void.h",
+      "sha256": "81f028d7d85b44bd98897ec0b8ba48ea7775a09fa7fc7f79cb08598ea9bebcac"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/is_volatile.h",
+      "sha256": "22b9e22f11e4ee03adae97b6a27d053e75c18e9b1e2b013a0f15d1bed97dd957"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/make_const_lvalue_ref.h",
+      "sha256": "7f06c113f10a66c1888c75d1afe43b7b87f2b77bb388622e00b58d182d909860"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/nat.h",
+      "sha256": "c0a3e7a7d8a0b183cff37090645142ffe5e90b7d31ba6bf3387968f7a58ee954"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/remove_cv.h",
+      "sha256": "76d2bcf641580f423c25d50b16088ee8cb880d20f80a511f1ffe03483035b7cf"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/remove_cvref.h",
+      "sha256": "feca0afc99b7b89d7e721d24a4931c1de92703b6f8453ddd52b6868bb5f5e6a3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/remove_reference.h",
+      "sha256": "15e033053b1e90f341b46a3edd1e84d413bf165ff27f60c8043a92b67b86e56a"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/type_identity.h",
+      "sha256": "f537ef1527bb8c00132137e8c59b5a8ca9e4e1e735f61de9f0e792db1c39fac5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/underlying_type.h",
+      "sha256": "0e098209e995d6563fbb2772a60ee8c4c9ce6a3fa37ae3f7efe90f2aac175b18"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/unwrap_ref.h",
+      "sha256": "fb7eef8c55951a14af38a391e16fbbc0db127b59ced75702331af01fe2db361f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__type_traits/void_t.h",
+      "sha256": "87d7aefd93485048c5b14d825fb3a8aeacf3791a559cb758e1acf5d525791358"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__undef_macros",
+      "sha256": "10c542f9493fc3f2ed46e498cda2c8d408ecc578ceef1df9272908143bd22b8f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/declval.h",
+      "sha256": "4d7bc6b962cf0b3c43f8125c9b4e30bc5237f9b400d3792814c13a86c5a3cf75"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/empty.h",
+      "sha256": "22301ff062605f9dc3d716ca1dbcd3c79657d1d26f873de1e2543a1c94c39e17"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/forward.h",
+      "sha256": "cef4095815918f2b94476a80fc8224f0efd9119b4b703f8c4e6314ba32e000ac"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/integer_sequence.h",
+      "sha256": "a80b6b2fb0270ebd4f911c954c0439a920ed7970604b07986bfe005fb2bb0215"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/move.h",
+      "sha256": "6a821e0b29977cf11890b20ee571e398aa32a1039d47d57d26b591097068aa28"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/pair.h",
+      "sha256": "6a3e8e76b897eed43b834b808ac5f43b0e4e7639ccc17a75b299021a83bc0c69"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/piecewise_construct.h",
+      "sha256": "82b044fc726202a1122a11350ee915b0c6b5c345dcdde01695145b55f40508ed"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__utility/swap.h",
+      "sha256": "21799a6a2c9346b3f594a09b74bc5117f3f0b920a4faba08a78d22cb66bf713a"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__verbose_abort",
+      "sha256": "6983d7b621cc322b4145e45a64cf8b8a15ca3824d55409f4da3efae4ac947bd5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/__verbose_trap",
+      "sha256": "04e485af3b14b062337aa7928e6212e5636d391c82ef9d121d97714756c85bc3"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/climits",
+      "sha256": "17c339db7b7abe6d4329d9106dac1db277062c44910b0122161c0d2d3f8ec17b"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/cstdint",
+      "sha256": "5df941a16c69b0ceab18c14d3ca9a59fabe25f42bed98eba74a7a1315eb2badb"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/cstdlib",
+      "sha256": "f2f5a516b5353f1e55272c092a628f03911c386d1bd9acbc4fda1c69593f9ca5"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/cstring",
+      "sha256": "10b4706bcd146b141389fa8952dd496e685883b40a0ff5e4b76304be459ca9ba"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/ctime",
+      "sha256": "3ee135e03635f081423f168cb497910c6fd0f5bf62470205945140ebe3ede237"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/cxxabi.h",
+      "sha256": "3c2ca8786f9419e1151a5fe92b8dbdcdadf0bde3011e7154d60b172b67ff4ebc"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/errno.h",
+      "sha256": "9314437f3d2a272e14e33950f883bd9f37e2661a1126448c8e0b26076f6374ab"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/exception",
+      "sha256": "b8e9a3f90b1a0b6856547c161cbbe039ebab8f7ad7701e356d78348a8c6dcfda"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/limits",
+      "sha256": "81410652fd22810e1157c3e252271d9e977a64b047c5c7158fe5034beffc06de"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/ratio",
+      "sha256": "13562fc7f401bbcb9068be5a8b4a9dc60bfd1334fb1de71872054bc1cc1306b8"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/stddef.h",
+      "sha256": "c7b1488287bc405c1eb1c44720ead99f0a810d09fe14f132592eaf34bf0da5f6"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/stdlib.h",
+      "sha256": "9c4f5e0b45402e668facad3a0e0531c8f6b6aac99fad4cdc07d9aa83f6489d9c"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/string.h",
+      "sha256": "9e6f3b3d0a59f913f6a193b8689d3f77e7b23418dc124cfdeb8028eb7c1a5dfe"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/typeinfo",
+      "sha256": "bbfa91e528c77068a7066face96392ae89c58d4867ec39485c7a79eebdcf3c9c"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1/version",
+      "sha256": "b071dc002c7f406181796333d5532fe7f18be5b128c6f075ae9960619a765cef"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/unwind.h",
+      "sha256": "e4a58637fc8ca1d29cd600c3c4416aafed50085edf276fa076214c8d81c263f0"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/include/unwind_itanium.h",
+      "sha256": "c8cc61d806e13a2e75e93f1c15afd432f93a99283d27d15f5a28a3ebee989cba"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stdarg_va_list.h",
+      "sha256": "81c3055f7033e26e7f53705653bc9d69b5202f25c2692e03b3a4f77ff44a7d76"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_header_macro.h",
+      "sha256": "4cf46e8fbb809df048eecbbd63686fa741da27afa8db4245bd1f61c1fb1611dc"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_max_align_t.h",
+      "sha256": "3c1e4de47f4f06b35e2c5890d670052e84f716760505ff51b022fc8b21a9400f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_null.h",
+      "sha256": "b1d71b08563ab3d2c22a1e4f8ddf4d9a1111c89e9404b859a45c307e8ebc6c69"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_nullptr_t.h",
+      "sha256": "898b4465c5d3040d27e760e82983a751b1b0cae23ba280b18a1b81451841f9eb"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_offsetof.h",
+      "sha256": "e5f0f4ff8ff5fc6a1cc8b535f5065f1728eadd2bf1e1401f021f803ec7b4222f"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_ptrdiff_t.h",
+      "sha256": "b4178a57f3711b7013cba747a72a2f178c29fa9364e77d75b2159754072ced43"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_size_t.h",
+      "sha256": "d86ddc0238da09b385846ebef814ffc50a44e40cf85d4e3793f485952b7e73ad"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/__stddef_wchar_t.h",
+      "sha256": "1900d4998aef3698b06399ed686db0c21e26509b08638a25734fb97ae89b1001"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/limits.h",
+      "sha256": "6b59cc1b6f86c901bf41ce942b8434530e852eb16e79e6e9287f89441f71efca"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/ptrauth.h",
+      "sha256": "8c243a0793afb2d5c3f8ed0fffcb52624c77c49c1b20be8f48950bfd6c5067ed"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stdarg.h",
+      "sha256": "ce6e43d79dc89b50208ecf259b1ffd519f5a78cd3a2c7fcaac6386f376b89fef"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stddef.h",
+      "sha256": "b3e62a046ddf28d09eedebe6eb9461cb7060e47cad2c69964b222c4eea10347e"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include/stdint.h",
+      "sha256": "f43783466c93f77a6464274ebf18f9e4cc46f0d90770ddee2993c6cf39f7514f"
+    }
+  ],
+  "archives": {
+    "libc++": {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/c++/libc++.a",
+      "sha256": "9529df371979f490e10724879204709146d5f0fc13b0137b44fa934a30ae12c4"
+    },
+    "libc++abi": {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/c++/libc++abi.a",
+      "sha256": "d517ae055cd55cdbe87f2b57c5124d5ce0de13180c4ffcfd30932d34ad92e091"
+    },
+    "libunwind": {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/unwind/libunwind.a",
+      "sha256": "39001ad683aec7f402783772d391ba7be49bc15814553c9309328b02726b06d1"
+    },
+    "compiler-rt": {
+      "path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/lib/darwin/libclang_rt.osx.a",
+      "sha256": "6d4fa2b89d8cd36197ddb4ca452da7b2f15fb3b77c7980a04abb1720dfaecd65"
+    }
+  },
+  "objects": {
+    "cxa_exception_storage.o": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/cxa_exception_storage.o",
+      "sha256": "db056a25f86fc75427545693b04457b1ec50917044fd5f704af24561640974f7"
+    },
+    "emutls.o": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/emutls.o",
+      "sha256": "6e291986a348fe3530c605080a0f448f73653fd8f61c2b4329e8929a8d9f2e5a"
+    },
+    "atexit.o": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/atexit.o",
+      "sha256": "e0d826ddfd09163c41610168ebb42cdcf8ff584bbe843ec866044d1b7359768d"
+    },
+    "new.o": {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/runtime/new.o",
+      "sha256": "f137a0618d256af77b6dbfb248c874b49d5097ad79b43558e010ddf1a404461b"
+    }
+  },
+  "emutls_imports": [
+    "_abort",
+    "_bzero",
+    "_free",
+    "_malloc",
+    "_memcpy",
+    "_pthread_getspecific",
+    "_pthread_key_create",
+    "_pthread_mutex_lock",
+    "_pthread_mutex_unlock",
+    "_pthread_once",
+    "_pthread_setspecific",
+    "_realloc"
+  ],
+  "notices": [
+    {
+      "repository": "llvm-libcxxabi",
+      "file": "LICENSE.TXT",
+      "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+    },
+    {
+      "repository": "llvm-libcxx",
+      "file": "LICENSE.TXT",
+      "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+    },
+    {
+      "repository": "llvm-libunwind",
+      "file": "LICENSE.TXT",
+      "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+    },
+    {
+      "repository": "llvm-compiler-rt",
+      "file": "LICENSE.TXT",
+      "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+    },
+    {
+      "repository": "llvm-libc",
+      "file": "LICENSE.TXT",
+      "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+    }
+  ]
+}

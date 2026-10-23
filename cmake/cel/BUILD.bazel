@@ -33,6 +33,8 @@ cc_library(
         "//runtime:reference_resolver",
         "//runtime:runtime_options",
         "//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:initialize",
+        "@com_google_absl//absl/synchronization",
         "@com_google_protobuf//:protobuf",
     ],
 )

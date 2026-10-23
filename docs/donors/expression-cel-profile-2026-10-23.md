@@ -1,5 +1,10 @@
 # Limited native CEL profile, 2026-10-23
 
+This is the historical in-process profile qualification at `2d299f01`.
+Its original evidence is retained unchanged. The
+[isolated worker and installed-package follow-up](expression-worker-memory-2026-10-23.md)
+records the subsequent memory/lifecycle/package work and its separate gates.
+
 ## Scope and status
 
 This change adds an optional native **Preview** library, `forge_expression`,

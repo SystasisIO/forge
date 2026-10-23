@@ -3,6 +3,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <boost/describe.hpp>
 
 export module forge.expression.types;
 
@@ -18,7 +19,7 @@ struct variable {
 };
 
 // These defaults are also V1 ceilings. A caller may select smaller limits.
-// Native heap allocations are not covered by a total-byte allocator budget.
+// The runtime separately bounds the helper's complete native allocation pool.
 struct limits {
    std::size_t source_bytes = 8192;
    std::size_t nodes = 1024;
@@ -31,5 +32,10 @@ struct limits {
 };
 
 enum class rounding : std::int64_t { trunc = 0, floor = 1, ceil = 2, half_even = 3 };
+
+BOOST_DESCRIBE_STRUCT(variable, (), (name, kind))
+BOOST_DESCRIBE_STRUCT(limits, (),
+                      (source_bytes, nodes, depth, variables, collection_elements, string_bytes, total_input_bytes,
+                       ast_events))
 
 } // namespace forge::expression

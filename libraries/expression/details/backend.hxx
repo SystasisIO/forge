@@ -47,7 +47,7 @@ struct declaration {
 };
 
 // Defaults are also the fixed V1 ceilings. These are structural/input limits
-// and a post-step AST-event limit, not a complete native heap-memory budget.
+// and a post-step AST-event limit. The isolated worker owns the native pool.
 struct limits {
    std::size_t source_bytes = 8192;
    std::size_t nodes = 1024;
@@ -76,6 +76,9 @@ struct preparation;
 class program {
  public:
    virtual ~program();
+   // The worker calls this before the image's C++ initializers. Darwin's
+   // symbolizer returns system-owned allocations, outside the private pool.
+   static void initialize_diagnostics() noexcept;
    static preparation prepare(std::string_view source, std::span<const declaration> declarations, limits budget = {});
    // Immutable prepared state; each call owns its arena and activation.
    virtual evaluation evaluate(std::span<const named_value> values) const = 0;

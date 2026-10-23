@@ -13,18 +13,34 @@ const std::array variables = {
     forge::expression::variable{"tokens"},
     forge::expression::variable{"rate"},
 };
-forge::expression::program price(
+forge::expression::runtime executor({.helper = "/path/to/bin/forge-expression-worker"});
+forge::expression::program price(executor,
     "math.mul_div(tokens, rate, 1000000, rounding.ceil)", variables);
 auto result = price.evaluate(forge::mutable_variant_object()("tokens", 1200)("rate", 7));
 // result.value is the exact int64 value 1. No floating-point conversion.
 ```
 
 Public modules expose Forge values, declarations, limits and typed exceptions;
-they do not expose CEL, Protobuf or Abseil. The private bridge borrows scalar
-values, string views and container accessors. It does not create an owning copy
-of the caller's input object. Each evaluation creates its own CEL activation and
-arena; prepared state is immutable and may be used concurrently. The caller must
-not modify an input object while it is being evaluated.
+they do not expose CEL, Protobuf or Abseil. The native CEL parser, checker,
+planner and evaluator live exclusively in `forge-expression-worker`. An explicit
+`runtime` owns one persistent helper and at most 64 prepared programs. Preparing
+or evaluating a complete expression is one IPC exchange; arithmetic operators do
+not cross the process boundary individually.
+
+The parent packs the caller's borrowed input object directly through Forge Raw
+into a bounded frame. The child decodes once and lends scalar/string/container
+views to the existing CEL bridge. No second owning activation DTO is built.
+Concurrent calls on one runtime serialize; separate runtimes provide explicit
+parallelism and separate memory caps. Keep the runtime alive until its programs
+and active calls are finished. Inputs passed to synchronous evaluation must not
+be mutated concurrently; asynchronous calls take owning values.
+
+`program::prepare_async`, `program::evaluate_async`, `runtime::memory_async`
+and `runtime::shutdown_async` use Boost.Asio awaitables. Host-side synchronous
+wrappers remain available. The runtime uses Forge Asio and Boost.Process for
+transport, admission, deadlines and child retirement; it does not own an
+alternative scheduler or reaper. An application may inject its existing Forge
+Asio runtime. The convenience constructor owns the same Forge runtime type.
 
 ## Version 1 semantics
 
@@ -91,12 +107,36 @@ wall-clock deadline. Primitive widths and collection/string limits separately
 bound work inside allowed operations. Macros and growing collections are
 excluded from this profile rather than implemented by a second evaluator.
 
-These are structural limits and an execution-event budget. They are **not a
-hard cap on all native heap allocations**: CEL parser/checker/planner and
-runtime use allocations outside the caller's Protobuf arena. Arena block size
-or process RSS does not prove such a cap. Memory failure injection and a full
-allocator/process isolation design remain a separate qualification gate before
-accepting hostile programs in a consensus runtime.
+The helper additionally owns a fixed native allocation pool, up to 64 MiB.
+`runtime::options::heap_bytes` selects its capacity. This pool covers the CEL
+parser, AST, checker, planner, retained programs, activations, STL/Abseil/Protobuf
+allocations and their allocator metadata together. A ready-made
+Boost.Interprocess external-buffer allocator provides allocation and coalescing;
+there is no system-heap fallback or new Forge heap algorithm. Static private
+C++ runtime linkage and the build-time import audit keep these allocation
+functions out of the parent process. Abseil's anonymous mapping requests use
+the same bounded pool. `runtime::memory()` reports capacity, live storage, peak
+and failed allocation count.
+
+This is an allocation-pool limit, **not a process RSS or virtual-address limit**.
+Native code/images, the OS loader, OS bookkeeping and parent transport state are
+outside that pool. The helper separately limits its native stack to 8 MiB and
+disables core dumps before private C++ initialization. Fixed runtime image state,
+such as emergency exception storage and initial exit-callback slots, is also
+separate from the pool. Its maximum pool reserves 64 MiB of address space; lowering
+the active pool does not change that reservation. A server must budget the
+selected pools, stacks, bounded parent state and platform overhead together.
+Neither a Protobuf arena nor a sampled RSS threshold substitutes for this limit.
+
+Some upstream allocation failures terminate a process rather than throw an
+exception. A separate, nonblocking fault descriptor records pool exhaustion
+before refusal; the parent can distinguish a worker that exhausted its pool
+from an unexpected crash. A dispatched exchange failure retires and reaps the
+worker, and its prepared handles become terminal. A retirement-notification
+scheduling failure stops admission; the owner's mandatory shutdown barrier
+performs physical cleanup. No request is silently re-executed. A fresh
+runtime is the explicit recovery boundary. Deadline, cancellation, admission
+and worker availability have separate Forge exception codes.
 
 Prepared programs are currently process-local values. V1 does not accept
 publisher-supplied `CheckedExpr`, serialize canonical programs, define monetary
@@ -109,7 +149,9 @@ explicit contract; no C++ pointer is a portable program identifier.
 CEL-C++ commit `9c562a306569e90c8dea6d3af71f4433aa386162` and Bazel `8.7.0`
 are checksum-pinned in [sources.json](../../cmake/cel/sources.json).
 The build retains the upstream dependency graph and uses its public static
-archive export rule. CEL/Protobuf/Abseil headers remain private. A checksum
+archive export rule. Only the worker links that archive. CEL/Protobuf/Abseil
+headers remain private. The installed component supplies the worker executable
+and provenance; consumers do not rebuild CEL or run Bazel. A checksum
 failure or an unhandled link dependency fails the build. Upstream source is
 staged under the build directory; it is not patched or linked from a donor repo.
 
@@ -120,3 +162,20 @@ evaluations. The arithmetic fixture is generated by
 [`expression_arithmetic_oracle.py`](../../tests/expression_arithmetic_oracle.py);
 `--check` verifies its reproducibility. Native acceptance is distinct from
 Contract SDK/WASM/WAMR, Spine, Linux and real-provider acceptance.
+
+## Migration from the earlier Preview
+
+Replace `program(source, declarations, limits)` with
+`program(runtime, source, declarations, limits)`. Construct the runtime with an
+explicit trusted worker path. Installed CMake consumers can obtain that path
+from the `IMPORTED_LOCATION` of `ForgeCEL::worker`; the target follows the moved
+installation prefix. Worker installation requires prefix-relative `LIBDIR` and
+`BINDIR`; absolute or escaping destinations are rejected during configuration.
+No executable is selected from the current directory or
+an ambient PATH. The parent no longer links the CEL archive or its private
+allocator. Prepared programs cannot be moved between runtimes or persisted.
+
+The earlier native-profile evidence remains historical. Current isolated-memory
+and installed-package gates are recorded in the
+[follow-up validation report](../../docs/donors/expression-worker-memory-2026-10-23.md);
+these are distinct from Linux, SDK/WASM/WAMR, Spine and provider acceptance.

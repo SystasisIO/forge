@@ -11,6 +11,8 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
+#include "absl/log/internal/globals.h"
+#include "absl/synchronization/mutex.h"
 #include "checker/checker_options.h"
 #include "checker/standard_library.h"
 #include "checker/type_checker_builder_factory.h"
@@ -695,6 +697,14 @@ preparation prepare_impl(std::string_view source, std::span<const declaration> d
 } // namespace
 
 program::~program() = default;
+
+void program::initialize_diagnostics() noexcept {
+   // These setters store only constant-initialized atomics. Do not initialize
+   // Abseil logging here: InitializeLog() resolves the system's local timezone.
+   absl::log_internal::EnableSymbolizeLogStackTrace(false);
+   absl::log_internal::SetMaxFramesInLogStackTrace(0);
+   absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
+}
 
 preparation program::prepare(std::string_view source, std::span<const declaration> declarations, limits budget) {
    try {

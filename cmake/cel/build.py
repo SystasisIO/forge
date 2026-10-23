@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -126,6 +127,117 @@ def toolchain_evidence(common, command, staging, environment, execution_root, c_
     return {"compile_arguments": actions, "resolved_wrappers": wrappers}
 
 
+def prepare_worker_runtime(args, build, pins, cxx_driver):
+    """Use unchanged upstream single-thread EH/exit storage and emulated TLS."""
+    selected = subprocess.check_output([args.compiler, "-dumpversion"], text=True).strip()
+    if selected != pins["llvm"]["version"]:
+        raise RuntimeError("Expression worker runtime requires the checksum-pinned LLVM version")
+    llvm = cxx_driver.parent.parent
+    directory = build / "runtime"
+    source = directory / "source"
+    notices = []
+    for name, pin in pins["llvm"]["files"].items():
+        download(pin["url"], pin["sha256"], source / name)
+        if name.endswith("LICENSE.TXT"):
+            component = name.split("/")[0]
+            copy_changed(source / name, build / "notices" / ("llvm-" + component) / "LICENSE.TXT")
+            notices.append({"repository": "llvm-" + component, "file": "LICENSE.TXT", "sha256": pin["sha256"]})
+    environment = os.environ.copy()
+    for name in ("CPATH", "CPLUS_INCLUDE_PATH", "C_INCLUDE_PATH"):
+        environment.pop(name, None)
+    storage = directory / "cxa_exception_storage.o"
+    command = [args.compiler, "-std=c++23", "-O2", "-g0", "-fvisibility=hidden",
+               "-D_LIBCXXABI_HAS_NO_THREADS", "-D_LIBCPP_BUILDING_LIBRARY",
+               "-femulated-tls", "-fno-c++-static-destructors", "-H", "-isysroot", args.sdk,
+               "-mmacosx-version-min=" + args.deployment_target, "-I" + str(llvm / "include"),
+               "-c", str(source / "libcxxabi/src/cxa_exception_storage.cpp"), "-o", str(storage)]
+    result = subprocess.run(command, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (directory / "resolved-headers.log").write_text(result.stderr)
+    if result.returncode:
+        raise RuntimeError("Pinned upstream exception storage compilation failed:\n" + result.stderr)
+    headers = []
+    for line in result.stderr.splitlines():
+        match = re.match(r"^\.+ (.+)$", line)
+        if match and Path(match[1]).is_file():
+            headers.append(Path(match[1]).resolve())
+    expected = {"cxxabi.h": llvm / "include/c++/v1/cxxabi.h",
+                "__cxxabi_config.h": llvm / "include/c++/v1/__cxxabi_config.h",
+                "unwind.h": llvm / "include/unwind.h"}
+    for name, path in expected.items():
+        if {item for item in headers if item.name == name} != {path.resolve()}:
+            raise RuntimeError("Worker exception storage resolved an unexpected ABI header: " + name)
+    nm = llvm / "bin/llvm-nm"
+    undefined = subprocess.check_output([str(nm), "-u", str(storage)], text=True).strip()
+    if undefined:
+        raise RuntimeError("Single-thread upstream exception storage has unexpected imports: " + undefined)
+    libc_objects = []
+    libc_commands = []
+    libc_headers = set()
+    libc_depfiles = {}
+    libc_imports = {}
+    # Public packaging selects the ordinary growable BlockStore (not libc's
+    # test-only fixed vector). Its calloc/free bind to the worker's private pool.
+    # The supported single-thread mode matches this worker's execution model.
+    for relative, expected_imports in (
+            ("src/stdlib/atexit.cpp", {"_calloc", "__llvm_libc_delete_sized"}),
+            ("src/__support/CPP/new.cpp", {"_free"})):
+        unit = Path(relative).stem
+        obj = directory / (unit + ".o")
+        depfile = directory / (unit + ".d")
+        argv = [args.compiler, "-std=c++23", "-O2", "-g0", "-fvisibility=hidden",
+                "-femulated-tls", "-fno-c++-static-destructors", "-DLIBC_COPT_PUBLIC_PACKAGING",
+                "-DLIBC_COPT_USE_C_ASSERT", "-DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE",
+                "-DLIBC_FULL_BUILD", "-DLIBC_NAMESPACE=__llvm_libc", "-H", "-MD", "-MF", str(depfile),
+                "-isysroot", args.sdk, "-mmacosx-version-min=" + args.deployment_target,
+                "-I" + str(source / "libc"), "-c", str(source / "libc" / relative), "-o", str(obj)]
+        result = subprocess.run(argv, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (directory / (unit + "-resolved-headers.log")).write_text(result.stderr)
+        if result.returncode:
+            raise RuntimeError("Pinned upstream libc runtime compilation failed:\n" + result.stderr)
+        dependencies = shlex.split(depfile.read_text().split(":", 1)[1].replace("\\\n", " "))
+        for item in dependencies:
+            path = Path(item).resolve(strict=True)
+            if path.is_relative_to(source.resolve()):
+                name = path.relative_to(source.resolve()).as_posix()
+                pin = pins["llvm"]["files"].get(name)
+                if pin is None or digest(path) != pin["sha256"]:
+                    raise RuntimeError("Unpinned upstream libc runtime dependency: " + name)
+            libc_headers.add(path)
+        imports = {line.strip() for line in subprocess.check_output([str(nm), "-u", str(obj)], text=True).splitlines()
+                   if line.strip()}
+        if imports != expected_imports:
+            raise RuntimeError("Upstream libc runtime has unexpected imports: " + repr(sorted(imports)))
+        libc_imports[obj.name] = sorted(imports)
+        libc_depfiles[depfile.name] = {"path": str(depfile), "sha256": digest(depfile)}
+        libc_objects.append(obj)
+        libc_commands.append(argv)
+    runtime_directory = Path(subprocess.check_output([args.compiler, "-print-runtime-dir"], text=True).strip())
+    compiler_runtime = runtime_directory / "libclang_rt.osx.a"
+    thin_archive = directory / "compiler_rt.arm64.a"
+    subprocess.run(["/usr/bin/lipo", str(compiler_runtime), "-thin", "arm64", "-output", str(thin_archive)], check=True)
+    emutls = directory / "emutls.o"
+    emutls.write_bytes(subprocess.check_output(["/usr/bin/ar", "-p", str(thin_archive), "emutls.c.o"]))
+    thin_archive.unlink()
+    emutls_imports = subprocess.check_output([str(nm), "-u", str(emutls)], text=True).splitlines()
+    if not any(line.strip() == "_malloc" for line in emutls_imports) or any("tlv_bootstrap" in line for line in emutls_imports):
+        raise RuntimeError("Selected compiler runtime has an unqualified emulated TLS allocator")
+    archives = {"libc++": llvm / "lib/c++/libc++.a", "libc++abi": llvm / "lib/c++/libc++abi.a",
+                "libunwind": llvm / "lib/unwind/libunwind.a", "compiler-rt": compiler_runtime}
+    manifest = {"schema": "forge.expression.worker.runtime.v1", "llvm_version": selected,
+                "upstream_sources": pins["llvm"], "single_thread_only": True,
+                "compile_command": command, "source_unmodified": True,
+                "libc_compile_commands": libc_commands, "libc_depfiles": libc_depfiles,
+                "libc_imports": libc_imports,
+                "libc_resolved_dependencies": [{"path": str(path), "sha256": digest(path)}
+                                               for path in sorted(libc_headers)],
+                "resolved_headers": [{"path": str(path), "sha256": digest(path)} for path in sorted(set(headers))],
+                "archives": {name: {"path": str(path), "sha256": digest(path)} for name, path in archives.items()},
+                "objects": {path.name: {"path": str(path), "sha256": digest(path)}
+                            for path in (storage, emutls, *libc_objects)},
+                "emutls_imports": [line.strip() for line in emutls_imports], "notices": notices}
+    (build / "runtime-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
@@ -140,6 +252,7 @@ def main():
     parser.add_argument("--cxx-flags", default="")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--prepare-runtime-only", action="store_true")
     parser.add_argument("--update-lockfile", action="store_true",
                         help="Explicit qualification only: refresh the staged lock for review")
     args = parser.parse_args()
@@ -157,6 +270,9 @@ def main():
         raise RuntimeError("CEL requires an explicit existing SDK directory")
     owner = root / "cmake/cel"
     pins = json.loads((owner / "sources.json").read_text())
+    if args.prepare_runtime_only:
+        prepare_worker_runtime(args, build, pins, cxx_driver)
+        return
     downloads = build.parent / "downloads"
     source_archive = downloads / "cel-cpp.tar.gz"
     download(pins["cel"]["url"], pins["cel"]["sha256"], source_archive)
@@ -204,6 +320,7 @@ def main():
         "--copt=-ffp-contract=off", "--host_copt=-ffp-contract=off", "--force_pic",
         "--features=-layering_check", "--host_features=-layering_check",
         "--cxxopt=-std=c++23", "--host_cxxopt=-std=c++23",
+        "--cxxopt=-femulated-tls", "--cxxopt=-fno-c++-static-destructors",
         f"--cxxopt=-mmacosx-version-min={args.deployment_target}",
         f"--host_cxxopt=-mmacosx-version-min={args.deployment_target}",
         "--lockfile_mode=" + ("update" if args.update_lockfile else "error"),
@@ -270,6 +387,7 @@ def main():
         "command": command, "archive_sha256": digest(archive),
         "linkdeps": linkdeps, "linkopts": linkopts, "notices": notices}
     (build / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    prepare_worker_runtime(args, build, pins, cxx_driver)
     print(f"CEL backend: {archive} ({source_count} pinned upstream files, no unbundled libraries)")
 
 
