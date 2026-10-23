@@ -1,0 +1,15 @@
+{
+  "name": "tariffs-final-ctest",
+  "cwd": "$SPINE",
+  "argv": [
+    "/opt/homebrew/bin/ctest",
+    "--test-dir",
+    "build/tariffs-host",
+    "--output-on-failure",
+    "--timeout",
+    "180"
+  ],
+  "started": 1792755667.432367,
+  "code": 0,
+  "seconds": 4.288388967514038
+}

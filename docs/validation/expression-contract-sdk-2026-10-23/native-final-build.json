@@ -1,0 +1,16 @@
+{
+  "name": "native-final-build",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "--build",
+    "build/expression-contract",
+    "--parallel",
+    "4",
+    "--target",
+    "test_forge_expression"
+  ],
+  "started": 1792755720.408822,
+  "code": 0,
+  "seconds": 6.9384849071502686
+}
