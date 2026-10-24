@@ -1,0 +1,14 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory
+    Start 1: test_forge_expression
+1/2 Test #1: test_forge_expression ............   Passed    3.16 sec
+    Start 2: test_forge_expression_worker
+2/2 Test #2: test_forge_expression_worker .....   Passed    0.70 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+expression    =   0.70 sec*proc (1 test)
+macos         =   0.70 sec*proc (1 test)
+
+Total Test time (real) =   3.90 sec

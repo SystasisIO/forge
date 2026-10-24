@@ -1,0 +1,4 @@
+if(NOT TARGET ForgeCEL::worker)
+   add_executable(ForgeCEL::worker IMPORTED)
+@FORGE_CEL_WORKER_PROPERTIES@
+endif()

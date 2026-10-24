@@ -35,6 +35,7 @@ option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
 option(FORGE_ENABLE_LIBOAUTH2 "Build the resource-token verification backend" OFF)
 option(FORGE_ENABLE_TLSNOTARY "Build experimental native TLSNotary sessions and App plugin" OFF)
 option(FORGE_ENABLE_JOSE "Build the qualified JOSE external-signing adapter" OFF)
+option(FORGE_ENABLE_EXPRESSION "Build the Preview native CEL expression profile" OFF)
 if(FORGE_ENABLE_VM_WASM_OPTIMIZING AND
    (NOT ((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$") OR
          (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")) OR
@@ -124,7 +125,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
 endif()
 find_package(Boost 1.90 REQUIRED CONFIG COMPONENTS ${_forge_boost_components})
 find_package(ZLIB REQUIRED)
-find_package(boost_stacktrace_basic CONFIG QUIET)
+find_package(boost_stacktrace_basic ${Boost_VERSION} EXACT CONFIG QUIET HINTS "${Boost_DIR}/..")
 check_cxx_source_compiles(
    "#include <stacktrace>
    #ifndef __cpp_lib_stacktrace
@@ -820,6 +821,7 @@ add_subdirectory(libraries/auth/attestation)
 add_subdirectory(libraries/crypto)
 add_subdirectory(libraries/swarm)
 add_subdirectory(libraries/asio)
+add_subdirectory(libraries/expression)
 
 set(
    FORGE_LEAF_TARGETS
@@ -974,6 +976,10 @@ endif()
 if(TARGET forge_crypto_jose)
    list(APPEND FORGE_LEAF_TARGETS forge_crypto_jose)
 endif()
+if(TARGET forge_expression)
+   list(APPEND FORGE_LEAF_TARGETS forge_expression)
+endif()
+list(APPEND FORGE_LEAF_TARGETS forge_expression_values)
 
 if(FORGE_ENABLE_TOOLING)
    add_subdirectory(libraries/tooling)
@@ -1159,6 +1165,10 @@ endif()
 if(TARGET forge_crypto_jose)
    list(APPEND FORGE_BUILT_COMPONENTS crypto_jose)
 endif()
+if(TARGET forge_expression)
+   list(APPEND FORGE_BUILT_COMPONENTS expression)
+endif()
+list(APPEND FORGE_BUILT_COMPONENTS expression_values)
 if(TARGET forge_net_tlsnotary)
    list(APPEND FORGE_BUILT_COMPONENTS net_tlsnotary plugins_net_tlsnotary_session)
 endif()
@@ -1207,6 +1217,9 @@ endif()
 
 add_library(forge STATIC forge.cpp)
 add_library(Forge::forge ALIAS forge)
+if(TARGET forge_expression_worker)
+   add_dependencies(forge forge_expression_worker)
+endif()
 
 target_include_directories(forge PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 
@@ -1373,6 +1386,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
 endif()
 if(TARGET forge_crypto_jose)
    list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/crypto/jose/include/forge)
+endif()
+if(TARGET forge_expression_values)
+   list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/expression/include/forge)
 endif()
 if(TARGET forge_net_s3)
    list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/net/s3/include/forge)

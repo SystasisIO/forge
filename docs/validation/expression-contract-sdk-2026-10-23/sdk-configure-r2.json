@@ -1,0 +1,15 @@
+{
+  "name": "sdk-configure-r2",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "-S",
+    "guest",
+    "-B",
+    "build/expression-contract-sdk",
+    "-DFORGE_CONTRACT_WASM_LD=/opt/homebrew/opt/lld/bin/wasm-ld"
+  ],
+  "started": 1792754759.5586078,
+  "code": 0,
+  "seconds": 0.7295331954956055
+}

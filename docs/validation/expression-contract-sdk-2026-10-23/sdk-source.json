@@ -1,0 +1,8 @@
+{
+  "source_commit": "e815a6f9012e505686015c99b2c0dee6e9febc52",
+  "source_status": "",
+  "base_sysroot": "wamr-ci-190-20261020-r14/product-full-830b-da589-r1/sdk-prefix-python312-r2/sysroot",
+  "profile": "developer",
+  "selected_llvm": "22.1.8",
+  "selected_lld": "22.1.8"
+}

@@ -2,6 +2,18 @@
 # The including build defines forge_contract_register_guest_component().
 
 forge_contract_register_guest_component(
+   ID forge.expression.values
+   TARGET forge_expression_values
+   PUBLIC_LIBRARIES forge.raw forge.crypto.digest
+   MODULES
+      forge/expression/types.cppm
+      forge/expression/artifact.cppm
+   MODULE_NAMES
+      forge.expression.types
+      forge.expression.artifact
+)
+
+forge_contract_register_guest_component(
    ID forge.codec.json_values
    TARGET forge_codec_json_values
    PUBLIC_LIBRARIES forge.raw
@@ -286,8 +298,10 @@ forge_contract_register_guest_component(
       forge.codec.hex
       forge.db.ids
       forge.chain.protocol
+      forge.expression.values
    MODULES
       forge/contract/intrinsics.cppm
+      forge/contract/expression.cppm
       forge/contract/contract.cppm
       forge/contract/datastream.cppm
       forge/contract/varint.cppm
@@ -320,6 +334,7 @@ forge_contract_register_guest_component(
       forge/contract/compatibility_asset.cppm
    MODULE_NAMES
       forge.contract.intrinsics
+      forge.contract.expression
       forge.contract
       forge.contract.datastream
       forge.contract.varint

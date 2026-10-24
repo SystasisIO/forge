@@ -1,0 +1,15 @@
+{
+  "name": "native-final-ctest",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/ctest",
+    "--test-dir",
+    "build/expression-contract",
+    "--output-on-failure",
+    "--timeout",
+    "180"
+  ],
+  "started": 1792755727.394772,
+  "code": 0,
+  "seconds": 7.338041067123413
+}

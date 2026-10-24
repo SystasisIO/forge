@@ -1,0 +1,21 @@
+Internal ctest changing into directory: $FORGE/build/expression-contract
+Test project $FORGE/build/expression-contract
+    Start 1: test_forge_expression
+1/5 Test #1: test_forge_expression ....................   Passed    4.34 sec
+    Start 2: test_forge_expression_worker
+2/5 Test #2: test_forge_expression_worker .............   Passed    0.78 sec
+    Start 3: test_forge_expression_oracle
+3/5 Test #3: test_forge_expression_oracle .............   Passed    0.10 sec
+    Start 4: forge_tooling_testing_expression_tests
+4/5 Test #4: forge_tooling_testing_expression_tests ...   Passed    1.33 sec
+    Start 5: forge_tooling_testing_tests
+5/5 Test #5: forge_tooling_testing_tests ..............   Passed    0.74 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Label Time Summary:
+contract      =   1.33 sec*proc (1 test)
+expression    =   2.11 sec*proc (2 tests)
+macos         =   0.78 sec*proc (1 test)
+
+Total Test time (real) =   7.31 sec

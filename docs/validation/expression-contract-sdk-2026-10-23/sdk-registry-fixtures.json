@@ -1,0 +1,21 @@
+{
+  "name": "sdk-registry-fixtures",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/python3",
+    "guest/tests/tooling/run_intrinsic_fixtures.py",
+    "--manifest",
+    "$QUALIFICATION/sdk-prefix/share/forge-contract/registry/intrinsics.json",
+    "--golden",
+    "guest/tests/tooling/spring_db_intrinsics.txt",
+    "--full-golden",
+    "guest/tests/tooling/spring_intrinsics.txt",
+    "--eosio-db-header",
+    "$QUALIFICATION/sdk-prefix/share/forge-contract/include/eosio/db.h",
+    "--cdt-fixture",
+    "guest/tests/tooling/cdt/capi/db.c"
+  ],
+  "started": 1792755054.036135,
+  "code": 0,
+  "seconds": 0.05238604545593262
+}

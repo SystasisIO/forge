@@ -5,6 +5,7 @@ module;
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,10 @@ export module forge.tooling.testing.host;
 export import forge.tooling.testing.exceptions;
 export import forge.tooling.testing.schema;
 export import forge.tooling.testing.state;
+
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+import forge.expression.program;
+#endif
 
 export namespace forge::tooling::testing {
 
@@ -25,9 +30,17 @@ struct invocation_result {
    std::optional<std::int32_t> exit_code;
 };
 
+struct invocation_options {
+   std::optional<std::chrono::steady_clock::time_point> deadline;
+   std::stop_token cancel;
+};
+
 class host final {
  public:
    explicit host(execution_limits limits = {});
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   host(forge::expression::runtime& expressions, execution_limits limits = {});
+#endif
    ~host();
 
    host(const host&) = delete;
@@ -37,6 +50,8 @@ class host final {
 
    invocation_result invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
                             std::uint64_t action, std::vector<std::uint8_t> data = {});
+   invocation_result invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
+                            std::uint64_t action, std::vector<std::uint8_t> data, invocation_options options);
 
    void configure(oracle_state state);
    [[nodiscard]] oracle_state state() const;

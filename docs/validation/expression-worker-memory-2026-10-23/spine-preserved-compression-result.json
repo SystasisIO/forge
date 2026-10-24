@@ -1,0 +1,3069 @@
+{
+  "scope": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/spine-signer-wallet-v1/build",
+  "open_files_before": "lsof +D exit1, no output",
+  "data_and_mtime_preserved": true,
+  "entries": [
+    {
+      "path": "policyrot/lib_forge_contract_guest_forge_contract_runtime_dc3087ecde59.a",
+      "status": "compressed",
+      "sha256": "7a4f1b36aba3a620cbba61792fec006bff90d568946dc2d1ee67dd397706fa38",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "policyrot/lib_forge_contract_guest_forge_chain_protocol_012d2547b50c.a",
+      "status": "unchanged",
+      "sha256": "0f4316d121107cc062b7c3f45aa3e85b1c91ccccc1b2b06ee420392464f2b992"
+    },
+    {
+      "path": "policyrot/lib_forge_contract_guest_forge_crypto_asymmetric_values_e1c9fed99492.a",
+      "status": "unchanged",
+      "sha256": "b452a24b2282838b405d10aa45303216e43e6b7b3177838997ea37cd07e4bcbe"
+    },
+    {
+      "path": "contract-delivery-20261008-guest/lib_forge_contract_guest_forge_contract_runtime_dc3087ecde59.a",
+      "status": "compressed",
+      "sha256": "7a4f1b36aba3a620cbba61792fec006bff90d568946dc2d1ee67dd397706fa38",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-delivery-20261008-guest/lib_forge_contract_guest_forge_chain_protocol_012d2547b50c.a",
+      "status": "unchanged",
+      "sha256": "0f4316d121107cc062b7c3f45aa3e85b1c91ccccc1b2b06ee420392464f2b992"
+    },
+    {
+      "path": "contract-delivery-20261008-guest/lib_forge_contract_guest_forge_crypto_asymmetric_values_e1c9fed99492.a",
+      "status": "unchanged",
+      "sha256": "b452a24b2282838b405d10aa45303216e43e6b7b3177838997ea37cd07e4bcbe"
+    },
+    {
+      "path": "contract-host/libsecp256k1.a",
+      "status": "unchanged",
+      "sha256": "c1b19aa8be02f5dfe76e571752f080659aeec4bcf6f9799f0e04a07acb0eb7a5"
+    },
+    {
+      "path": "system-contracts/lib_forge_contract_guest_forge_contract_runtime_dc3087ecde59.a",
+      "status": "compressed",
+      "sha256": "7a4f1b36aba3a620cbba61792fec006bff90d568946dc2d1ee67dd397706fa38",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "system-contracts/lib_forge_contract_guest_forge_chain_protocol_012d2547b50c.a",
+      "status": "unchanged",
+      "sha256": "0f4316d121107cc062b7c3f45aa3e85b1c91ccccc1b2b06ee420392464f2b992"
+    },
+    {
+      "path": "system-contracts/lib_forge_contract_guest_forge_crypto_asymmetric_values_e1c9fed99492.a",
+      "status": "unchanged",
+      "sha256": "b452a24b2282838b405d10aa45303216e43e6b7b3177838997ea37cd07e4bcbe"
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_codec_base64.a",
+      "status": "unchanged",
+      "sha256": "cb82b352e336a3779f11ff40a890fcf37bec8097eb5ab80f551233e149352f5d"
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_chain_protocol.a",
+      "status": "unchanged",
+      "sha256": "86e9a8870b928371135c23acd88fd6082d4773edd2fe739e6babf71ac03dbdcc"
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_contract.a",
+      "status": "compressed",
+      "sha256": "7cd66c5e34d7d96eb2fd5425d1c6ed01ba1befd834e8ddffc47d4e9e3f77440c",
+      "before": 266240,
+      "after": 65536
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_codec_base58.a",
+      "status": "unchanged",
+      "sha256": "e3635666d92a1997b530ab037e3ede6e88f698823d497fa4d9a139ad6e761133"
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_raw.a",
+      "status": "unchanged",
+      "sha256": "c6d8fc79e1e9cc251656f548ba16339b5e4bbbdca3f8921ab1529f618febc420"
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libm.a",
+      "status": "compressed",
+      "sha256": "d819e5e02e562479e9704fde25cd727e35ac51f7e30019485b090645b9559b86",
+      "before": 163840,
+      "after": 73728
+    },
+    {
+      "path": "contract-sdk/forge_contract_guest_foundation-prefix/src/forge_contract_guest_foundation-build/libforge_guest_runtime.a",
+      "status": "compressed",
+      "sha256": "3844107fe7d8eba2cc14662b446add09bdc2541517222959951109b6914e4813",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_codec_base64.a",
+      "status": "unchanged",
+      "sha256": "cb82b352e336a3779f11ff40a890fcf37bec8097eb5ab80f551233e149352f5d"
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_chain_protocol.a",
+      "status": "unchanged",
+      "sha256": "86e9a8870b928371135c23acd88fd6082d4773edd2fe739e6babf71ac03dbdcc"
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libc++.a",
+      "status": "compressed",
+      "sha256": "423255a033e3f9d3146e853b0fbcff970a7881b8a3b8ab63965c467595b9bad1",
+      "before": 790528,
+      "after": 258048
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_contract.a",
+      "status": "compressed",
+      "sha256": "7cd66c5e34d7d96eb2fd5425d1c6ed01ba1befd834e8ddffc47d4e9e3f77440c",
+      "before": 266240,
+      "after": 65536
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_codec_base58.a",
+      "status": "unchanged",
+      "sha256": "e3635666d92a1997b530ab037e3ede6e88f698823d497fa4d9a139ad6e761133"
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libc++abi.a",
+      "status": "compressed",
+      "sha256": "cbbf661ed8837ac0451e948ee4e7d5b3e48e684ddd055a3bf35395aa3220e807",
+      "before": 368640,
+      "after": 106496
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_raw.a",
+      "status": "unchanged",
+      "sha256": "c6d8fc79e1e9cc251656f548ba16339b5e4bbbdca3f8921ab1529f618febc420"
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libm.a",
+      "status": "compressed",
+      "sha256": "d819e5e02e562479e9704fde25cd727e35ac51f7e30019485b090645b9559b86",
+      "before": 163840,
+      "after": 73728
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/libforge_guest_runtime.a",
+      "status": "compressed",
+      "sha256": "3844107fe7d8eba2cc14662b446add09bdc2541517222959951109b6914e4813",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-sdk/sdk-sysroot/lib/generic/libclang_rt.builtins-wasm32.a",
+      "status": "compressed",
+      "sha256": "a15c3cb7363f0eae14be9a10c6d5cb6e31420f44c732ad9b86cf261739140d8d",
+      "before": 94208,
+      "after": 32768
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_codec_base64.a",
+      "status": "unchanged",
+      "sha256": "cb82b352e336a3779f11ff40a890fcf37bec8097eb5ab80f551233e149352f5d"
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_chain_protocol.a",
+      "status": "unchanged",
+      "sha256": "86e9a8870b928371135c23acd88fd6082d4773edd2fe739e6babf71ac03dbdcc"
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libc++.a",
+      "status": "compressed",
+      "sha256": "423255a033e3f9d3146e853b0fbcff970a7881b8a3b8ab63965c467595b9bad1",
+      "before": 790528,
+      "after": 258048
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_contract.a",
+      "status": "compressed",
+      "sha256": "7cd66c5e34d7d96eb2fd5425d1c6ed01ba1befd834e8ddffc47d4e9e3f77440c",
+      "before": 266240,
+      "after": 65536
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_codec_base58.a",
+      "status": "unchanged",
+      "sha256": "e3635666d92a1997b530ab037e3ede6e88f698823d497fa4d9a139ad6e761133"
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libc++abi.a",
+      "status": "compressed",
+      "sha256": "cbbf661ed8837ac0451e948ee4e7d5b3e48e684ddd055a3bf35395aa3220e807",
+      "before": 368640,
+      "after": 106496
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_raw.a",
+      "status": "unchanged",
+      "sha256": "c6d8fc79e1e9cc251656f548ba16339b5e4bbbdca3f8921ab1529f618febc420"
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libm.a",
+      "status": "compressed",
+      "sha256": "d819e5e02e562479e9704fde25cd727e35ac51f7e30019485b090645b9559b86",
+      "before": 163840,
+      "after": 73728
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/libforge_guest_runtime.a",
+      "status": "compressed",
+      "sha256": "3844107fe7d8eba2cc14662b446add09bdc2541517222959951109b6914e4813",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-sdk-prefix/sysroot/lib/generic/libclang_rt.builtins-wasm32.a",
+      "status": "compressed",
+      "sha256": "a15c3cb7363f0eae14be9a10c6d5cb6e31420f44c732ad9b86cf261739140d8d",
+      "before": 94208,
+      "after": 32768
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.profile_osx.a",
+      "status": "compressed",
+      "sha256": "e46cf54e3e81a0bf85376c36ded6a9caeed83f87ae67d4e3a3c7f8f83febcac8",
+      "before": 335872,
+      "after": 102400
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.xray_osx.a",
+      "status": "compressed",
+      "sha256": "aabf14d433fd2af806371513a837c1151eb6ee5daa672d483065a00e7ef22558",
+      "before": 6676480,
+      "after": 2355200
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.xray-dso_osx.a",
+      "status": "compressed",
+      "sha256": "cfee49857c1621a9ffe762002143b3becf0cb54c952e9bef24c21a822a020a59",
+      "before": 385024,
+      "after": 24576
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.asan_abi_osx.a",
+      "status": "compressed",
+      "sha256": "092d73c0f58fdfcec26cc52e6932a9fc19a92e08d490e2ea78b6aed83a7f45a1",
+      "before": 180224,
+      "after": 49152
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.xray-fdr_osx.a",
+      "status": "compressed",
+      "sha256": "eef3a70699ab0b243ee28a798095ceda56673163592e9de2edb11ce2bd3e9d10",
+      "before": 614400,
+      "after": 233472
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.stats_client_osx.a",
+      "status": "compressed",
+      "sha256": "2ff005e416d74b0c5121f3381c219fc50f7d9d289190608ded0c49fa34667c49",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.ubsan_minimal_osx.a",
+      "status": "compressed",
+      "sha256": "d67438c5baac8819f480f087c84dea31f99c4452547a95b656bc6e3e6fee955d",
+      "before": 135168,
+      "after": 40960
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/liborc_rt_osx.a",
+      "status": "compressed",
+      "sha256": "b7fb3fc02d98b166f16ea822b469686254392ee4693410a4755e77adcdfd729f",
+      "before": 10358784,
+      "after": 2756608
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.xray-basic_osx.a",
+      "status": "compressed",
+      "sha256": "b684c4d0d2d172ae83122c36d4b17199920181448c499710eb786040cfb8384c",
+      "before": 364544,
+      "after": 139264
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.fuzzer_osx.a",
+      "status": "compressed",
+      "sha256": "a5827ea722c2dd0fbdc3ce6efc3859d1413dd7db6b8fd8048d09ce953778f1db",
+      "before": 30543872,
+      "after": 8871936
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.xray-profiling_osx.a",
+      "status": "compressed",
+      "sha256": "694fd162ba4c5b7c5a2f804f63466f17a96b8d5cf1afa90eea7236e061a1fa4f",
+      "before": 1118208,
+      "after": 405504
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.osx.a",
+      "status": "compressed",
+      "sha256": "6d4fa2b89d8cd36197ddb4ca452da7b2f15fb3b77c7980a04abb1720dfaecd65",
+      "before": 876544,
+      "after": 200704
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.cc_kext.a",
+      "status": "compressed",
+      "sha256": "45d50b79393e5e9c32b7a552bcc1fe5b2092459687f2fe5afa0c4b6fbaf40f85",
+      "before": 839680,
+      "after": 212992
+    },
+    {
+      "path": "contract-sdk-prefix/lib/clang/22/lib/darwin/libclang_rt.fuzzer_no_main_osx.a",
+      "status": "compressed",
+      "sha256": "51c9732c2b5bf83a693a0c1e46194107390ed58bb3d68417eb79e62ef15e9b0a",
+      "before": 30470144,
+      "after": 8843264
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_http.a",
+      "status": "compressed",
+      "sha256": "fbbbe12a351639014d91e288b4f407b402ecb4f936279d97352d5c2775a26342",
+      "before": 36073472,
+      "after": 5705728
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_core.a",
+      "status": "compressed",
+      "sha256": "bd9907d75eaa0765acec09833cda5fcc7680c71e1620a3db7542a91240580ae8",
+      "before": 1306624,
+      "after": 372736
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_bls.a",
+      "status": "compressed",
+      "sha256": "1f4fc5a432d9573e6838ea215b5c86349c5e0c63371f7032d9f393bee6f948c0",
+      "before": 151552,
+      "after": 45056
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_session.a",
+      "status": "compressed",
+      "sha256": "fcde97f2c7f0b563a696e8a94860551f26d5226ba1fd6a5fcc9746873dc4312f",
+      "before": 102400,
+      "after": 28672
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_hex.a",
+      "status": "compressed",
+      "sha256": "5039da7952d686684726305dedc895eef73c76d8683647d49c6cfa338064f9da",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_xml.a",
+      "status": "compressed",
+      "sha256": "1733afe06bfb058bb12f7285daed0ca9e3adf184cfef2444f739cce7d1285126",
+      "before": 196608,
+      "after": 69632
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_oauth2.a",
+      "status": "compressed",
+      "sha256": "6423782932ea543812e16c6e65cdd0c97c4f90dbbb6df3f5002682982036c19f",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_savanna_values.a",
+      "status": "compressed",
+      "sha256": "25bc47478c462f03ca47812abc5e75e93e46f802849f4d5b1946b3e97c868dc7",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_config_core.a",
+      "status": "compressed",
+      "sha256": "d99d4595da52702746326de16feb5983f03671956f8d97b7cae1122cd99e4a1b",
+      "before": 339968,
+      "after": 86016
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libsecp256k1.a",
+      "status": "unchanged",
+      "sha256": "669b1c483ce3b8a50d94787380fd1dad02db2f8c3263ead99bcfd6a6070f2990"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_exceptions.a",
+      "status": "compressed",
+      "sha256": "c64a559d46cb9f62cfc60493339bfd344504ea8aa2cfea279a7e2751dbd24c58",
+      "before": 73728,
+      "after": 24576
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_math.a",
+      "status": "compressed",
+      "sha256": "729734e5490acfdcf118a0f6b2ca05d99df336bbf657195ad7a78d0eaa11c005",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_asymmetric.a",
+      "status": "compressed",
+      "sha256": "a9e762482094e4094572c591f7ea1a362522e74cb5168989957af3f37f6307a2",
+      "before": 692224,
+      "after": 188416
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_transport.a",
+      "status": "compressed",
+      "sha256": "0cdcdcdcfaf5cf85057ffc2289501eaa697eeffe796af274eaae4b956a3105c7",
+      "before": 659456,
+      "after": 192512
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_config_env.a",
+      "status": "compressed",
+      "sha256": "26f119c7285ec26c555b2cbb619602734bf6f30972d4134a1c6928fa7927daad",
+      "before": 184320,
+      "after": 61440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_api.a",
+      "status": "compressed",
+      "sha256": "8dc048be510158a71fba4697a91972722b5369c897926ddd054e08ee7a5b043b",
+      "before": 55197696,
+      "after": 9764864
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_base64.a",
+      "status": "compressed",
+      "sha256": "a211e44f26eab91f863faf70b29f338664edcb41fbbbf5d2ad077430821f9ff3",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_pairing.a",
+      "status": "compressed",
+      "sha256": "d0a6db70e44894e644f58c135bf0162691c03d2f83fdfeef4ed94f07afcc1ac7",
+      "before": 114688,
+      "after": 32768
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_rocksdb.a",
+      "status": "compressed",
+      "sha256": "e82e197e515e4ae1d439495c767e47f9ffcc9cdefcbaf01e14f4c21c21337d28",
+      "before": 2056192,
+      "after": 294912
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_transport.a",
+      "status": "compressed",
+      "sha256": "1058515f2a4be5fc017ab59003a43018a181962339ddcdfe0964e3d3ad8a2175",
+      "before": 520192,
+      "after": 147456
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_object.a",
+      "status": "compressed",
+      "sha256": "6d5c62ddb4c9d7e531ad1144174f275414c14644670d015dd14facf23f179d05",
+      "before": 1220608,
+      "after": 323584
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_workload.a",
+      "status": "compressed",
+      "sha256": "b75fb3e007623c8dc565e36fb76b44474b26127b0db0efa2d1f38e83395e8a13",
+      "before": 167936,
+      "after": 49152
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_log_otlp.a",
+      "status": "compressed",
+      "sha256": "4c140d95567bf2a9af95f18f787e126aa70fe8a00b9e3dcdd368ee09f6228b85",
+      "before": 6025216,
+      "after": 696320
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_net_p2p_node.a",
+      "status": "compressed",
+      "sha256": "2a35b8a2993371da024533b4203cdc40004133a2570e42fc77f074ef4fd32fe8",
+      "before": 11501568,
+      "after": 1544192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_transaction.a",
+      "status": "compressed",
+      "sha256": "ec4beee29bf667c2b5ac996391b9b662dbe7f547316adb46f99fb68c32bfe18f",
+      "before": 319488,
+      "after": 81920
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libsoftfloat.a",
+      "status": "compressed",
+      "sha256": "329e39f931bc43e4aa11163b8b91026fbe2c76d1d1152416191b9fef298aae2a",
+      "before": 270336,
+      "after": 61440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libbls12-381.a",
+      "status": "compressed",
+      "sha256": "024e5ef341b2a152a286c178f86b5a8dda9f1c23a664a2f8d6eb1e82ddb41a69",
+      "before": 241664,
+      "after": 94208
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_http.a",
+      "status": "compressed",
+      "sha256": "7c8879d85b844af7e82f2caaab6eca3b571e2c08b0f6bd5a623d54321fdd1695",
+      "before": 1425408,
+      "after": 438272
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_net_p2p_resolver.a",
+      "status": "compressed",
+      "sha256": "9a086e1c32e84a3fb6ebb971edd659bdfd27ead5d23ea8509ecd429f3580c175",
+      "before": 3452928,
+      "after": 598016
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_savanna.a",
+      "status": "compressed",
+      "sha256": "e90ed5f2d4173449a7da7e53d892605443b0301771c780ae9eee01dddc3f4446",
+      "before": 1294336,
+      "after": 360448
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_bls_signer.a",
+      "status": "compressed",
+      "sha256": "475252838e75d301184624c78384e3c81c9cfaeec5d85d2a582d9e4df465be08",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_p2p.a",
+      "status": "compressed",
+      "sha256": "a03657e5ef544380327ec7dbc1c25891f986fc0541825e278a2dc534bbff3b48",
+      "before": 286720,
+      "after": 81920
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_keystore.a",
+      "status": "compressed",
+      "sha256": "dbc3c3b0ac19f3954d4fdb075c1b1e41bcb4f58160b332795027f4ad488eb175",
+      "before": 364544,
+      "after": 98304
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_crypto_secrets.a",
+      "status": "compressed",
+      "sha256": "29d69534aca5136be1a7bd87f460cca03b29ba4f79c788cb50174bf3d62261ff",
+      "before": 4190208,
+      "after": 495616
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_schema.a",
+      "status": "unchanged",
+      "sha256": "93b50a7e88f1646ad33725976cc77e51af21f6115c6bf5a3658abcd7dd977ca2"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_multiformats.a",
+      "status": "compressed",
+      "sha256": "e591192e2b51f4c0f987197f40987fca41b4e89af990f01c045f15c1f48cd44b",
+      "before": 118784,
+      "after": 36864
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_asio.a",
+      "status": "compressed",
+      "sha256": "7bc50b3c008900bbac9c14fa161205ce089473530418bb2639a3ea9b139a1a3c",
+      "before": 1867776,
+      "after": 536576
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_p2p.a",
+      "status": "compressed",
+      "sha256": "735520cd932984f63ca95469844ed0195691f0e5b9597cedf98b7b3b81adeac0",
+      "before": 24076288,
+      "after": 6545408
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_db_store.a",
+      "status": "compressed",
+      "sha256": "b90c20cdfb3918513e96eb0544931a0c125c58c544d83ee38bf053bd9d601aa5",
+      "before": 6324224,
+      "after": 802816
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_stream.a",
+      "status": "compressed",
+      "sha256": "285918173c4c71610b701dc9a60e33da548c438bf928ad65d44f5c57a8f9e9d5",
+      "before": 1617920,
+      "after": 450560
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_base58.a",
+      "status": "compressed",
+      "sha256": "59522a432a5c5d4ea4cca0a0f1de5e61f90f0f292375eef77051b7ec8bacc609",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_digest.a",
+      "status": "compressed",
+      "sha256": "0b94f5be97bdc5717c2c4ce16f9de5cd2e4b09e45056f83d78ac2499c6a2c458",
+      "before": 249856,
+      "after": 61440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_compression.a",
+      "status": "compressed",
+      "sha256": "c076d9d116b6748005fc1149976a43925637a4e3dfde24fe7074a361db0a36ae",
+      "before": 147456,
+      "after": 36864
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chrono.a",
+      "status": "compressed",
+      "sha256": "fa37d7e65c4ba669989222e759a524920bd6a1f94dee12396049cf74d1cc2c5c",
+      "before": 167936,
+      "after": 65536
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_app.a",
+      "status": "compressed",
+      "sha256": "d69dc26b75a9b6d2cb87be75902d6c86d43a90c0222f4719573e8fbe8c7eb4b7",
+      "before": 1314816,
+      "after": 372736
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_pki.a",
+      "status": "compressed",
+      "sha256": "674307b269190b08082fbc1583f7f10ca1d01efd7b8d94cdbaf574fa0116974e",
+      "before": 110592,
+      "after": 32768
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_dns.a",
+      "status": "compressed",
+      "sha256": "2fac8ce35f73703561ba3aa23fbaf8f65fdbfffed4d955d31d8b1cd630b78642",
+      "before": 1044480,
+      "after": 278528
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_pnet.a",
+      "status": "compressed",
+      "sha256": "1c039246dc359a5e394f4f20907e27c4929472eb9a3de2e12a70ac3c004180c3",
+      "before": 241664,
+      "after": 73728
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_protocol.a",
+      "status": "compressed",
+      "sha256": "263fb41058a9612c3ebc9488995166508fd3694b11ca07d8ab971a1f3910b1cb",
+      "before": 1224704,
+      "after": 245760
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_revision.a",
+      "status": "compressed",
+      "sha256": "27258a2e7a243377f38b4a9b900641a7ef63868165a0397383ee7a007b2f9cdd",
+      "before": 434176,
+      "after": 135168
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "914e4087f7ccec7c98cd804b296c9ab42a74a4c895490f4b57a07f6e7dfe9e43",
+      "before": 3854336,
+      "after": 585728
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_chain_signer.a",
+      "status": "compressed",
+      "sha256": "f429306adb82e5a7ee6286d6b27fd9f180aabf03e1586820da4f424ffdc22ee5",
+      "before": 8359936,
+      "after": 1110016
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_vm_wasm_interpret.a",
+      "status": "compressed",
+      "sha256": "fb1a51432e895a203d4328b69c2f841af0b74f8ed6eda163c7e0dbaa297a29c0",
+      "before": 557056,
+      "after": 114688
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_rocksdb.a",
+      "status": "compressed",
+      "sha256": "868f2947c388aa242ba10bdf08729b7d55da9096470ed01cb85c9d4321fa6275",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "87f2b38f9325016c5c1deb1b84300a701e32851236509cadca104aae27683288",
+      "before": 7245824,
+      "after": 1003520
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_appauth.a",
+      "status": "compressed",
+      "sha256": "850aaba10b208d5b2d8fa50be5ce94461cfa0e887c4ce094667b186f4df31e24",
+      "before": 413696,
+      "after": 122880
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_variant.a",
+      "status": "compressed",
+      "sha256": "dd518f6c7b855e359f3012f1d4c8c438a256e8fb42465e27384a09fc437ef57f",
+      "before": 212992,
+      "after": 61440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_blob.a",
+      "status": "compressed",
+      "sha256": "a323478cee01049e9137e7e2f5139d5bd96e484f57303d2b61eb2874ac6aa6e8",
+      "before": 397312,
+      "after": 118784
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_cli.a",
+      "status": "compressed",
+      "sha256": "182f5cc437ca5af24dec216ede4aa62ee6f7fdce68a190f0d971ab36281e4b95",
+      "before": 1212416,
+      "after": 393216
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_base32.a",
+      "status": "unchanged",
+      "sha256": "864a9a8beb1421ad8dd50fb1d3ddbbd91897cbd52a51626cb1a4b8b6ebc6876a"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_authenticated.a",
+      "status": "compressed",
+      "sha256": "819fd29a4a258e1f9e36497a89ae2cbd5bcf1bcde74ca5e77c30f03835e95e78",
+      "before": 1335296,
+      "after": 364544
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_tls.a",
+      "status": "compressed",
+      "sha256": "1808b342c36a8930f6038dcbb71cc9cffc6b76e0cb8b13252b6256dc5b8cf16b",
+      "before": 282624,
+      "after": 86016
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_log.a",
+      "status": "compressed",
+      "sha256": "febc87cc0524bb495fab96177e3e16fc4590b4d0d24e235140d8e5fa82b36cda",
+      "before": 212992,
+      "after": 73728
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_symmetric.a",
+      "status": "compressed",
+      "sha256": "bb8fe0a4d4872db662754c2b920d19c532018d150a67ba7d971944d89579f2ff",
+      "before": 245760,
+      "after": 61440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_asymmetric_values.a",
+      "status": "unchanged",
+      "sha256": "fc62114957c80d7e104aed25964380a9a72cea6fcbf845c1a83867652eb54ac8"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_net_p2p_diagnostics.a",
+      "status": "compressed",
+      "sha256": "79af251c4e44053d08c6c4c614044190eb52af16ae0f28e80444fe0dd7942356",
+      "before": 1056768,
+      "after": 151552
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_json.a",
+      "status": "compressed",
+      "sha256": "33e335ee4d624fe07a3b5cc545a2d671e76e7749fc6917a9986286bf21da1613",
+      "before": 679936,
+      "after": 167936
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_websocket.a",
+      "status": "compressed",
+      "sha256": "0598492d87781108581624bd1d816f2871238848c74c3708b3bf6c764725c3a1",
+      "before": 19992576,
+      "after": 3133440
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_websocket.a",
+      "status": "compressed",
+      "sha256": "1fb58a6852d693e21ed4fc7009255d027a1000c6f1bfc03acfbea8e00710b0ac",
+      "before": 462848,
+      "after": 139264
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libbn256.a",
+      "status": "compressed",
+      "sha256": "457cc0389dd9b6cfe21d322790cd48da6a64c439cecbfed502ab3653c039d840",
+      "before": 102400,
+      "after": 45056
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_raw.a",
+      "status": "compressed",
+      "sha256": "4dea5120bb9ed670797bb794b7ae2ba7ee2c641a85406fc60a2320808699bf36",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libcares.a",
+      "status": "compressed",
+      "sha256": "c5c7f3383299db94884e254a15297d8cab4f4da2291bc88319c5ea91af45fe4d",
+      "before": 385024,
+      "after": 151552
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_auth.a",
+      "status": "compressed",
+      "sha256": "8ff3b0f8c91f5db5ecab7e5bc7e727d83600f496723a270c96fb397184d5c35d",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_codec_yaml.a",
+      "status": "compressed",
+      "sha256": "b37d963541a30862e1c3a62394fe1562e632934fb334ee45480161e5dd36d26f",
+      "before": 929792,
+      "after": 270336
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_bn256.a",
+      "status": "unchanged",
+      "sha256": "f31e66625de716cf07bf9cd4cecbf628b371158e56fcf996c129096279a3d271"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_mdbx.a",
+      "status": "compressed",
+      "sha256": "96c01bdf7c16169dcf42ff21260197aaff592f5f15e5b21ee6adb17b24eb0a8c",
+      "before": 987136,
+      "after": 237568
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_auth_http.a",
+      "status": "compressed",
+      "sha256": "9d3f7f80ae6c75dcf6f9627ff443a2fc5ba5df5c5c103bf5f246e010b9d9c9ee",
+      "before": 122880,
+      "after": 36864
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_core.a",
+      "status": "compressed",
+      "sha256": "aa641b45f6469ce03f7e5fae26b338b3ecd7ffb14cdf70def8a2fed490e9955b",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_tcp.a",
+      "status": "compressed",
+      "sha256": "884adbd5520501d34b6b92e8c1f94f71fc696f92c03687863ae84c0244e56bca",
+      "before": 2605056,
+      "after": 667648
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_core.a",
+      "status": "compressed",
+      "sha256": "894037841fcf2c143812a45e115193daa681e30a51646ab8d3516a533a41c299",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_stcp.a",
+      "status": "compressed",
+      "sha256": "785fd85f9edb0effdecc98d0c6a95f317eabb6b0884bf26dea748b8cedecaf16",
+      "before": 2207744,
+      "after": 548864
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_config_program_options.a",
+      "status": "compressed",
+      "sha256": "f7488557ae38a1981070f83239e264d3c1ffce2953630155814d513f24b6e4d7",
+      "before": 196608,
+      "after": 57344
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_crypto_signer.a",
+      "status": "compressed",
+      "sha256": "a11ee00a9f59394a1011bbab9dec916f0143723724ad8cf2237b3f7a4153403c",
+      "before": 151552,
+      "after": 32768
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_quic.a",
+      "status": "compressed",
+      "sha256": "bd9aae29e57021716e2487eecc8e3e2e30e9d9059e7d95113e65fc7a968fb25f",
+      "before": 4927488,
+      "after": 1314816
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_core.a",
+      "status": "compressed",
+      "sha256": "7e6d7804cd725380575889c9a4de86b336bbf2bd7e8d755f4a4ade264dbc2a56",
+      "before": 32768,
+      "after": 12288
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_net_yamux.a",
+      "status": "compressed",
+      "sha256": "2632360c21b0f28a7c059127b886e56e705f708c82b9d645b305d7d84a1be6e1",
+      "before": 921600,
+      "after": 274432
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_core.a",
+      "status": "compressed",
+      "sha256": "33b2e833f4acdbb216106e1adc90188470628f88acb097958df8ab9a0c1bb570",
+      "before": 569344,
+      "after": 167936
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_net_p2p_pubsub.a",
+      "status": "compressed",
+      "sha256": "8910d88fd23931b23f371f911a73f3cf776dff20602ed43d05cc00e694763594",
+      "before": 2142208,
+      "after": 376832
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_otlp.a",
+      "status": "compressed",
+      "sha256": "1ca3ace8f29aef547a47f358a50225c7044f1e4f8a75442cf1a8301ae79047fe",
+      "before": 671744,
+      "after": 208896
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_api_quic.a",
+      "status": "compressed",
+      "sha256": "d7863e618f6a0267bf0cfb1bb8bbc7e52a205e02b3240e2bb5beba12b2fd010a",
+      "before": 65536,
+      "after": 20480
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_db_ids.a",
+      "status": "unchanged",
+      "sha256": "348dccb3cab2781c5cdc790424339ec70f6262356194535e265b2c911a252200"
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libmdbx-internal.a",
+      "status": "compressed",
+      "sha256": "3b87209952e86332b27346d9c437780829f68b4c18a85fc37ff9974688a2ba00",
+      "before": 565248,
+      "after": 303104
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_chain_quorum.a",
+      "status": "compressed",
+      "sha256": "2bc484875b3e95fa9f19537ce25384514ed86dbdd3b9ad4cad31b3bd950c9cf9",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libforge_plugins_net_http_server.a",
+      "status": "compressed",
+      "sha256": "960a00c0082e61bfc8b34c365c282125d45193dbf4faae077b85c0dae0cd4de6",
+      "before": 2375680,
+      "after": 323584
+    },
+    {
+      "path": "logger-forge/forge-package-install/lib/libappauth-internal.a",
+      "status": "compressed",
+      "sha256": "eec528a18f2f6d5d974f10ac1ce8757fea70303845506bae625f333cd206f9fd",
+      "before": 626688,
+      "after": 200704
+    },
+    {
+      "path": "contract-runtimes/lib/libc++.a",
+      "status": "compressed",
+      "sha256": "423255a033e3f9d3146e853b0fbcff970a7881b8a3b8ab63965c467595b9bad1",
+      "before": 790528,
+      "after": 258048
+    },
+    {
+      "path": "contract-runtimes/lib/libc++abi.a",
+      "status": "compressed",
+      "sha256": "cbbf661ed8837ac0451e948ee4e7d5b3e48e684ddd055a3bf35395aa3220e807",
+      "before": 368640,
+      "after": 106496
+    },
+    {
+      "path": "contract-runtimes/compiler-rt/lib/generic/libclang_rt.builtins-wasm32.a",
+      "status": "compressed",
+      "sha256": "a15c3cb7363f0eae14be9a10c6d5cb6e31420f44c732ad9b86cf261739140d8d",
+      "before": 94208,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_http.a",
+      "status": "compressed",
+      "sha256": "63fe619d6c1dc5b4e0996ec71ab6746a5f23d030eaabde6ddb385d9e56268fa0",
+      "before": 36073472,
+      "after": 5705728
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_core.a",
+      "status": "compressed",
+      "sha256": "2890d97c68ed8886f164a48b685f7b25036e3c7de9414cbe2e2d690218ab8234",
+      "before": 1306624,
+      "after": 372736
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_bls.a",
+      "status": "compressed",
+      "sha256": "7337e7b25d115927e8a15bf0dab7488ae105bb5f61f72422089be85875494da7",
+      "before": 151552,
+      "after": 45056
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_session.a",
+      "status": "compressed",
+      "sha256": "dfc26508cd41eee6bd4adb88fc924cae5c83c956a9bcd206c6f8b9da2c085fb1",
+      "before": 102400,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_hex.a",
+      "status": "compressed",
+      "sha256": "36d519bcae8967c5a4b36178a6f2b4a5700c0e241fee9a498cb664042f0ce099",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_xml.a",
+      "status": "compressed",
+      "sha256": "690d58ad6a3974d06b608dbac1afa9b550ef64a2deb1f62744e0c1384e564ccf",
+      "before": 196608,
+      "after": 69632
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_oauth2.a",
+      "status": "compressed",
+      "sha256": "e2799efc2e15ae3bd288eb2fafa4facd0ce38a24c1f7a97bd144c9fd103c0ee1",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_savanna_values.a",
+      "status": "compressed",
+      "sha256": "96424057039eea49120ce24a5cb9e3cd95312032bca7195703c3160099166013",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_config_core.a",
+      "status": "compressed",
+      "sha256": "bab47b3d188d26e6d85f06d138fce94bdb0645b9b40eba12296e3e3aab772de8",
+      "before": 339968,
+      "after": 86016
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libsecp256k1.a",
+      "status": "unchanged",
+      "sha256": "534b9682fb516f0619807be9b60cd70b0fb82e69d52836cbb4fd571d6fc12d60"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_exceptions.a",
+      "status": "compressed",
+      "sha256": "7c65097ae261b89dc616b87aa299685920bba21e86768efe44adac92a2cdd932",
+      "before": 73728,
+      "after": 24576
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_math.a",
+      "status": "compressed",
+      "sha256": "b96f297db22defc6bb9342ab98e89f867e89d88627e3a91914dbfaf919094828",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_asymmetric.a",
+      "status": "compressed",
+      "sha256": "f3b4ca60844d184556cd5902b744820b3469c246f3b7ead5ac62e36bcfcd2943",
+      "before": 692224,
+      "after": 188416
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_transport.a",
+      "status": "compressed",
+      "sha256": "6248c2882ed0768e0860af238fe0f42fdcd9106a64fb09218f09cef8e2403674",
+      "before": 659456,
+      "after": 192512
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_config_env.a",
+      "status": "compressed",
+      "sha256": "0c682002ff095cf984bf46edc1d10b9f2708143d0946587540a49b7141241186",
+      "before": 184320,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_tooling_manifest.a",
+      "status": "compressed",
+      "sha256": "bac2f225d39928c5b8178666594136192395367152cd6c54919d4e096608f2c2",
+      "before": 372736,
+      "after": 98304
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_api.a",
+      "status": "compressed",
+      "sha256": "8b1874cd8ced095fbb62de8c4a1fe08f286f105e31894a82e77fbe30ddaf7244",
+      "before": 55197696,
+      "after": 9764864
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_base64.a",
+      "status": "compressed",
+      "sha256": "fc235cc03e3732e227b0ca577971946f55892d9e1c423bc6f87f53c180bc5c0f",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_pairing.a",
+      "status": "compressed",
+      "sha256": "978ef09c868bfcd08b9c78633ae6513629c2488a511be210739bacdc1044f929",
+      "before": 114688,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_rocksdb.a",
+      "status": "compressed",
+      "sha256": "52683421964e384fe6379c5d436b269c587e397e166f96324cd9b683adfcf4c4",
+      "before": 2056192,
+      "after": 294912
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_transport.a",
+      "status": "compressed",
+      "sha256": "32278b85e747afaec34bcd186efc906df1ee4509ea5676ff467552943ead55bb",
+      "before": 520192,
+      "after": 147456
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_object.a",
+      "status": "compressed",
+      "sha256": "aa14b48330f5f4069980e5d6c3bad56247763186eda094c1966ddf420864e83a",
+      "before": 1220608,
+      "after": 323584
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_workload.a",
+      "status": "compressed",
+      "sha256": "861af0f9a10bf4e43fa80ea3749926f56eca008902a62ec4a259dfef9a1e841e",
+      "before": 167936,
+      "after": 49152
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_log_otlp.a",
+      "status": "compressed",
+      "sha256": "11314c03db9782bac5e65b037f8da593a243fab44ed4b39c174b3e8ccec75230",
+      "before": 6025216,
+      "after": 696320
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_net_p2p_node.a",
+      "status": "compressed",
+      "sha256": "40ccb1e4483dc340a58e4c7cd4d2fe7f9d8b3889b7c5744186f8f223fd3dde8d",
+      "before": 11501568,
+      "after": 1544192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_transaction.a",
+      "status": "compressed",
+      "sha256": "50a9ae8039037191d62fe0aa34b281a51146cb1d15e44f519931209eb1410a80",
+      "before": 319488,
+      "after": 81920
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libsoftfloat.a",
+      "status": "compressed",
+      "sha256": "f1aa5702a1fb38307c858ac4523198928ab7d9ae1ffc60e714b6d481f1c34c33",
+      "before": 270336,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libbls12-381.a",
+      "status": "compressed",
+      "sha256": "32777750f8c2939fee6cf1207697020a19b1633cc65cd7c23489596f29759411",
+      "before": 241664,
+      "after": 94208
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_http.a",
+      "status": "compressed",
+      "sha256": "e309189a99b2920be57ef605524c15bdcacf7870b6cc63041cb1c644eeca7ed2",
+      "before": 1425408,
+      "after": 438272
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_net_p2p_resolver.a",
+      "status": "compressed",
+      "sha256": "7759447d14f3e8dec9aa2fbfa2137c319d4c6fcd3422142157e09226b30016b2",
+      "before": 3452928,
+      "after": 598016
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_savanna.a",
+      "status": "compressed",
+      "sha256": "b179125e34bf3d7e6dcfdaf8aa50679e27fc5fe2e46c60f212c5f26196ad5278",
+      "before": 1294336,
+      "after": 360448
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_tooling_attributes.a",
+      "status": "compressed",
+      "sha256": "b9189feb101c71b349aa0ef3450ecb7f1047662956f28f6034fd734f7309641e",
+      "before": 61440,
+      "after": 20480
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_bls_signer.a",
+      "status": "compressed",
+      "sha256": "1c11ad70190017c3ac7f58129f4306c8b8e83919c134c56bddf5ebd284e6d073",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_p2p.a",
+      "status": "compressed",
+      "sha256": "24ee1191adb61a4e0eb03d36541985262cf7c9ebdc30767252917d6fcbcf3cbb",
+      "before": 286720,
+      "after": 81920
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_keystore.a",
+      "status": "compressed",
+      "sha256": "71bd8557003f295ae6d92c68ac817760391577fbf0623a04119910b0c5ca59f7",
+      "before": 364544,
+      "after": 98304
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_crypto_secrets.a",
+      "status": "compressed",
+      "sha256": "e234959e24751e70fd13f3cc5a0a53f1bbafacd684b29822a825fb095676fd95",
+      "before": 4190208,
+      "after": 495616
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_schema.a",
+      "status": "unchanged",
+      "sha256": "03e90d47d2b18323257e30dfe49da662abe6147b08917d33f494550edd795567"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_multiformats.a",
+      "status": "compressed",
+      "sha256": "0cb0dd7b06893b293c31c86c84c173496ad36e3ab6a90039157163d4168f71cf",
+      "before": 118784,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_asio.a",
+      "status": "compressed",
+      "sha256": "99a3af8253d36740533e52e79261a28ea98083b27434eb8cf94d175761f3d7e9",
+      "before": 1867776,
+      "after": 536576
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_p2p.a",
+      "status": "compressed",
+      "sha256": "f60977bc0d3717ac392c1fa73491e5eebe5bc04623db20855b99e5a677aa0b1b",
+      "before": 24076288,
+      "after": 6545408
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_db_store.a",
+      "status": "compressed",
+      "sha256": "237256994811414d2a9012359b5049a369b9c48c395dbcf0be4cef22c2893746",
+      "before": 6324224,
+      "after": 802816
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_stream.a",
+      "status": "compressed",
+      "sha256": "dce8b390a501bb490673a257a7897912b5d66a72d5f7665800c6b369e7ffba3a",
+      "before": 1617920,
+      "after": 450560
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_base58.a",
+      "status": "compressed",
+      "sha256": "77d9ce8746b0073aef5c5fefca10ec23cc62ead3cf344d4695e4c46eda0f06a8",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_digest.a",
+      "status": "compressed",
+      "sha256": "b69594202fdd915453476a405b94dbbfceeb0b70d920163da309c513ec4c4f0c",
+      "before": 249856,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_compression.a",
+      "status": "compressed",
+      "sha256": "30ea16f6273ca19d4445d74c76e17647a257a20bfd69ed115d187735cb7baae8",
+      "before": 147456,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chrono.a",
+      "status": "compressed",
+      "sha256": "5d05ce595bd1e7581b299c953fbd96703bf8bef505eb733eeacf527407876d8d",
+      "before": 167936,
+      "after": 65536
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_app.a",
+      "status": "compressed",
+      "sha256": "3e421c9185d54218114ef4f2cceca25f06b319619086fb79f3fef9db0c8079c5",
+      "before": 1314816,
+      "after": 372736
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_tooling_testing.a",
+      "status": "compressed",
+      "sha256": "9687dee12eb825edb8b9dcafeb3f7ed1c2f680685be2da3de49d7c987d8191cb",
+      "before": 11739136,
+      "after": 1482752
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_pki.a",
+      "status": "compressed",
+      "sha256": "985b67659a9a7656a5082e8d3475774fc69988ab3e16ec72b647ff66b1eeb315",
+      "before": 110592,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_dns.a",
+      "status": "compressed",
+      "sha256": "43db5d7c54df4b0571676a75f48666567b803d73dae411a4b91051e538309b89",
+      "before": 1044480,
+      "after": 278528
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_pnet.a",
+      "status": "compressed",
+      "sha256": "b2004dda746e306a716f1d25d1e8d91887d8a79c4c90000fb34ee1e34275b705",
+      "before": 241664,
+      "after": 73728
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_protocol.a",
+      "status": "compressed",
+      "sha256": "ab9958622c2a5f35ebbc73b473816e528e1e87f5c30577565fbe9fc5691cd456",
+      "before": 1224704,
+      "after": 245760
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_revision.a",
+      "status": "compressed",
+      "sha256": "7a88e0736aaf78371978cf95ff5fd285e36549f902a00b7230c49a350d436579",
+      "before": 434176,
+      "after": 135168
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "96f482735877e65d01a0a3120c8d1607b79bd38674bb392975d8f1c510b08d93",
+      "before": 3854336,
+      "after": 585728
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_chain_signer.a",
+      "status": "compressed",
+      "sha256": "610c7c6224cc538947e93c3af160686180fee0d8215a7d7c469130a45e99ca80",
+      "before": 8359936,
+      "after": 1110016
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_vm_wasm_interpret.a",
+      "status": "compressed",
+      "sha256": "a2a3b49fc2509b7550855144f75bbe6de9249eafd4db1125c105d7c177d72832",
+      "before": 557056,
+      "after": 114688
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_rocksdb.a",
+      "status": "compressed",
+      "sha256": "1dc91f993a789c77f61eed46ba1701921fb76081a8c5cea73d5a40cdf5461160",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "f0047777a16b1179b90eca1f0be2caf903eed3388cca49b5ec01dae2815943e3",
+      "before": 7245824,
+      "after": 1003520
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_appauth.a",
+      "status": "compressed",
+      "sha256": "b2b5dcd83f208a96a74df983b6692f95a5bf15e5484a7e6b0db1e430a8d2e555",
+      "before": 413696,
+      "after": 122880
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_variant.a",
+      "status": "compressed",
+      "sha256": "246f841a2b3048a0ba4adf6c24ea5a8b0405962b8c19af7dfbb7124f90098fda",
+      "before": 212992,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_blob.a",
+      "status": "compressed",
+      "sha256": "747659f1f490cd2a66c3af91a403da3a191ca65ef6086417b45ed89b084c4720",
+      "before": 397312,
+      "after": 118784
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_cli.a",
+      "status": "compressed",
+      "sha256": "72e05615fee0ea3c9321b75b2917fb2e371153a9816748c756c19f74569334c6",
+      "before": 1212416,
+      "after": 393216
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_base32.a",
+      "status": "unchanged",
+      "sha256": "eb2908f3ea341fc7513e9845edcf8a71a92c889eadfaec38ec35d3a66dd2e650"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_authenticated.a",
+      "status": "compressed",
+      "sha256": "53812366b62ce675afa677cc4fe2f5759e74a2db3c5f32f0dcde40c3b603d4ac",
+      "before": 1335296,
+      "after": 364544
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_tls.a",
+      "status": "compressed",
+      "sha256": "9ffd68fe2490d1e472d4b57b4b9a39b8b1e5ce441f776ddf64e55a23bbd63586",
+      "before": 282624,
+      "after": 86016
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_log.a",
+      "status": "compressed",
+      "sha256": "92e3fa9883d110046f798d2498b6a2bda66f969ccdbbcd1e9f4c78f0cca23d7d",
+      "before": 212992,
+      "after": 73728
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_symmetric.a",
+      "status": "compressed",
+      "sha256": "f0f497793de4115ac20dc641215420ae15632dedc4c0b0f87f3ee54467b17d1a",
+      "before": 245760,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_asymmetric_values.a",
+      "status": "unchanged",
+      "sha256": "d2cb5b14e346747510ed18793834ef679fa4dc6209cfb82b90226d4378435b27"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_net_p2p_diagnostics.a",
+      "status": "compressed",
+      "sha256": "10f7a77aae29a31a0fe1ca713a847018f9f4009c9cf104e51e25e6610974fe2a",
+      "before": 1056768,
+      "after": 151552
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_json.a",
+      "status": "compressed",
+      "sha256": "f505cb199bd0514235a2baa96386a27ead401a2a47dfd563e4505227c193cf7a",
+      "before": 679936,
+      "after": 167936
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_websocket.a",
+      "status": "compressed",
+      "sha256": "4d84ab0e0f3d674c9df75f78c8843891f72b2893f1ac094e47eb6413e3a260af",
+      "before": 19992576,
+      "after": 3133440
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_websocket.a",
+      "status": "compressed",
+      "sha256": "4ceee9528da06d7a87fc24c38873a8feee8988288836929317530d7cffff5ffe",
+      "before": 462848,
+      "after": 139264
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libbn256.a",
+      "status": "compressed",
+      "sha256": "6d1905049ae89c834e43463ec56e48bc56657cf7a7ce29dc23dc0096a123fe88",
+      "before": 102400,
+      "after": 45056
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_raw.a",
+      "status": "compressed",
+      "sha256": "4f0f5ad2b58f9033acc82f786f9cfa9069ce8aa4040354e0c0710ffebc9b3223",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libcares.a",
+      "status": "compressed",
+      "sha256": "8e76cf8aa34ca9c98698ee2b9052471ef21f063ad7bcf5fba4d112234ff2b957",
+      "before": 385024,
+      "after": 151552
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_auth.a",
+      "status": "compressed",
+      "sha256": "ecfe737d73defaca76cd8423842d1564986b0360b272e6db2b01f69b4f42cd25",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_codec_yaml.a",
+      "status": "compressed",
+      "sha256": "44796bc1529f197ef31ce698ef26574ad6aba151b3b53941a151e378eebc518b",
+      "before": 929792,
+      "after": 270336
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_bn256.a",
+      "status": "unchanged",
+      "sha256": "5ce484f6c6e29d96bd489f5b58aadd43afff8915b2c0e69909f9289067279e1b"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_mdbx.a",
+      "status": "compressed",
+      "sha256": "4fecbab72a1c9aa184520071eccbe317a1ddab12352aa80b7f5817b7bbfb02e8",
+      "before": 987136,
+      "after": 237568
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_auth_http.a",
+      "status": "compressed",
+      "sha256": "2e3076dccb457e3dae82b7a731b5cf6ec52c40477bb57544c3d8048fb3372e9a",
+      "before": 122880,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_core.a",
+      "status": "compressed",
+      "sha256": "d728a5c1febf1f754a222eb3e38238ade960e067672b0b0c0be8fe5f7d652349",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_tcp.a",
+      "status": "compressed",
+      "sha256": "29c0bb487b9feeaa2dc94cf4050ba6a5f10bdb24bf2d35222c7f2f31779050a2",
+      "before": 2605056,
+      "after": 667648
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_core.a",
+      "status": "compressed",
+      "sha256": "e889d28e11dbe27bdb291d1d32beadf816a7e3796ddcaaee69f932d93e5dc323",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_stcp.a",
+      "status": "compressed",
+      "sha256": "88f17140a50a5b1515aa59ed38a612b9ea549fb58602dbb2d389919e8782d3b4",
+      "before": 2207744,
+      "after": 548864
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_config_program_options.a",
+      "status": "compressed",
+      "sha256": "65ab5fca7419093df447d2247dbb3ce8c1f387fba517f9d82f36af8d05d557b7",
+      "before": 196608,
+      "after": 57344
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_crypto_signer.a",
+      "status": "compressed",
+      "sha256": "cae097fc8b0bfd5a5797a580e4d7ccb685f9043d1f63e005b09a058de4ce9232",
+      "before": 151552,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_quic.a",
+      "status": "compressed",
+      "sha256": "14b83b47fc1c832bbab29b2adfa544b4181afd532bab53a657bbd85a21dcdf49",
+      "before": 4927488,
+      "after": 1314816
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_core.a",
+      "status": "compressed",
+      "sha256": "7d2dc7a88ef161cfd5cfbe8e91b2f406aa9ba4f5806ce629b5531df7a7420217",
+      "before": 32768,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_net_yamux.a",
+      "status": "compressed",
+      "sha256": "89b4f4b0c9a30ebcebae86683ae67d3e8036add284d0e75dbde049973e6ef4b3",
+      "before": 921600,
+      "after": 274432
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_core.a",
+      "status": "compressed",
+      "sha256": "6ae5b6a9ad363816960a612a767c2c7f7868f42df5878fecf3f3c61d98c109a6",
+      "before": 569344,
+      "after": 167936
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_net_p2p_pubsub.a",
+      "status": "compressed",
+      "sha256": "5ea12313226e72592262a14262a6737bd6e6929b42d5c352cea9e55de10bc87d",
+      "before": 2142208,
+      "after": 376832
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_otlp.a",
+      "status": "compressed",
+      "sha256": "2ade09aa590ef80dbf5ee23a7cd8694ff3276c073d1cf5371e1d9d5e777d2d52",
+      "before": 671744,
+      "after": 208896
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_tooling_validation.a",
+      "status": "compressed",
+      "sha256": "d498b4d726d1af3359e16ce1a74cd4858b0f18cf3b337dc07f2638a09a3c276d",
+      "before": 413696,
+      "after": 106496
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_api_quic.a",
+      "status": "compressed",
+      "sha256": "22156f492ecb516459226261ceeb0e98476505ba78ecc1a10f8400638b3e830b",
+      "before": 65536,
+      "after": 20480
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_db_ids.a",
+      "status": "unchanged",
+      "sha256": "b5eba5a27ebda58aaa3679ac1156dfa1d55e91c596f8dfbef05bde2a0a0969fc"
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_tooling_abi.a",
+      "status": "compressed",
+      "sha256": "0bb7f0c8bc1b319a217c684d7e167a7f046c0b3e47238d9cf3fa1acbb6ed2935",
+      "before": 872448,
+      "after": 270336
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libmdbx-internal.a",
+      "status": "compressed",
+      "sha256": "04417905814ab89a1776d8055305f42b4a161f0cdd32560f5681cec7d762a34e",
+      "before": 565248,
+      "after": 303104
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_chain_quorum.a",
+      "status": "compressed",
+      "sha256": "ac8e15a11fa5f4e6aefd1243d9005db43712d70453caa8b97edd8c6c05ddd471",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libforge_plugins_net_http_server.a",
+      "status": "compressed",
+      "sha256": "e9bd62aff80a6e9368edb4b8da53cf90bcda9a9a4cf4524a4369cd7d2899b435",
+      "before": 2375680,
+      "after": 327680
+    },
+    {
+      "path": "signer-debug/forge-package-install/lib/libappauth-internal.a",
+      "status": "compressed",
+      "sha256": "3dd808c53b1ee06c4e81a888db2f7ebab46a1e11178ae95f2ca71d7ddc88180e",
+      "before": 626688,
+      "after": 200704
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_http.a",
+      "status": "compressed",
+      "sha256": "63fe619d6c1dc5b4e0996ec71ab6746a5f23d030eaabde6ddb385d9e56268fa0",
+      "before": 36073472,
+      "after": 5705728
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_core.a",
+      "status": "compressed",
+      "sha256": "2890d97c68ed8886f164a48b685f7b25036e3c7de9414cbe2e2d690218ab8234",
+      "before": 1306624,
+      "after": 372736
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_bls.a",
+      "status": "compressed",
+      "sha256": "7337e7b25d115927e8a15bf0dab7488ae105bb5f61f72422089be85875494da7",
+      "before": 151552,
+      "after": 45056
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_session.a",
+      "status": "compressed",
+      "sha256": "dfc26508cd41eee6bd4adb88fc924cae5c83c956a9bcd206c6f8b9da2c085fb1",
+      "before": 102400,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_hex.a",
+      "status": "compressed",
+      "sha256": "36d519bcae8967c5a4b36178a6f2b4a5700c0e241fee9a498cb664042f0ce099",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_xml.a",
+      "status": "compressed",
+      "sha256": "690d58ad6a3974d06b608dbac1afa9b550ef64a2deb1f62744e0c1384e564ccf",
+      "before": 196608,
+      "after": 69632
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_oauth2.a",
+      "status": "compressed",
+      "sha256": "e2799efc2e15ae3bd288eb2fafa4facd0ce38a24c1f7a97bd144c9fd103c0ee1",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_savanna_values.a",
+      "status": "compressed",
+      "sha256": "96424057039eea49120ce24a5cb9e3cd95312032bca7195703c3160099166013",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_config_core.a",
+      "status": "compressed",
+      "sha256": "bab47b3d188d26e6d85f06d138fce94bdb0645b9b40eba12296e3e3aab772de8",
+      "before": 339968,
+      "after": 86016
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_p2p_pubsub.a",
+      "status": "compressed",
+      "sha256": "85d35c9dda5fd862e4c7b25900e679920e47cc808dd42ce60cf6acac4a498914",
+      "before": 2027520,
+      "after": 372736
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libsecp256k1.a",
+      "status": "unchanged",
+      "sha256": "534b9682fb516f0619807be9b60cd70b0fb82e69d52836cbb4fd571d6fc12d60"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_exceptions.a",
+      "status": "compressed",
+      "sha256": "7c65097ae261b89dc616b87aa299685920bba21e86768efe44adac92a2cdd932",
+      "before": 73728,
+      "after": 24576
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_math.a",
+      "status": "compressed",
+      "sha256": "b96f297db22defc6bb9342ab98e89f867e89d88627e3a91914dbfaf919094828",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_asymmetric.a",
+      "status": "compressed",
+      "sha256": "f3b4ca60844d184556cd5902b744820b3469c246f3b7ead5ac62e36bcfcd2943",
+      "before": 692224,
+      "after": 188416
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_transport.a",
+      "status": "compressed",
+      "sha256": "a88ea1a571dbf213c2567e3222ad17e17b90e592ac5bc832ce830d2b3458b58f",
+      "before": 655360,
+      "after": 192512
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_config_env.a",
+      "status": "compressed",
+      "sha256": "0c682002ff095cf984bf46edc1d10b9f2708143d0946587540a49b7141241186",
+      "before": 184320,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_tooling_manifest.a",
+      "status": "compressed",
+      "sha256": "bac2f225d39928c5b8178666594136192395367152cd6c54919d4e096608f2c2",
+      "before": 372736,
+      "after": 98304
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_api.a",
+      "status": "compressed",
+      "sha256": "7e8b8443246a0cf5bcf0b919ce371491be5e5d2dfb0a4a1ae9971990fd50f507",
+      "before": 55197696,
+      "after": 9764864
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_http_server.a",
+      "status": "compressed",
+      "sha256": "5fc5a28b48ce263bc7146fac0c10830e691cf508b8a9de99451807bd1ab6a02d",
+      "before": 2191360,
+      "after": 311296
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_base64.a",
+      "status": "compressed",
+      "sha256": "fc235cc03e3732e227b0ca577971946f55892d9e1c423bc6f87f53c180bc5c0f",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_pairing.a",
+      "status": "compressed",
+      "sha256": "978ef09c868bfcd08b9c78633ae6513629c2488a511be210739bacdc1044f929",
+      "before": 114688,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_rocksdb.a",
+      "status": "compressed",
+      "sha256": "52683421964e384fe6379c5d436b269c587e397e166f96324cd9b683adfcf4c4",
+      "before": 2056192,
+      "after": 294912
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_transport.a",
+      "status": "compressed",
+      "sha256": "32278b85e747afaec34bcd186efc906df1ee4509ea5676ff467552943ead55bb",
+      "before": 520192,
+      "after": 147456
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_object.a",
+      "status": "compressed",
+      "sha256": "aa14b48330f5f4069980e5d6c3bad56247763186eda094c1966ddf420864e83a",
+      "before": 1220608,
+      "after": 323584
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_workload.a",
+      "status": "compressed",
+      "sha256": "861af0f9a10bf4e43fa80ea3749926f56eca008902a62ec4a259dfef9a1e841e",
+      "before": 167936,
+      "after": 49152
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_log_otlp.a",
+      "status": "compressed",
+      "sha256": "11314c03db9782bac5e65b037f8da593a243fab44ed4b39c174b3e8ccec75230",
+      "before": 6025216,
+      "after": 696320
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_net_p2p_node.a",
+      "status": "compressed",
+      "sha256": "7dc4800f980a7becaea202e7e4585ae479b89f7b776fd6e021cca608be17f4cc",
+      "before": 11517952,
+      "after": 1544192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_p2p_resolver.a",
+      "status": "compressed",
+      "sha256": "bb359a387b42d679f22ffd21f4b0d9b78e3398fb8343cac5925f8e70e6d68dc5",
+      "before": 3272704,
+      "after": 585728
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_transaction.a",
+      "status": "compressed",
+      "sha256": "6f968bf65db8b3131885193479814cede19b43afb5afeeb818511655157c9935",
+      "before": 319488,
+      "after": 81920
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libsoftfloat.a",
+      "status": "compressed",
+      "sha256": "f1aa5702a1fb38307c858ac4523198928ab7d9ae1ffc60e714b6d481f1c34c33",
+      "before": 270336,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libbls12-381.a",
+      "status": "compressed",
+      "sha256": "32777750f8c2939fee6cf1207697020a19b1633cc65cd7c23489596f29759411",
+      "before": 241664,
+      "after": 94208
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_http.a",
+      "status": "compressed",
+      "sha256": "e309189a99b2920be57ef605524c15bdcacf7870b6cc63041cb1c644eeca7ed2",
+      "before": 1425408,
+      "after": 438272
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_net_p2p_resolver.a",
+      "status": "compressed",
+      "sha256": "73a8dd802badcc704013f3df84ae199244c5f226c826837c687bb968141687f5",
+      "before": 3452928,
+      "after": 598016
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_savanna.a",
+      "status": "compressed",
+      "sha256": "6b4ffbde05bcc3feb39253c2674f343192a64960fee0d7414e13b4482f2bcbda",
+      "before": 1294336,
+      "after": 360448
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_tooling_attributes.a",
+      "status": "compressed",
+      "sha256": "b9189feb101c71b349aa0ef3450ecb7f1047662956f28f6034fd734f7309641e",
+      "before": 61440,
+      "after": 20480
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_bls_signer.a",
+      "status": "compressed",
+      "sha256": "1c11ad70190017c3ac7f58129f4306c8b8e83919c134c56bddf5ebd284e6d073",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_p2p.a",
+      "status": "compressed",
+      "sha256": "e040c372dbd47c0e49724f1fb356cf5c097bc44a2f0f3b3db56ece5ed9df64bd",
+      "before": 286720,
+      "after": 81920
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_genesis.a",
+      "status": "compressed",
+      "sha256": "8bfb4b168d29f698fbde96e3d979ce8ab5dc1b028a1b78b7327acc0fa5e8634f",
+      "before": 651264,
+      "after": 135168
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_api.a",
+      "status": "compressed",
+      "sha256": "3086616c0895d890c2e13a4bba8f6d77d0799bfa2a3aee20866e00ac933092fa",
+      "before": 1732608,
+      "after": 253952
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_keystore.a",
+      "status": "compressed",
+      "sha256": "71bd8557003f295ae6d92c68ac817760391577fbf0623a04119910b0c5ca59f7",
+      "before": 364544,
+      "after": 98304
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_crypto_secrets.a",
+      "status": "compressed",
+      "sha256": "e234959e24751e70fd13f3cc5a0a53f1bbafacd684b29822a825fb095676fd95",
+      "before": 4190208,
+      "after": 495616
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_schema.a",
+      "status": "unchanged",
+      "sha256": "03e90d47d2b18323257e30dfe49da662abe6147b08917d33f494550edd795567"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_multiformats.a",
+      "status": "compressed",
+      "sha256": "128e1dab58f715d00b85c2c20d26bb03105984b465224e71d11c7096c1643897",
+      "before": 118784,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_asio.a",
+      "status": "compressed",
+      "sha256": "99a3af8253d36740533e52e79261a28ea98083b27434eb8cf94d175761f3d7e9",
+      "before": 1867776,
+      "after": 536576
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_p2p.a",
+      "status": "compressed",
+      "sha256": "9ed719d2834cc765f85accade5883b75504315d21a55084578ed1e575271582d",
+      "before": 24817664,
+      "after": 6766592
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_admin_api.a",
+      "status": "compressed",
+      "sha256": "330addbcb066adefa812d5767b5289d0aec1f521816032b69105ff602cfa6e03",
+      "before": 28672000,
+      "after": 5300224
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_db_store.a",
+      "status": "compressed",
+      "sha256": "237256994811414d2a9012359b5049a369b9c48c395dbcf0be4cef22c2893746",
+      "before": 6324224,
+      "after": 802816
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_stream.a",
+      "status": "compressed",
+      "sha256": "dce8b390a501bb490673a257a7897912b5d66a72d5f7665800c6b369e7ffba3a",
+      "before": 1617920,
+      "after": 450560
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_base58.a",
+      "status": "compressed",
+      "sha256": "77d9ce8746b0073aef5c5fefca10ec23cc62ead3cf344d4695e4c46eda0f06a8",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_digest.a",
+      "status": "compressed",
+      "sha256": "b69594202fdd915453476a405b94dbbfceeb0b70d920163da309c513ec4c4f0c",
+      "before": 249856,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_compression.a",
+      "status": "compressed",
+      "sha256": "30ea16f6273ca19d4445d74c76e17647a257a20bfd69ed115d187735cb7baae8",
+      "before": 147456,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chrono.a",
+      "status": "compressed",
+      "sha256": "5d05ce595bd1e7581b299c953fbd96703bf8bef505eb733eeacf527407876d8d",
+      "before": 167936,
+      "after": 65536
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_app.a",
+      "status": "compressed",
+      "sha256": "3e421c9185d54218114ef4f2cceca25f06b319619086fb79f3fef9db0c8079c5",
+      "before": 1314816,
+      "after": 372736
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_tooling_testing.a",
+      "status": "compressed",
+      "sha256": "9050af016d4801507dd4dbd98f2ebf309eee1ba6b4f7baa6d82769b049596fdb",
+      "before": 11739136,
+      "after": 1482752
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_pki.a",
+      "status": "compressed",
+      "sha256": "985b67659a9a7656a5082e8d3475774fc69988ab3e16ec72b647ff66b1eeb315",
+      "before": 110592,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_dns.a",
+      "status": "compressed",
+      "sha256": "43db5d7c54df4b0571676a75f48666567b803d73dae411a4b91051e538309b89",
+      "before": 1044480,
+      "after": 278528
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_pnet.a",
+      "status": "compressed",
+      "sha256": "b2004dda746e306a716f1d25d1e8d91887d8a79c4c90000fb34ee1e34275b705",
+      "before": 241664,
+      "after": 73728
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_protocol.a",
+      "status": "compressed",
+      "sha256": "3eea470c686d02e6b58f773d0dbbdce5bbd5f0327c1a526c6499ed4b92be2669",
+      "before": 1224704,
+      "after": 245760
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_revision.a",
+      "status": "compressed",
+      "sha256": "7a88e0736aaf78371978cf95ff5fd285e36549f902a00b7230c49a350d436579",
+      "before": 434176,
+      "after": 135168
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_conversion.a",
+      "status": "compressed",
+      "sha256": "f942ce89420c91a508fecdd7342a1c603a0af8983d23dd32ac72f7cc5d1206e4",
+      "before": 69632,
+      "after": 20480
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "96f482735877e65d01a0a3120c8d1607b79bd38674bb392975d8f1c510b08d93",
+      "before": 3854336,
+      "after": 585728
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_state_commitment.a",
+      "status": "compressed",
+      "sha256": "4249b925f0f0f81afddd6e86f011791f64a509fc66be22c5de5a7a3c24f1a9ae",
+      "before": 593920,
+      "after": 147456
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_chain_signer.a",
+      "status": "compressed",
+      "sha256": "307f6c0a11852e7e2e61c7c95a39b615416222d8f4d88ba6b98630b8c07d4788",
+      "before": 8359936,
+      "after": 1110016
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_vm_wasm_interpret.a",
+      "status": "compressed",
+      "sha256": "a2a3b49fc2509b7550855144f75bbe6de9249eafd4db1125c105d7c177d72832",
+      "before": 557056,
+      "after": 114688
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_rocksdb.a",
+      "status": "compressed",
+      "sha256": "1dc91f993a789c77f61eed46ba1701921fb76081a8c5cea73d5a40cdf5461160",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_wallet.a",
+      "status": "compressed",
+      "sha256": "f0047777a16b1179b90eca1f0be2caf903eed3388cca49b5ec01dae2815943e3",
+      "before": 7245824,
+      "after": 1003520
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_appauth.a",
+      "status": "compressed",
+      "sha256": "b2b5dcd83f208a96a74df983b6692f95a5bf15e5484a7e6b0db1e430a8d2e555",
+      "before": 413696,
+      "after": 122880
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_variant.a",
+      "status": "compressed",
+      "sha256": "246f841a2b3048a0ba4adf6c24ea5a8b0405962b8c19af7dfbb7124f90098fda",
+      "before": 212992,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_db.a",
+      "status": "compressed",
+      "sha256": "16a0727d871b8fb50cc3c957bc67e1b73207a4129bae96e6c12908fce21f13ea",
+      "before": 45056,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_blob.a",
+      "status": "compressed",
+      "sha256": "747659f1f490cd2a66c3af91a403da3a191ca65ef6086417b45ed89b084c4720",
+      "before": 397312,
+      "after": 118784
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_cli.a",
+      "status": "compressed",
+      "sha256": "72e05615fee0ea3c9321b75b2917fb2e371153a9816748c756c19f74569334c6",
+      "before": 1212416,
+      "after": 393216
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_base32.a",
+      "status": "unchanged",
+      "sha256": "eb2908f3ea341fc7513e9845edcf8a71a92c889eadfaec38ec35d3a66dd2e650"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_authenticated.a",
+      "status": "compressed",
+      "sha256": "53812366b62ce675afa677cc4fe2f5759e74a2db3c5f32f0dcde40c3b603d4ac",
+      "before": 1335296,
+      "after": 364544
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_tls.a",
+      "status": "compressed",
+      "sha256": "9ffd68fe2490d1e472d4b57b4b9a39b8b1e5ce441f776ddf64e55a23bbd63586",
+      "before": 282624,
+      "after": 86016
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_log.a",
+      "status": "compressed",
+      "sha256": "92e3fa9883d110046f798d2498b6a2bda66f969ccdbbcd1e9f4c78f0cca23d7d",
+      "before": 212992,
+      "after": 73728
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_symmetric.a",
+      "status": "compressed",
+      "sha256": "f0f497793de4115ac20dc641215420ae15632dedc4c0b0f87f3ee54467b17d1a",
+      "before": 245760,
+      "after": 61440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_asymmetric_values.a",
+      "status": "unchanged",
+      "sha256": "d2cb5b14e346747510ed18793834ef679fa4dc6209cfb82b90226d4378435b27"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_net_p2p_diagnostics.a",
+      "status": "compressed",
+      "sha256": "1bbb28eb3005deeeec90574cb16b752f96e72da62bd6a07f3905defa4eb91bc1",
+      "before": 1056768,
+      "after": 151552
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_json.a",
+      "status": "compressed",
+      "sha256": "f505cb199bd0514235a2baa96386a27ead401a2a47dfd563e4505227c193cf7a",
+      "before": 679936,
+      "after": 167936
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_websocket.a",
+      "status": "compressed",
+      "sha256": "4d84ab0e0f3d674c9df75f78c8843891f72b2893f1ac094e47eb6413e3a260af",
+      "before": 19992576,
+      "after": 3133440
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_websocket.a",
+      "status": "compressed",
+      "sha256": "4ceee9528da06d7a87fc24c38873a8feee8988288836929317530d7cffff5ffe",
+      "before": 462848,
+      "after": 139264
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libbn256.a",
+      "status": "compressed",
+      "sha256": "6d1905049ae89c834e43463ec56e48bc56657cf7a7ce29dc23dc0096a123fe88",
+      "before": 102400,
+      "after": 45056
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_raw.a",
+      "status": "compressed",
+      "sha256": "4f0f5ad2b58f9033acc82f786f9cfa9069ce8aa4040354e0c0710ffebc9b3223",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libcares.a",
+      "status": "compressed",
+      "sha256": "8e76cf8aa34ca9c98698ee2b9052471ef21f063ad7bcf5fba4d112234ff2b957",
+      "before": 385024,
+      "after": 151552
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_auth.a",
+      "status": "compressed",
+      "sha256": "ecfe737d73defaca76cd8423842d1564986b0360b272e6db2b01f69b4f42cd25",
+      "before": 36864,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_codec_yaml.a",
+      "status": "compressed",
+      "sha256": "44796bc1529f197ef31ce698ef26574ad6aba151b3b53941a151e378eebc518b",
+      "before": 929792,
+      "after": 270336
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_bn256.a",
+      "status": "unchanged",
+      "sha256": "5ce484f6c6e29d96bd489f5b58aadd43afff8915b2c0e69909f9289067279e1b"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_mdbx.a",
+      "status": "compressed",
+      "sha256": "4fecbab72a1c9aa184520071eccbe317a1ddab12352aa80b7f5817b7bbfb02e8",
+      "before": 987136,
+      "after": 237568
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_auth_http.a",
+      "status": "compressed",
+      "sha256": "2e3076dccb457e3dae82b7a731b5cf6ec52c40477bb57544c3d8048fb3372e9a",
+      "before": 122880,
+      "after": 36864
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_core.a",
+      "status": "compressed",
+      "sha256": "66cf8c0f8fb4016c62ee93620dbc337b1f0dac8e28ff3d5340c0ed34e9c51832",
+      "before": 86016,
+      "after": 28672
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_tcp.a",
+      "status": "compressed",
+      "sha256": "29c0bb487b9feeaa2dc94cf4050ba6a5f10bdb24bf2d35222c7f2f31779050a2",
+      "before": 2605056,
+      "after": 667648
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_core.a",
+      "status": "compressed",
+      "sha256": "e889d28e11dbe27bdb291d1d32beadf816a7e3796ddcaaee69f932d93e5dc323",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_stcp.a",
+      "status": "compressed",
+      "sha256": "88f17140a50a5b1515aa59ed38a612b9ea549fb58602dbb2d389919e8782d3b4",
+      "before": 2207744,
+      "after": 548864
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_config_program_options.a",
+      "status": "compressed",
+      "sha256": "65ab5fca7419093df447d2247dbb3ce8c1f387fba517f9d82f36af8d05d557b7",
+      "before": 196608,
+      "after": 57344
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_crypto_signer.a",
+      "status": "compressed",
+      "sha256": "cae097fc8b0bfd5a5797a580e4d7ccb685f9043d1f63e005b09a058de4ce9232",
+      "before": 151552,
+      "after": 32768
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_quic.a",
+      "status": "compressed",
+      "sha256": "14b83b47fc1c832bbab29b2adfa544b4181afd532bab53a657bbd85a21dcdf49",
+      "before": 4927488,
+      "after": 1314816
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_core.a",
+      "status": "compressed",
+      "sha256": "7d2dc7a88ef161cfd5cfbe8e91b2f406aa9ba4f5806ce629b5531df7a7420217",
+      "before": 32768,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_net_yamux.a",
+      "status": "compressed",
+      "sha256": "89b4f4b0c9a30ebcebae86683ae67d3e8036add284d0e75dbde049973e6ef4b3",
+      "before": 921600,
+      "after": 274432
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_core.a",
+      "status": "compressed",
+      "sha256": "6ae5b6a9ad363816960a612a767c2c7f7868f42df5878fecf3f3c61d98c109a6",
+      "before": 569344,
+      "after": 167936
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_core.a",
+      "status": "compressed",
+      "sha256": "a2676302a7a0caa1b61c1f6195336efd4973b39ac75a6f0b122a81b90e63449c",
+      "before": 122880,
+      "after": 45056
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_net_p2p_pubsub.a",
+      "status": "compressed",
+      "sha256": "b17684b8acd8f2c9a34f6c2b434b04d5ad8f19f1dab24d6d7eb1d20a11d0dab3",
+      "before": 2146304,
+      "after": 376832
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_otlp.a",
+      "status": "compressed",
+      "sha256": "2ade09aa590ef80dbf5ee23a7cd8694ff3276c073d1cf5371e1d9d5e777d2d52",
+      "before": 671744,
+      "after": 208896
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_tooling_validation.a",
+      "status": "compressed",
+      "sha256": "3bf0bb87a3509573cffff6f511888f821ecb8d75a262c3c7e2e6ee2670a21b30",
+      "before": 413696,
+      "after": 106496
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_api_quic.a",
+      "status": "compressed",
+      "sha256": "22156f492ecb516459226261ceeb0e98476505ba78ecc1a10f8400638b3e830b",
+      "before": 65536,
+      "after": 20480
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_db_ids.a",
+      "status": "unchanged",
+      "sha256": "b5eba5a27ebda58aaa3679ac1156dfa1d55e91c596f8dfbef05bde2a0a0969fc"
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_tooling_abi.a",
+      "status": "compressed",
+      "sha256": "d3c204cce73f80b87ae5cd43f3fd96dd66efda9322d7e7ed2815d2d30e2f8524",
+      "before": 876544,
+      "after": 274432
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libmdbx-internal.a",
+      "status": "compressed",
+      "sha256": "04417905814ab89a1776d8055305f42b4a161f0cdd32560f5681cec7d762a34e",
+      "before": 565248,
+      "after": 303104
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_chain_audit.a",
+      "status": "compressed",
+      "sha256": "28808f5f7c0845b946160c6b756722d0a9d3cf8ae1508c89fdffb44a740cb0be",
+      "before": 524288,
+      "after": 155648
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_chain_quorum.a",
+      "status": "compressed",
+      "sha256": "ac8e15a11fa5f4e6aefd1243d9005db43712d70453caa8b97edd8c6c05ddd471",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_net_http_server.a",
+      "status": "compressed",
+      "sha256": "e9bd62aff80a6e9368edb4b8da53cf90bcda9a9a4cf4524a4369cd7d2899b435",
+      "before": 2375680,
+      "after": 327680
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_p2p_node.a",
+      "status": "compressed",
+      "sha256": "1009c27caff5f68e66c0e9114f1a25e734151421fa9d61d35fd8cb657176ed10",
+      "before": 10784768,
+      "after": 1486848
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libspine_admin_protocol.a",
+      "status": "compressed",
+      "sha256": "f51e16d425310da3fbed5d9a05d2b7cd5df83fdc2dd5876a609a3202bf7f359a",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libappauth-internal.a",
+      "status": "compressed",
+      "sha256": "3dd808c53b1ee06c4e81a888db2f7ebab46a1e11178ae95f2ca71d7ddc88180e",
+      "before": 626688,
+      "after": 200704
+    },
+    {
+      "path": "signer-debug/spine-package-install/lib/libforge_plugins_p2p_diagnostics.a",
+      "status": "compressed",
+      "sha256": "3dece346fb3b2599f47b719dde8bbd460be1e88cb8c220edf1d305d59b099eff",
+      "before": 983040,
+      "after": 143360
+    },
+    {
+      "path": "contract-sysroot/lib/libc++.a",
+      "status": "compressed",
+      "sha256": "423255a033e3f9d3146e853b0fbcff970a7881b8a3b8ab63965c467595b9bad1",
+      "before": 790528,
+      "after": 258048
+    },
+    {
+      "path": "contract-sysroot/lib/libc++abi.a",
+      "status": "compressed",
+      "sha256": "cbbf661ed8837ac0451e948ee4e7d5b3e48e684ddd055a3bf35395aa3220e807",
+      "before": 368640,
+      "after": 106496
+    },
+    {
+      "path": "contract-sysroot/lib/generic/libclang_rt.builtins-wasm32.a",
+      "status": "compressed",
+      "sha256": "a15c3cb7363f0eae14be9a10c6d5cb6e31420f44c732ad9b86cf261739140d8d",
+      "before": 94208,
+      "after": 32768
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_bls.a",
+      "status": "compressed",
+      "sha256": "0098c92327bc1ff737b99f8fb905a617e7f1ac1cc52c42bd20ab05549ce83119",
+      "before": 151552,
+      "after": 40960
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_codec_hex.a",
+      "status": "compressed",
+      "sha256": "43dc2b5d59f7bc94cfb90856898602bdcba3e3d2254c07ec524e6d2e1af92efc",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_savanna_values.a",
+      "status": "compressed",
+      "sha256": "f79bbd483dc20fff8848a25ba509317e9e8e0b4cb1193bbe9e008b9545ecb38c",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_config_core.a",
+      "status": "compressed",
+      "sha256": "02f3a261e3f1e31615c249281770ea932742bb00b180292a09ca9dab16c3652d",
+      "before": 339968,
+      "after": 86016
+    },
+    {
+      "path": "contract-host-prefix/lib/libsecp256k1.a",
+      "status": "unchanged",
+      "sha256": "c1b19aa8be02f5dfe76e571752f080659aeec4bcf6f9799f0e04a07acb0eb7a5"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_exceptions.a",
+      "status": "compressed",
+      "sha256": "c1e84370542e084906510f43a2cc74d73679326d21f977ff767537c205f38336",
+      "before": 73728,
+      "after": 24576
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_math.a",
+      "status": "compressed",
+      "sha256": "7edae4fcb63eb7248a6817a3c0c45f7287926ffe29876d5c3acb3d41c3bd0259",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_asymmetric.a",
+      "status": "compressed",
+      "sha256": "669acd8c5e5086598f58891f2179286a2a9d1f35592a76ef30efd61326c47b09",
+      "before": 692224,
+      "after": 184320
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_tooling_manifest.a",
+      "status": "compressed",
+      "sha256": "37eea4f3da4a1e289c2e0f2f7bef2eafac5e522d51337b616f568ea4e28d1450",
+      "before": 368640,
+      "after": 98304
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_codec_base64.a",
+      "status": "compressed",
+      "sha256": "bd6e7c8d87268e3cedd09820d538dc9e7b8d417224b76597174dcf2114f0425c",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_db_object.a",
+      "status": "compressed",
+      "sha256": "ab8d624de6f1c1c63d492e6a6f4a197d148445dbf3050ab4221eb9d038d99edb",
+      "before": 1220608,
+      "after": 323584
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_transaction.a",
+      "status": "compressed",
+      "sha256": "50bc12f41e9da041fb65205ca9a6c47f4249d9cb21661f0af4afe6415078aa38",
+      "before": 151552,
+      "after": 40960
+    },
+    {
+      "path": "contract-host-prefix/lib/libsoftfloat.a",
+      "status": "compressed",
+      "sha256": "108b1f7788a810a8a2206643f186c490c460270a07a839ec6d81a47ba029a279",
+      "before": 270336,
+      "after": 61440
+    },
+    {
+      "path": "contract-host-prefix/lib/libbls12-381.a",
+      "status": "compressed",
+      "sha256": "ac58e618af1a6525089f904590c3ae2f9ecf0890b069773798d61b1622e62c82",
+      "before": 241664,
+      "after": 94208
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_savanna.a",
+      "status": "compressed",
+      "sha256": "e9e49f2bb604eca74726a4c5ffd972f4ec868bfc0568d4912ed573697c77fb34",
+      "before": 1187840,
+      "after": 327680
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_tooling_attributes.a",
+      "status": "compressed",
+      "sha256": "18c444d9915948d29ed7c7aa9d4581726825023793504e24e2bb1090296ed309",
+      "before": 61440,
+      "after": 20480
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_keystore.a",
+      "status": "compressed",
+      "sha256": "f6dc893096b4f765c78b8c70d019defd370ba08bab1e086c9f3b5018ce404c9a",
+      "before": 282624,
+      "after": 77824
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_schema.a",
+      "status": "unchanged",
+      "sha256": "8f63a99b5096b3fed690cb6346ef87c28f0b984da347576aee7c81f7c1db8fb6"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_asio.a",
+      "status": "compressed",
+      "sha256": "345934455bfb81e10cecd2a193308611b3984b6a965d52d46479bf57bdac5f3e",
+      "before": 1851392,
+      "after": 532480
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_codec_base58.a",
+      "status": "compressed",
+      "sha256": "e667d507ebed0abae9df8b59c888d8414468266b47289a2a4487b7e84a5ffad0",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_digest.a",
+      "status": "compressed",
+      "sha256": "0ecd3d099984fdff44fe864e878d9b1175091e38486fca6540f27caae806fb32",
+      "before": 225280,
+      "after": 57344
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_compression.a",
+      "status": "compressed",
+      "sha256": "bf615ae34bc03208b97ea0e57b286169cfcc44392c1bed83d0eb578cf5310482",
+      "before": 147456,
+      "after": 36864
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_tooling_testing.a",
+      "status": "compressed",
+      "sha256": "404d4a0f0bd05baaf0141fb683a444f91de0ba73dec0c5cad7e56aef8b59cdba",
+      "before": 11730944,
+      "after": 1478656
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_pki.a",
+      "status": "compressed",
+      "sha256": "33d20d148af3c0a25838a85836d2ff42bc8166f4aa7b5bb8f93bf352a232b87c",
+      "before": 110592,
+      "after": 32768
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_protocol.a",
+      "status": "compressed",
+      "sha256": "1f3a2812e6e6c7ff30e35fda816e281832258c15f25755eed58c7e0330731e6f",
+      "before": 1085440,
+      "after": 221184
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_vm_wasm_interpret.a",
+      "status": "compressed",
+      "sha256": "04d237bddd79b13ecbf75e8c8889f5cb7732b53374f1643c08bdb358df47b38a",
+      "before": 557056,
+      "after": 114688
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_variant.a",
+      "status": "compressed",
+      "sha256": "7f0236c2f43bf8cf272df4cacf27d1a4def9bb71b23210927f35ab9ae019745c",
+      "before": 208896,
+      "after": 61440
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_codec_base32.a",
+      "status": "unchanged",
+      "sha256": "19ef8ddd21618fd5e8888efbc8e6d62a91b1fd45bd69533453ad84245ab3a40b"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_symmetric.a",
+      "status": "compressed",
+      "sha256": "82c312d839fb6d9ccbfa47b6d81030d321be4ddeb2338913c91bb63d41810466",
+      "before": 135168,
+      "after": 36864
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_asymmetric_values.a",
+      "status": "unchanged",
+      "sha256": "bbb0854a8d9c956347d05bff013a2dd3936ec1bf1f90d57a9207c318e2f3a588"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_codec_json.a",
+      "status": "compressed",
+      "sha256": "ab7adc8bc4b87e6e90c1be87aba904cb8b52b43b4ea1f7dbbac92d3af388b965",
+      "before": 679936,
+      "after": 167936
+    },
+    {
+      "path": "contract-host-prefix/lib/libbn256.a",
+      "status": "compressed",
+      "sha256": "c71812050bc9fae170c632146872d4f49e0c296414333e25cd5ef934f982c9ca",
+      "before": 102400,
+      "after": 45056
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_raw.a",
+      "status": "compressed",
+      "sha256": "48b31741d47b407614c2233702a31d43677e8b2001c4b7452c76aa11a3adda98",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_bn256.a",
+      "status": "unchanged",
+      "sha256": "054a4830086b2be0ed079aee8ceea4a6bffec4ae81bb781e4ac152726908642a"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_core.a",
+      "status": "compressed",
+      "sha256": "329c12d008c8a5ba74b49c8ed4d1c65603e5579e4a1c9ef53fd374a2ee8bead8",
+      "before": 225280,
+      "after": 77824
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_core.a",
+      "status": "compressed",
+      "sha256": "f4d751e7c8e6a3a03b4a9b05ebc4721e79e943ae7b0770d3abe54790b48a8297",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_crypto_signer.a",
+      "status": "compressed",
+      "sha256": "e65063f17933371b2f783a789251cc079ecf1616555afe5cd0d2844e61fca40f",
+      "before": 151552,
+      "after": 32768
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_core.a",
+      "status": "compressed",
+      "sha256": "05f0f9da765078fb30d9dbc853cb5c68c4a04d6b08434c56d863469fd3476b3a",
+      "before": 32768,
+      "after": 12288
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_db_core.a",
+      "status": "compressed",
+      "sha256": "82b0a90161502d3191183e3b92957d3c08cb235e8021fce194688bbb22de144b",
+      "before": 565248,
+      "after": 167936
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_tooling_validation.a",
+      "status": "compressed",
+      "sha256": "8eb57cdecae8c96aee25b557ea2486c4ee6ce1b26364b1a8253cb070b8c0b0df",
+      "before": 409600,
+      "after": 106496
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_db_ids.a",
+      "status": "unchanged",
+      "sha256": "5d6c6dd56abf5e3984504c6089c7fb2365f7c6cb2ab22ec2eaaa1c0562251872"
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_tooling_abi.a",
+      "status": "compressed",
+      "sha256": "cb118c01e73f7490a1c1db8663376e401c7bc663ba4ac89bd8f6303a3f141438",
+      "before": 872448,
+      "after": 270336
+    },
+    {
+      "path": "contract-host-prefix/lib/libforge_chain_quorum.a",
+      "status": "compressed",
+      "sha256": "d1778382b69367ff4ac74e12795e082d6cff8292f506d2f2a5d5d2d919d91aee",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-host/vendor/softfloat/libsoftfloat.a",
+      "status": "compressed",
+      "sha256": "108b1f7788a810a8a2206643f186c490c460270a07a839ec6d81a47ba029a279",
+      "before": 270336,
+      "after": 61440
+    },
+    {
+      "path": "contract-host/vendor/bls12-381/libbls12-381.a",
+      "status": "compressed",
+      "sha256": "ac58e618af1a6525089f904590c3ae2f9ecf0890b069773798d61b1622e62c82",
+      "before": 241664,
+      "after": 94208
+    },
+    {
+      "path": "contract-host/vendor/bn256/src/libbn256.a",
+      "status": "compressed",
+      "sha256": "c71812050bc9fae170c632146872d4f49e0c296414333e25cd5ef934f982c9ca",
+      "before": 102400,
+      "after": 45056
+    },
+    {
+      "path": "contract-host/libraries/core/libforge_core.a",
+      "status": "compressed",
+      "sha256": "329c12d008c8a5ba74b49c8ed4d1c65603e5579e4a1c9ef53fd374a2ee8bead8",
+      "before": 225280,
+      "after": 77824
+    },
+    {
+      "path": "contract-host/libraries/asio/libforge_asio.a",
+      "status": "compressed",
+      "sha256": "345934455bfb81e10cecd2a193308611b3984b6a965d52d46479bf57bdac5f3e",
+      "before": 1851392,
+      "after": 532480
+    },
+    {
+      "path": "contract-host/libraries/exceptions/libforge_exceptions.a",
+      "status": "compressed",
+      "sha256": "c1e84370542e084906510f43a2cc74d73679326d21f977ff767537c205f38336",
+      "before": 73728,
+      "after": 24576
+    },
+    {
+      "path": "contract-host/libraries/schema/libforge_schema.a",
+      "status": "unchanged",
+      "sha256": "8f63a99b5096b3fed690cb6346ef87c28f0b984da347576aee7c81f7c1db8fb6"
+    },
+    {
+      "path": "contract-host/libraries/compression/libforge_compression.a",
+      "status": "compressed",
+      "sha256": "bf615ae34bc03208b97ea0e57b286169cfcc44392c1bed83d0eb578cf5310482",
+      "before": 147456,
+      "after": 36864
+    },
+    {
+      "path": "contract-host/libraries/variant/libforge_variant.a",
+      "status": "compressed",
+      "sha256": "7f0236c2f43bf8cf272df4cacf27d1a4def9bb71b23210927f35ab9ae019745c",
+      "before": 208896,
+      "after": 61440
+    },
+    {
+      "path": "contract-host/libraries/raw/libforge_raw.a",
+      "status": "compressed",
+      "sha256": "48b31741d47b407614c2233702a31d43677e8b2001c4b7452c76aa11a3adda98",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host/libraries/db/core/libforge_db_core.a",
+      "status": "compressed",
+      "sha256": "82b0a90161502d3191183e3b92957d3c08cb235e8021fce194688bbb22de144b",
+      "before": 565248,
+      "after": 167936
+    },
+    {
+      "path": "contract-host/libraries/db/ids/libforge_db_ids.a",
+      "status": "unchanged",
+      "sha256": "5d6c6dd56abf5e3984504c6089c7fb2365f7c6cb2ab22ec2eaaa1c0562251872"
+    },
+    {
+      "path": "contract-host/libraries/db/object/libforge_db_object.a",
+      "status": "compressed",
+      "sha256": "ab8d624de6f1c1c63d492e6a6f4a197d148445dbf3050ab4221eb9d038d99edb",
+      "before": 1220608,
+      "after": 323584
+    },
+    {
+      "path": "contract-host/libraries/vm/wasm/interpret/libforge_vm_wasm_interpret.a",
+      "status": "compressed",
+      "sha256": "04d237bddd79b13ecbf75e8c8889f5cb7732b53374f1643c08bdb358df47b38a",
+      "before": 557056,
+      "after": 114688
+    },
+    {
+      "path": "contract-host/libraries/chain/transaction/libforge_chain_transaction.a",
+      "status": "compressed",
+      "sha256": "50bc12f41e9da041fb65205ca9a6c47f4249d9cb21661f0af4afe6415078aa38",
+      "before": 151552,
+      "after": 40960
+    },
+    {
+      "path": "contract-host/libraries/chain/core/libforge_chain_core.a",
+      "status": "compressed",
+      "sha256": "05f0f9da765078fb30d9dbc853cb5c68c4a04d6b08434c56d863469fd3476b3a",
+      "before": 32768,
+      "after": 12288
+    },
+    {
+      "path": "contract-host/libraries/chain/protocol/libforge_chain_protocol.a",
+      "status": "compressed",
+      "sha256": "1f3a2812e6e6c7ff30e35fda816e281832258c15f25755eed58c7e0330731e6f",
+      "before": 1085440,
+      "after": 221184
+    },
+    {
+      "path": "contract-host/libraries/chain/savanna/libforge_chain_savanna.a",
+      "status": "compressed",
+      "sha256": "e9e49f2bb604eca74726a4c5ffd972f4ec868bfc0568d4912ed573697c77fb34",
+      "before": 1187840,
+      "after": 327680
+    },
+    {
+      "path": "contract-host/libraries/chain/quorum/libforge_chain_quorum.a",
+      "status": "compressed",
+      "sha256": "d1778382b69367ff4ac74e12795e082d6cff8292f506d2f2a5d5d2d919d91aee",
+      "before": 28672,
+      "after": 8192
+    },
+    {
+      "path": "contract-host/libraries/chain/savanna/values/libforge_chain_savanna_values.a",
+      "status": "compressed",
+      "sha256": "f79bbd483dc20fff8848a25ba509317e9e8e0b4cb1193bbe9e008b9545ecb38c",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host/libraries/codec/hex/libforge_codec_hex.a",
+      "status": "compressed",
+      "sha256": "43dc2b5d59f7bc94cfb90856898602bdcba3e3d2254c07ec524e6d2e1af92efc",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host/libraries/codec/base64/libforge_codec_base64.a",
+      "status": "compressed",
+      "sha256": "bd6e7c8d87268e3cedd09820d538dc9e7b8d417224b76597174dcf2114f0425c",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host/libraries/codec/json/libforge_codec_json.a",
+      "status": "compressed",
+      "sha256": "ab7adc8bc4b87e6e90c1be87aba904cb8b52b43b4ea1f7dbbac92d3af388b965",
+      "before": 679936,
+      "after": 167936
+    },
+    {
+      "path": "contract-host/libraries/codec/base32/libforge_codec_base32.a",
+      "status": "unchanged",
+      "sha256": "19ef8ddd21618fd5e8888efbc8e6d62a91b1fd45bd69533453ad84245ab3a40b"
+    },
+    {
+      "path": "contract-host/libraries/codec/base58/libforge_codec_base58.a",
+      "status": "compressed",
+      "sha256": "e667d507ebed0abae9df8b59c888d8414468266b47289a2a4487b7e84a5ffad0",
+      "before": 20480,
+      "after": 8192
+    },
+    {
+      "path": "contract-host/libraries/config/core/libforge_config_core.a",
+      "status": "compressed",
+      "sha256": "02f3a261e3f1e31615c249281770ea932742bb00b180292a09ca9dab16c3652d",
+      "before": 339968,
+      "after": 86016
+    },
+    {
+      "path": "contract-host/libraries/tooling/manifest/libforge_tooling_manifest.a",
+      "status": "compressed",
+      "sha256": "37eea4f3da4a1e289c2e0f2f7bef2eafac5e522d51337b616f568ea4e28d1450",
+      "before": 368640,
+      "after": 98304
+    },
+    {
+      "path": "contract-host/libraries/tooling/abi/libforge_tooling_abi.a",
+      "status": "compressed",
+      "sha256": "cb118c01e73f7490a1c1db8663376e401c7bc663ba4ac89bd8f6303a3f141438",
+      "before": 872448,
+      "after": 270336
+    },
+    {
+      "path": "contract-host/libraries/tooling/testing/libforge_tooling_testing.a",
+      "status": "compressed",
+      "sha256": "404d4a0f0bd05baaf0141fb683a444f91de0ba73dec0c5cad7e56aef8b59cdba",
+      "before": 11730944,
+      "after": 1478656
+    },
+    {
+      "path": "contract-host/libraries/tooling/attributes/libforge_tooling_attributes.a",
+      "status": "compressed",
+      "sha256": "18c444d9915948d29ed7c7aa9d4581726825023793504e24e2bb1090296ed309",
+      "before": 61440,
+      "after": 20480
+    },
+    {
+      "path": "contract-host/libraries/tooling/validation/libforge_tooling_validation.a",
+      "status": "compressed",
+      "sha256": "8eb57cdecae8c96aee25b557ea2486c4ee6ce1b26364b1a8253cb070b8c0b0df",
+      "before": 409600,
+      "after": 106496
+    },
+    {
+      "path": "contract-host/libraries/crypto/signer/libforge_crypto_signer.a",
+      "status": "compressed",
+      "sha256": "e65063f17933371b2f783a789251cc079ecf1616555afe5cd0d2844e61fca40f",
+      "before": 151552,
+      "after": 32768
+    },
+    {
+      "path": "contract-host/libraries/crypto/symmetric/libforge_crypto_symmetric.a",
+      "status": "compressed",
+      "sha256": "82c312d839fb6d9ccbfa47b6d81030d321be4ddeb2338913c91bb63d41810466",
+      "before": 135168,
+      "after": 36864
+    },
+    {
+      "path": "contract-host/libraries/crypto/core/libforge_crypto_core.a",
+      "status": "compressed",
+      "sha256": "f4d751e7c8e6a3a03b4a9b05ebc4721e79e943ae7b0770d3abe54790b48a8297",
+      "before": 45056,
+      "after": 12288
+    },
+    {
+      "path": "contract-host/libraries/crypto/keystore/libforge_crypto_keystore.a",
+      "status": "compressed",
+      "sha256": "f6dc893096b4f765c78b8c70d019defd370ba08bab1e086c9f3b5018ce404c9a",
+      "before": 282624,
+      "after": 77824
+    },
+    {
+      "path": "contract-host/libraries/crypto/digest/libforge_crypto_digest.a",
+      "status": "compressed",
+      "sha256": "0ecd3d099984fdff44fe864e878d9b1175091e38486fca6540f27caae806fb32",
+      "before": 225280,
+      "after": 57344
+    },
+    {
+      "path": "contract-host/libraries/crypto/math/libforge_crypto_math.a",
+      "status": "compressed",
+      "sha256": "7edae4fcb63eb7248a6817a3c0c45f7287926ffe29876d5c3acb3d41c3bd0259",
+      "before": 40960,
+      "after": 12288
+    },
+    {
+      "path": "contract-host/libraries/crypto/bn256/libforge_crypto_bn256.a",
+      "status": "unchanged",
+      "sha256": "054a4830086b2be0ed079aee8ceea4a6bffec4ae81bb781e4ac152726908642a"
+    },
+    {
+      "path": "contract-host/libraries/crypto/asymmetric/libforge_crypto_asymmetric.a",
+      "status": "compressed",
+      "sha256": "669acd8c5e5086598f58891f2179286a2a9d1f35592a76ef30efd61326c47b09",
+      "before": 692224,
+      "after": 184320
+    },
+    {
+      "path": "contract-host/libraries/crypto/asymmetric/libforge_crypto_asymmetric_values.a",
+      "status": "unchanged",
+      "sha256": "bbb0854a8d9c956347d05bff013a2dd3936ec1bf1f90d57a9207c318e2f3a588"
+    },
+    {
+      "path": "contract-host/libraries/crypto/bls/libforge_crypto_bls.a",
+      "status": "compressed",
+      "sha256": "0098c92327bc1ff737b99f8fb905a617e7f1ac1cc52c42bd20ab05549ce83119",
+      "before": 151552,
+      "after": 40960
+    },
+    {
+      "path": "contract-host/libraries/crypto/pki/libforge_crypto_pki.a",
+      "status": "compressed",
+      "sha256": "33d20d148af3c0a25838a85836d2ff42bc8166f4aa7b5bb8f93bf352a232b87c",
+      "before": 110592,
+      "after": 32768
+    }
+  ],
+  "reclaimed_bytes": 739147776
+}

@@ -1,0 +1,55 @@
+{
+  "schema": "forge.expression.contract-sdk.acceptance.v1",
+  "status": "PASS",
+  "platform": "macOS ARM64",
+  "forge_source": "e815a6f9012e505686015c99b2c0dee6e9febc52",
+  "spine_source": "7a6db0aeaaeb0e92c6ca615f3dc4ff79445b4943",
+  "cel_source": "9c562a306569e90c8dea6d3af71f4433aa386162",
+  "cel_spec_source": "ba58ae5007845f3a1279b488cdeb79645ce958bb",
+  "toolchain": {
+    "llvm": "22.1.8",
+    "lld": "22.1.8",
+    "boost": "1.90.0",
+    "openssl": "3.6.4"
+  },
+  "gates": {
+    "native_ctest": {
+      "passed": 5,
+      "failed": 0
+    },
+    "backend_tests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "exact_oracle_cases": 1460,
+    "relocated_installed_consumer": "PASS with producer/source/old-prefix/Bazel denied",
+    "fresh_guest_sdk_build_install": "PASS",
+    "installed_sdk_surfaces": "PASS; baseline 200 and optional expression 3",
+    "real_tariff_wasm_ctest": {
+      "passed": 4,
+      "failed": 0
+    }
+  },
+  "hashes": {
+    "sdk_foundation_sha256": "24353aa33bdb91f84a049de4ad099c192789dee45c2397d04926e432d043dbbf",
+    "tariffs_wasm_sha256": "1f75e1de54dbc1b125bc52ba95c18bdaf77bed5ab140a28e0da8d0d3c8fd04de",
+    "consumer_wasm_sha256": "68249fffb4ef8923d6a484c2d42616ee7650c9bf809d0adbf3e42133dacce883",
+    "expression_worker_sha256": "5860185e74867e084861dd0553212194722d9c06548b9ac5721c45283b52da4c"
+  },
+  "independent_review": {
+    "native_and_sdk": "CLEAN at e815a6f9",
+    "tariff_source": "GO, source findings closed; final rebuild and 4/4 gate after review formatting",
+    "reviewers_ran_builds": false
+  },
+  "not_qualified": [
+    "Linux",
+    "older macOS",
+    "production Spine host intrinsic adapter and CPU/NET/RAM accounting",
+    "Spine consensus and finality",
+    "token settlement",
+    "Turbine integration",
+    "Labs or other live providers"
+  ],
+  "memory_limit_scope": "64 MiB worker-owned allocation pool, not RSS/VM; stack and fixed system overhead separate",
+  "compatibility": "private worker transport v2; persisted artifact format/profile/semantics v1; baseline intrinsics unchanged"
+}

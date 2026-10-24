@@ -1,0 +1,54 @@
+{
+  "schema": "forge.expression.profile.reviews.v1",
+  "kind": "coordinator record of local independent reviews, not a GitHub review submission",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "xhigh",
+  "reviews": [
+    {
+      "reviewer": "cel_profile_arithmetic",
+      "scope": "backend/API, lifetimes, admission, algorithms; own arithmetic excluded",
+      "passes": 2,
+      "verdict": "CLEAN_STATIC after fixes",
+      "closed": [
+        "checker traversal accounting versus Expr nodes",
+        "public bridge allocation failure and arrays",
+        "exception-code wording",
+        "implicit map key byte-limit final diff"
+      ],
+      "personal_runtime": "1460/1460 real CEL arithmetic cases PASS"
+    },
+    {
+      "reviewer": "cel_profile_runtime_research",
+      "scope": "arithmetic, Fraction oracle, public wrapper and README; own backend excluded",
+      "passes": 2,
+      "verdict": "CLEAN_STATIC after fixes",
+      "closed": [
+        "invalid-profile limit classification priority"
+      ],
+      "arithmetic_review": "wide-product bounds, normalization, rounding correction, final range and overload parity"
+    },
+    {
+      "reviewer": "cel_profile_package_review",
+      "scope": "build/export/dependencies/ABI; independent source-to-artifact and artifact-to-source passes",
+      "passes": 2,
+      "verdict": "CLEAN after fixes",
+      "closed": [
+        "actual C/C++ Bazel driver mismatch",
+        "nested utf8_range license omission"
+      ],
+      "verified": [
+        "source and Bazel SHA pins",
+        "strict module lock",
+        "actual CppCompile actions and libc++ dependency headers",
+        "archive closure and macOS minimum version",
+        "module/private header boundary",
+        "relative installed helper paths"
+      ],
+      "not_run": [
+        "installed runtime consumer",
+        "Linux"
+      ]
+    }
+  ],
+  "open_p1_p2": []
+}

@@ -1,0 +1,58 @@
+[
+  {
+    "source": "libraries/expression/memory.cpp",
+    "pair": [
+      "libraries/expression/details/memory.hxx"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/backend.cpp",
+    "pair": [
+      "libraries/expression/details/backend.hxx"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/program.cpp",
+    "pair": [
+      "libraries/expression/include/forge/expression/program.cppm"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/run_worker.cpp",
+    "pair": [
+      "libraries/expression/details/run_worker.hxx"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/arithmetic.cpp",
+    "pair": [
+      "libraries/expression/details/arithmetic.hxx"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/runtime.cpp",
+    "pair": [
+      "libraries/expression/include/forge/expression/runtime.cppm"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/worker_protocol.cpp",
+    "pair": [
+      "libraries/expression/include/forge/expression/worker_protocol.cppm"
+    ],
+    "ok": true
+  },
+  {
+    "source": "libraries/expression/runtime_impl.cpp",
+    "pair": [
+      "libraries/expression/details/runtime_impl.hxx"
+    ],
+    "ok": true
+  }
+]

@@ -1,0 +1,23 @@
+[
+  "libraries/expression/backend.cpp",
+  "libraries/expression/details/backend.hxx",
+  "libraries/expression/include/forge/expression/exceptions.cppm",
+  "libraries/expression/include/forge/expression/program.cppm",
+  "libraries/expression/include/forge/expression/types.cppm",
+  "libraries/expression/program.cpp",
+  "tests/expression_profile.cpp",
+  "libraries/expression/details/memory.hxx",
+  "libraries/expression/details/run_worker.hxx",
+  "libraries/expression/details/runtime_impl.hxx",
+  "libraries/expression/include/forge/expression/runtime.cppm",
+  "libraries/expression/include/forge/expression/worker_protocol.cppm",
+  "libraries/expression/memory.cpp",
+  "libraries/expression/run_worker.cpp",
+  "libraries/expression/runtime.cpp",
+  "libraries/expression/runtime_impl.cpp",
+  "libraries/expression/worker_protocol.cpp",
+  "tests/expression_runtime.cpp",
+  "tests/expression_worker.cpp",
+  "tests/package_expression_component/main.cpp",
+  "tools/expression-worker/main.cpp"
+]
