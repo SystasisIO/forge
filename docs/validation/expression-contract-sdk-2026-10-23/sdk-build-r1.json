@@ -1,0 +1,14 @@
+{
+  "name": "sdk-build-r1",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "--build",
+    "build/expression-contract-sdk",
+    "--parallel",
+    "4"
+  ],
+  "started": 1792754812.73054,
+  "code": 0,
+  "seconds": 14.783406734466553
+}

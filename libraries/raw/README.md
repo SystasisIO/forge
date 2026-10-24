@@ -37,13 +37,46 @@ Boost headers and Boost.Multiprecision.
 `forge_raw` owns the retained FC wire conversion for supported `std::chrono`
 types and intentionally does not depend on `forge_chrono`.
 
-`unpack_limits` bounds per-container, cumulative-container and byte
-allocations. A framed codec that decodes nested Raw payloads through
+`unpack_limits` retains its original four fields and bounds per-container and
+cumulative-container element counts and individual string/byte-vector sizes
+(`max_bytes`). The additive `bounded_unpack_limits` contains those settings in
+`allocations` and adds cumulative string/byte-vector bytes (`max_total_bytes`).
+These checks run before the corresponding resize or
+insertion. `first_container_elements` applies once to the first element-counted
+container; string/byte-vector lengths use the independent byte budgets. The
+existing global ceilings of 1,048,576 elements and 20 MiB per byte container still
+apply when a caller chooses larger limits.
+
+`unpack_bounded_exact<T>(input, bounded_unpack_limits)` enables the new profile;
+its default cumulative byte cap is 20 MiB, with `reject_noncanonical_varints`
+and `reject_unknown_enum_values` enabled. Ordinary `unpack_exact` and the original
+`unpack_limits` keep their prior defaults, four-field structured bindings and
+16-byte native/portable wire layout. The bounded type is runtime policy, not a
+portable wire record.
+
+`make_input_stream(data, size, limits)` accepts either limits type and creates a
+pointer stream without copying input. An omitted or bare `{}` limits argument
+selects the original `unpack_limits`. Pointer and one-shot span streams use the
+same allocation budget.
+Custom stream operators that decode their fields through Raw or its `>>`
+operators retain that budget. User-provided codecs can execute arbitrary C++:
+direct allocations or independently created streams are outside this guarantee.
+
+A framed codec that decodes nested Raw payloads through
 `unpack_nested_exact(parent, frame)` inherits the parent's configured
-per-container and byte limits, capped by the frame size, and charges successful
-nested container allocations to the parent's remaining cumulative budget.
+per-container, first-container and byte limits, capped by the frame size, and
+inherits its enum/varint checks. Successful nested decodes charge the parent's
+remaining cumulative element and byte budgets, including any additional byte
+storage allocated while decoding an already owned frame.
 Calling ordinary top-level `unpack_exact` independently for each nested frame
 would reset that budget and is not suitable for untrusted framed input.
+
+Element limits count entries, not `sizeof(T)` or allocator overhead. Byte budgets
+count string/byte-vector logical sizes, not capacity, container objects, nodes,
+fixed arrays or arbitrary codec allocations. They are not a universal physical
+heap limit. Truncated data can allocate within its admitted budgets before a
+stream-range error rejects it. Products must also bound the input envelope and
+choose suitable DTOs and execution memory limits.
 
 ## Shared Enum Wire Types
 
@@ -74,7 +107,25 @@ supported signed or unsigned integer; plain `char`, character-code types,
 `bool` and extended integers are excluded. Shared scalar
 packing rejects values outside the wire range; unpacking rejects values outside
 the C++ underlying range instead of truncating them. Unnamed representable
-values remain allowed by Raw; protocol membership validation is separate.
+values remain allowed by default. A bounded protocol may set
+`bounded_unpack_limits::reject_unknown_enum_values` and provide the valid wire domain:
+
+```cpp
+template <> struct forge::raw::enum_wire_type<result_code> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+   static constexpr bool is_valid(type value) { return value == 0 || value == 400; }
+};
+```
+
+Strict decoding uses `enum_wire_type<Enum>::is_valid(encoded)` when supplied,
+otherwise Boost.Describe enumerators. An enum without either form of value
+metadata is rejected in this mode. Checks include nested containers and fixed
+enum arrays, without changing their wire representation. Native described
+enums are checked before narrowing the wire integer to their underlying type.
+`reject_noncanonical_varints` rejects nonminimal unsigned/signed varints and
+container lengths. This does not impose sorted or unique canonical map/set
+encoding; it is a focused integer and enum validation policy.
 
 Historical array layouts are not normalized: direct `std::array<Enum, N>`
 stores the underlying object representation, so its generated ABI uses the
@@ -293,3 +344,6 @@ FORGE_IMPLEMENT_SERIALIZATION(action_payload)
 
 `tests/raw` contains golden byte tests for strings, described structs/enums,
 derived types, chrono values, dynamic bitsets and common containers.
+`tests/package_raw_bounded` exercises strict limits through an installed Forge
+package. Configure it with `FORGE_SOURCE_ROOT` to run the unchanged Raw regression
+source against that same installed package as a second CTest target.

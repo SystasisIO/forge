@@ -1,0 +1,20 @@
+Internal ctest changing into directory: $SPINE/build/tariffs-host
+Test project $SPINE/build/tariffs-host
+    Start 1: spine_tariffs_contract_tests
+1/4 Test #1: spine_tariffs_contract_tests ........   Passed    0.77 sec
+    Start 2: spine_tariffs_abi
+2/4 Test #2: spine_tariffs_abi ...................   Passed    0.02 sec
+    Start 3: spine_tariffs_provenance
+3/4 Test #3: spine_tariffs_provenance ............   Passed    0.44 sec
+    Start 4: spine_tariffs_provenance_negative
+4/4 Test #4: spine_tariffs_provenance_negative ...   Passed    3.03 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Label Time Summary:
+contract    =   0.77 sec*proc (1 test)
+native      =   0.77 sec*proc (1 test)
+tariffs     =   0.77 sec*proc (1 test)
+wasm        =   0.77 sec*proc (1 test)
+
+Total Test time (real) =   4.27 sec

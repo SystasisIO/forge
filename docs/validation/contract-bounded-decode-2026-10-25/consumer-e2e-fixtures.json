@@ -1,0 +1,34 @@
+{
+  "name": "consumer-e2e-fixtures",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs0-20261025/build/consumer",
+    "--target",
+    "hello",
+    "recordtest",
+    "guestmacro",
+    "allocatortst",
+    "legacyhello",
+    "legacynotify",
+    "dbhost",
+    "oracle",
+    "recovery",
+    "looping",
+    "multiidx",
+    "legacymidx",
+    "midxerrors",
+    "legmidxerr",
+    "midxextend",
+    "legmidxext",
+    "forge_contract_database_intrinsic_fixtures",
+    "-j4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 9.092,
+  "started_unix": 1792885182.493294,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

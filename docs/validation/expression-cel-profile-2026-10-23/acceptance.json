@@ -1,0 +1,35 @@
+{
+  "schema": "forge.expression.profile.gates.v1",
+  "platform": "macOS ARM64",
+  "public_groups": 9,
+  "public_assertions": 8506,
+  "public_assertions_failed": 0,
+  "arithmetic_oracle_cases": 1460,
+  "donor_fixtures": 45,
+  "focused_ctest": {
+    "passed": 3,
+    "failed": 0,
+    "tests": [
+      "test_forge_expression",
+      "test_forge_expression_oracle",
+      "test_forge_package_metadata"
+    ]
+  },
+  "gates": {
+    "native_build": "PASS",
+    "feature_off_configure": "PASS",
+    "private_arithmetic_runtime": "PASS",
+    "external_build_tree_package_runtime": "PASS",
+    "parent_add_subdirectory_configure": "PASS",
+    "parent_add_subdirectory_separate_build": "NOT_RUN",
+    "installed_export_metadata_relocation": "PASS",
+    "mixed_driver_rejection": "PASS",
+    "unpinned_optional_bazelrc_rejection": "PASS",
+    "installed_expression_runtime_and_relocation": "NOT_RUN",
+    "hard_total_heap_budget": "NOT_IMPLEMENTED",
+    "SDK_WASM_WAMR_Spine": "NOT_RUN",
+    "Linux": "NOT_RUN",
+    "real_providers": "NOT_RUN"
+  },
+  "resource_semantics": "fixed structural/input ceilings; bounded operations; per-call post-step AST-event budget; no total native heap claim"
+}

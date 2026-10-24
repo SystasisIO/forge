@@ -1,0 +1,12 @@
+{
+  "name": "sdk-install-r1",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "--install",
+    "build/expression-contract-sdk"
+  ],
+  "started": 1792754849.2198532,
+  "code": 0,
+  "seconds": 9.882011890411377
+}

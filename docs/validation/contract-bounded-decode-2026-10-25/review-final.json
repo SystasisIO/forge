@@ -1,0 +1,519 @@
+{
+  "schema_version": 1,
+  "reviewer": "job0_reviewer",
+  "status": "GO_SCOPED_JOB0",
+  "scope": "Independent source and recorded-runtime review of exact bounded Raw decoding, opt-in dispatch, native CMake dependency composition and Turbine JOB0 wire qualification",
+  "forge": {
+    "base_commit": "6873c1c8c4f22489d73068aa0367850e9fe15dee",
+    "accepted_commit": "569cc72ed870ac91fc3334143d646545b7ac8663",
+    "worktree_clean": true,
+    "file_count": 15,
+    "combined_sha256": "7f54d208e010872e2eca22fc12a1c8e8634ffd8cf09053929b3c86055117397c",
+    "files": [
+      {
+        "path": "guest/cmake/ForgeContractLibraries.cmake",
+        "sha256": "faf01f2150d7eea99c3145eaf60e4cbe608c2920fbdf6a4ea11395769ac7eb31"
+      },
+      {
+        "path": "guest/libraries/contract/README.md",
+        "sha256": "ad887abef169c5c51691987a349a37cda54e771b17f785ca83067b37496efca4"
+      },
+      {
+        "path": "guest/libraries/contract/include/forge/contract/dispatcher.cppm",
+        "sha256": "48903ade43464ca9e4e50893c2d21daed7938e76b6c037c0cb8c0297eea487c4"
+      },
+      {
+        "path": "guest/tests/consumer/record_contract.cpp",
+        "sha256": "29a80e3037dbbcbac62cf39054d05dd82756c92aed51895ccc699b164a24ae86"
+      },
+      {
+        "path": "guest/tests/e2e/contract_tests.cpp",
+        "sha256": "5e16ad5cb98ec17706e8f1ae355e09ecdec13fbec0273235a51f8bef9f978a79"
+      },
+      {
+        "path": "guest/tests/tooling/run_dual_target_fixtures.py",
+        "sha256": "a0326be2d98e8d477db06cd0b5239a89226b7f93203eb72b568f3d61053ba34b"
+      },
+      {
+        "path": "libraries/expression/include/forge/expression/types.cppm",
+        "sha256": "2e7dafbd213751313078409b5fd40e0da038db7571d840aa4dde733ac1c60677"
+      },
+      {
+        "path": "libraries/raw/README.md",
+        "sha256": "79533d5b0ec6a1fbd10cf37c553a24422118b16953ee332a7dd45b4b15faa7ec"
+      },
+      {
+        "path": "libraries/raw/codec.cpp",
+        "sha256": "69a93d34aeda104242bde7c1a220442b0409a096df6afe9b512aadd79398a302"
+      },
+      {
+        "path": "libraries/raw/include/forge/raw/codec.cppm",
+        "sha256": "101fd2156e91b1e5d2950161f91274ca4dc8991c8b97cbf0ce023d91e147f3b2"
+      },
+      {
+        "path": "libraries/raw/include/forge/raw/raw.cppm",
+        "sha256": "279a8350e8f0548f396ca55997d3c26f90f7f4c8ee843380087bbe2591e7edc6"
+      },
+      {
+        "path": "libraries/raw/include/forge/raw/stream.cppm",
+        "sha256": "274b4b0ce7114f79d69c09b819636307ccd712217a59704e38843e9a74375c13"
+      },
+      {
+        "path": "tests/package_raw_bounded/CMakeLists.txt",
+        "sha256": "586757fb1770744f5351451a5502f2ad83fbce7de849e5018f70647028c6f0c7"
+      },
+      {
+        "path": "tests/package_raw_bounded/bounded.cpp",
+        "sha256": "ed87388f8dd7c2a5c95d4b1eed86b1c0595a6001316ad92579954f1c4225ef88"
+      },
+      {
+        "path": "tests/package_raw_bounded/codec_only.cpp",
+        "sha256": "db5a333ac306117c9e1b65a6c4e85cea73dfb0cb7729b3c9081b2963b3f35527"
+      }
+    ]
+  },
+  "turbine": {
+    "base_commit": "32a83b2a65294bbaf8d3a336898319d056f9c461",
+    "source_state": "Pending changes; only listed 64-file scope reviewed; unrelated dirty tree excluded",
+    "file_count": 64,
+    "combined_sha256": "8130af71e13bd2bb68d8ae518454154a68bfa306f413efcb28dc0863f081c036",
+    "matches_independent_cross_review": true,
+    "files": [
+      {
+        "path": "libraries/compute/chain/bill/include/turbine/compute/chain/bill/payout.cppm",
+        "sha256": "eae833966a2e2f049e48d80e9b33cc4b0b8fce09642a26024b7e30e79ea77407"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/CMakeLists.txt",
+        "sha256": "7f68d3d2c3858882345ba7550f10f76c7df862e6c69b71879c3465ac354d7b52"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/README.md",
+        "sha256": "29c0b86dd647eb7f8f57bd53c58c15befe26edd640076479c61b57ae56dbfcb4"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/deadline.cpp",
+        "sha256": "b0d6b2d82e1f83b1ddb755cda9fb18708e4133a4ee445f777ff724fc4ad3bfc7"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/digest.cpp",
+        "sha256": "f3838a7ddec8feb5502d5e4a2469bf1fe9e9ade74281bab6d5db867ec2c4fd60"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/actions.cppm",
+        "sha256": "6afb00a1a96a41b9311687f6eefe4485da6c60867da2f8eebe2c248b42581829"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/calls.cppm",
+        "sha256": "e9ae46647350b9f0c1af5b000b545bb070a9f0cb03cd7950cc79a64e548de24c"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/deadline.cppm",
+        "sha256": "34b891a00b028d45b87ed0204adae1a98c22112c599422f398b97801392f881b"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/digest.cppm",
+        "sha256": "8a4c239e1cdf6199f33a5ce2c1651a16e5c46e5733d6ef016cbe87495182eed2"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/exceptions.cppm",
+        "sha256": "c10d333ff7b21e9d8894b06fe2821502dbd9bd328fb7b1e506dd2f23027e9665"
+      },
+      {
+        "path": "libraries/compute/chain/jobs/include/turbine/compute/chain/jobs/types.cppm",
+        "sha256": "6244692a6b2e985e331ad5db6ee3e5cd181c80ef08b7db6e081b3830860c3fd9"
+      },
+      {
+        "path": "tests/integration/jobs/CMakeLists.txt",
+        "sha256": "a3278d1fe53f86d57e849dd3452353a62c9e6a8e4c0421fdc196ec3df991bf4c"
+      },
+      {
+        "path": "tests/integration/jobs/README.md",
+        "sha256": "90488c3adae852d8152f1189786bf38d84bd391d993bb7a180ebe28b9803c185"
+      },
+      {
+        "path": "tests/integration/jobs/check_abi.py",
+        "sha256": "cb01e6ac6ffd40c74e40020291b7548443e119817af725dcce7c0f6e4c853308"
+      },
+      {
+        "path": "tests/integration/jobs/check_golden.py",
+        "sha256": "2cfb0859c86920f04c4dfda456ff69a8bf452ab6f534564f98d44e7776ed8434"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-arm.hex",
+        "sha256": "c76a10cd36f6337e1e9054a25de1708269b721b09afc57d040da735e838a2b27"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-cancel.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-challenge.hex",
+        "sha256": "32e13b9ce4bfe8291ff8212243d9a9c8d9d7a6e8cc488b9de18548f00c331502"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-expire.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-fundbill.hex",
+        "sha256": "05efd4f8d50e87a205b8f09825a4b4d299cecdd3b2494a1c306909b9dced2ead"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-init.hex",
+        "sha256": "ac9e137bb34c29446814e56063724eab00dd53410f0603f9ba17f7007a3a670e"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-open.hex",
+        "sha256": "a2942b9de62490fc814751f3853f08a7ac3486d667f21f83df98457624466773"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-release.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-reveal.hex",
+        "sha256": "6776bb40b1d4760b765c05ce4619eacfa734baafea198832e5485e18ad662608"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-revoke.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-settest.hex",
+        "sha256": "4d844637e56f41f39a31c5ebb820bf554862d4f43dc7e49406c4baa9456bcca7"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-settle.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-settoken.hex",
+        "sha256": "73e65837d7daf4d56cb066da2e9faaff66395cf2a3f268e54e56e0638902bf41"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-take.hex",
+        "sha256": "b781bd00e16cfcbcdb691f9d62e5d00ee1983cf87db1c842401364cf867443bf"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/action-withdraw.hex",
+        "sha256": "e04dade66a601a485d6e35ac5e73d8ab4d507b26c24d891ffa08491c96df857a"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/arm-preimage.hex",
+        "sha256": "b23aa2c932df54da23dc264162ac3d794572d7f1caec94bcde5a38915d5b991e"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/arm-sha256.hex",
+        "sha256": "393eb7ff78199c6063afb793a3d1e9e686182ef814403e20af8f42a230ee0cf8"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/authorization-preimage.hex",
+        "sha256": "9a1d53c0a8dab880d5f7f4ed2a768e4207738a645d68a085d7aab9184de383ab"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/authorization-sha256.hex",
+        "sha256": "e3a4592eadb7937455634bf0d5009004474aa6b441569f5700bd668311222d7f"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/challenge-preimage.hex",
+        "sha256": "3813f312671b7c26e51e1247a23b43294f5fd1b479185764d5978c60bef3c1df"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/challenge-sha256.hex",
+        "sha256": "0ecf697d74095d2703c99c724b1997d1dc0dba05df39a1e88c471854081224de"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/code-snapshot.hex",
+        "sha256": "116c207c65da1c5990923717a4df8ae8ccd914a1ae9244f8abe44edc8a97c6da"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/context.hex",
+        "sha256": "c7699910d71eb2e39373779b5eec8f8640c830e4e3b61dd8dd38a08fa06e401d"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/enums.hex",
+        "sha256": "0b075b7e48b9da148581161cf1347c46d673b8d98eb6340de1461686884e16c1"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/executor-key.hex",
+        "sha256": "d0340ae6000f81adab8b24f2260ef3fd4ea3c607ac4ea6aaf3db0b8e2962c236"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/executor-signature.hex",
+        "sha256": "bee6c25e3efc53df82b9fdc5ed5af4df58042557ead9d78de29dfcf26193db30"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/inputs-manifest-sha256.hex",
+        "sha256": "f002b2c2c08935e14da8e3fd0ad10d99b7a18fff8557bd41eef59ea6e769f522"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/inputs.json",
+        "sha256": "d62491437aa266a55477d5965ad2dfea8d2a72a00c21594cc918c76b1534aef6"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/notification-transfer.hex",
+        "sha256": "3bed513eab66d42684689bf930504905244d6ad55ad97d00e6dff643104c5e9d"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/offer-preimage.hex",
+        "sha256": "2a68a0a01346c5710b21de16480f01f9d34e6b356cb1a2a512d37fb54d867d85"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/offer-sha256.hex",
+        "sha256": "62b4c6b46dcd33b05b0c18b290d5e0f6a3b907a9b0c638150150b3991a8762c7"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/open-preimage.hex",
+        "sha256": "e255f20c21fcb396578401b6c49c7a8b874d41fcdb3a08374a8f1df769cbea42"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/open-sha256.hex",
+        "sha256": "430deb780ec5e61d16d29974769e2be35b4fdce9ef34fd9e898a8949aaa2183c"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/order-terms.hex",
+        "sha256": "9062dd9367a333f3c68896ac122678b78c1b769599171b34cac68da0af3f1a32"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/profile.hex",
+        "sha256": "b5009c9885e76ad6ae61c0b2f763be798d5e15a64243f70b79fdbffc4068199d"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/reveal-preimage.hex",
+        "sha256": "3d9a1913f0f46d104c0f582e744a09cb7ead93b944114aacd69f0d145f3e8e4f"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/reveal-sha256.hex",
+        "sha256": "46b376d1aff29f0f0d75327080fa7567864e5e0c33d0f38b0e9e8788aed1c606"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/status-absent.hex",
+        "sha256": "7a31810fd64a26698442cb1df661425298a2c7507db3f02e2ad759c0f0a7862d"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/status-present.hex",
+        "sha256": "5a8c15a6fc31589e9c0859e524d440c511a29851361e8a02c4124948771878c6"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/terms-preimage.hex",
+        "sha256": "cf3daed6dd763891a673f71e2ae42bde09cce165645a79d8bc6a8a50a5637706"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/terms-sha256.hex",
+        "sha256": "c34b2f5d717c7a1b3c58f48d9f797c73ab8af51325b8deeb11a319a7cb47cb6b"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/verifier-key.hex",
+        "sha256": "19dab90a5d9b25f0bece823281f18073d2df3a288dfab86521ce0d5783cbcc57"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/verifier-signature.hex",
+        "sha256": "25ce8aece2e868553822c36e6f2c85c94317580910aea6e8c5373aab1d5975c6"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/withdraw-preimage.hex",
+        "sha256": "b3fb39e003dc076141829f5f06d9dcb2c32bb01b5cd3568ead481f8e7859226e"
+      },
+      {
+        "path": "tests/integration/jobs/fixtures/withdraw-sha256.hex",
+        "sha256": "71d392e6b2d6ced08b5c8296e87fa2474758c92c21121ebad1276350dd29cc6a"
+      },
+      {
+        "path": "tests/integration/jobs/guest/CMakeLists.txt",
+        "sha256": "47493a52d235cb0218b5fcc9ea72a4d5efcd5e8416855a9111a5bb4dccb08706"
+      },
+      {
+        "path": "tests/integration/jobs/guest/include/jobs/wire_fixture.cppm",
+        "sha256": "977f0174bd015f2e52ffbcbe947102077a081beea35bbfd2a3fee3d5f273cdbe"
+      },
+      {
+        "path": "tests/integration/jobs/guest/wire_fixture.cpp",
+        "sha256": "4f3c116d9aa284cee6c40ece6be9c12d3598ce7a5ddab76b718dfcc611137f27"
+      },
+      {
+        "path": "tests/integration/jobs/wire_tests.cpp",
+        "sha256": "35c1344c6870d4441e596d3dd107e32374abab1d35864046306330e9c2251f0f"
+      }
+    ]
+  },
+  "fingerprint_algorithm": "SHA256 of sorted relative_path + NUL + lowercase file SHA256 + LF per file",
+  "findings": [],
+  "resolved_findings": [
+    "Enum wire range is validated before narrowing; strict profile rejects unknown values",
+    "Nested exact frames inherit and charge first-container, cumulative element and byte limits plus strict flags",
+    "Additive bounded_unpack_limits and unpack_bounded_exact retain legacy unpack_limits four-field bindings, bare-brace calls and 16-byte native/portable/WASM wire",
+    "call_entry retains two-field structure; only a fixed 12-byte stack header precedes selected full-payload admission",
+    "Dispatcher uses an exported bounded input stream API",
+    "Native dependencies use resolved CMake target identity; guest SDK ownership and alias duplicate guards remain",
+    "Negative scenarios accept expected typed errors; unexpected VM, timeout, cancellation and DB failures propagate",
+    "Existing bill::fundbill callback reused without duplicate payload or alias"
+  ],
+  "verification": [
+    {
+      "gate": "Fresh host and SDK build/install",
+      "status": "PASS"
+    },
+    {
+      "gate": "Installed Raw bounded and unchanged legacy regression",
+      "status": "PASS",
+      "ctest": "2/2",
+      "boost_cases": [
+        6,
+        51
+      ],
+      "skipped": 0
+    },
+    {
+      "gate": "Standalone real WASM jobs wire, ABI and fixed goldens",
+      "status": "PASS",
+      "ctest": "3/3",
+      "accepted": 208,
+      "rejected": 47,
+      "skipped": 0
+    },
+    {
+      "gate": "SDK relocation, aligned multi_index VM and native/guest helper probes",
+      "status": "PASS",
+      "coverage": [
+        "Native ordinary public INTERFACE and private STATIC alias targets build; usage requirements propagate",
+        "Native alias duplicate refusal",
+        "The same host source graph is rejected in guest",
+        "Guest PUBLIC and PRIVATE host-only dependency refusal",
+        "Relocated SDK builds and executes aligned multi_index fixture"
+      ]
+    },
+    {
+      "gate": "17 genuine Forge WASM fixtures and contract E2E",
+      "status": "PASS",
+      "ctest": "1/1",
+      "boost_cases": 53,
+      "skipped": 0
+    },
+    {
+      "gate": "Full unfiltered SDK consumer build",
+      "status": "FAILED",
+      "reason": "Unchanged donor_compatibility.cpp cannot compile std::regex, locale and related facilities against this freestanding upstream sysroot. Failed invocation retained; full SDK-consumer PASS is not claimed.",
+      "evidence": [
+        "consumer-build.json",
+        "consumer-build.log"
+      ]
+    },
+    {
+      "gate": "Linux qualification",
+      "status": "NOT_RUN",
+      "reason": "Excluded by user scope"
+    },
+    {
+      "gate": "Labs/live provider acceptance",
+      "status": "NOT_RUN",
+      "reason": "Excluded by user scope"
+    },
+    {
+      "gate": "JOB1 state machine, chain financial acceptance and deployment",
+      "status": "NOT_RUN",
+      "reason": "Outside JOB0 scope"
+    }
+  ],
+  "immutable_checks": {
+    "sdk_archive_sha256": "7a929cc7c18d08be015343a83804bd7dbd71ce2495e8f47d98e890d2e81393a8",
+    "archive_matches_recorded_checksum": true,
+    "installed_source_pairs_match_commit": true,
+    "reviewed_pairs": [
+      "libraries/raw/include/forge/raw/codec.cppm",
+      "libraries/raw/include/forge/raw/stream.cppm",
+      "guest/libraries/contract/include/forge/contract/dispatcher.cppm",
+      "guest/cmake/ForgeContractLibraries.cmake",
+      "libraries/raw/include/forge/raw/raw.cppm"
+    ]
+  },
+  "limitations": [
+    "Reviewer ran no builds or test executables and made no source edits; runtime evidence is independently inspected coordinator output",
+    "Logical element and byte-content budgets do not bound every physical allocation; arbitrary user-codec allocations or independent streams are outside the stated guarantee",
+    "Truncation may allocate within admitted budgets before a range error",
+    "GO applies only to scoped JOB0 gates; full SDK consumer qualification remains FAILED"
+  ],
+  "evidence": [
+    {
+      "path": "forge-final-build.json",
+      "sha256": "8cf3f724c3ae8df36a003b42bd62deda50a1a0c043233f82a1847f1ce4e78f5e"
+    },
+    {
+      "path": "forge-final-install.json",
+      "sha256": "4dd177e22ed0ca6baa9c8fbb43300174591e4440c193cb1d1f7bb0922511a411"
+    },
+    {
+      "path": "sdk-final-build.json",
+      "sha256": "93dca705cd1fd0f133f213135b58c02a707f2d5143ad76d167edade80be3c076"
+    },
+    {
+      "path": "sdk-final-install.json",
+      "sha256": "9d169077ce0106b16f3cfdcd8b9a48af08f107fb74e1c3c5547f1237df6d9afa"
+    },
+    {
+      "path": "raw-final-build-r2.json",
+      "sha256": "86308bd803bb39a514c7ebe974dbcea0020a9156140617b1379b588b0182b748"
+    },
+    {
+      "path": "raw-final-ctest.json",
+      "sha256": "e8748cdbe169ece4f9adc930653a7193862b76e4778703cc6d401259efa28a91"
+    },
+    {
+      "path": "jobs-guest-build.json",
+      "sha256": "8e467085ed6caa76d02c45500f57f414c56703969eee68e243f90dc4946b5b98"
+    },
+    {
+      "path": "jobs-native-build-r2.json",
+      "sha256": "35b4e29d57ae5cd1cc9e4e7de04db5b398ae845ebd09335165ea5b0dbb35ec98"
+    },
+    {
+      "path": "jobs-ctest.json",
+      "sha256": "530679db2dfd27ea0909327eb01763695792e53958ce844b93e266b53c368e94"
+    },
+    {
+      "path": "sdk-relocation.json",
+      "sha256": "3317cc922a9e9ff1e96a0dc5762a87a264f9d0436beb8fa855cfabbe6eedd88a"
+    },
+    {
+      "path": "consumer-e2e-fixtures.json",
+      "sha256": "dc6d928573b69235030c03c371e4c56edf1f0692b00b9573f42a8a63ed29e4e9"
+    },
+    {
+      "path": "e2e-build.json",
+      "sha256": "fed9df027a0f57142a11429e4d89788a223bf5d452f27d1c10e6aeaa7d9cccd3"
+    },
+    {
+      "path": "e2e-ctest.json",
+      "sha256": "3afdc4dd86bbabcc0b23c6f84803acfc4c6fc52f650bada4fdb936442ee8ac2e"
+    },
+    {
+      "path": "consumer-build.json",
+      "sha256": "9433264242d415a40800cd131caa748f4487f429603af5a41f30f2a750f7fd3d"
+    },
+    {
+      "path": "raw-final-tests.xml",
+      "sha256": "9679b3800ce2e3ecb37892c95fa68afd78d938f1fd68c68ecb69218d4e07c5e6"
+    },
+    {
+      "path": "jobs-tests.xml",
+      "sha256": "2c041a438265fec3578b595785398df16bd9e43d86ecb16c48d1331faff1c05a"
+    },
+    {
+      "path": "e2e-tests.xml",
+      "sha256": "da5ae931c26852a6a09158cf2505221d913d3a238cdb729ce5e3e951d7e67ed7"
+    },
+    {
+      "path": "review-turbine-final.json",
+      "sha256": "5c657f556f5ae0b44099eff81df570040651f81b8d3651896a484720e4d65ef6"
+    },
+    {
+      "path": "consumer-build.log",
+      "sha256": "8504447f30648914e6e276e66d5ddaf05110b074f861682bf866618160d37045"
+    },
+    {
+      "path": "sdk-relocation.log",
+      "sha256": "19bf2b509078a978c0a02c10e4eb1782e89ba9161d6e296416e1c395be174691"
+    }
+  ],
+  "review_artifact_only_write": true
+}

@@ -1,0 +1,17 @@
+{
+  "name": "tariffs-final-guest-build",
+  "cwd": "$SPINE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "--build",
+    "build/tariffs-guest",
+    "--parallel",
+    "4",
+    "--target",
+    "tariffs_artifacts",
+    "tariffclient_artifacts"
+  ],
+  "started": 1792755655.8374112,
+  "code": 0,
+  "seconds": 5.447757005691528
+}

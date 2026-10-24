@@ -1,0 +1,26 @@
+[
+  {
+    "case": "nested",
+    "exit": 0,
+    "expected_failure": false,
+    "output": ""
+  },
+  {
+    "case": "absolute",
+    "exit": 1,
+    "expected_failure": true,
+    "output": "CMake Error at /tmp/forge-expression-installed-20261023/install-layout-absolute.cmake:5 (message):\n  Expression requires prefix-relative CMAKE_INSTALL_BINDIR; absolute install\n  destinations cannot relocate with the worker package\n\n\n"
+  },
+  {
+    "case": "escape",
+    "exit": 1,
+    "expected_failure": true,
+    "output": "CMake Error at /tmp/forge-expression-installed-20261023/install-layout-escape.cmake:9 (message):\n  Expression requires CMAKE_INSTALL_LIBDIR to remain inside the installation\n  prefix\n\n\n"
+  },
+  {
+    "case": "normalized_escape",
+    "exit": 1,
+    "expected_failure": true,
+    "output": "CMake Error at /tmp/forge-expression-installed-20261023/install-layout-normalized_escape.cmake:9 (message):\n  Expression requires CMAKE_INSTALL_LIBDIR to remain inside the installation\n  prefix\n\n\n"
+  }
+]

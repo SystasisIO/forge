@@ -1,0 +1,27 @@
+{
+  "name": "backend-tests-r1",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/python3",
+    "cmake/cel/build.py",
+    "--source-root",
+    ".",
+    "--build-root",
+    "build/expression-contract/_deps/cel/Release",
+    "--compiler",
+    "/opt/homebrew/opt/llvm/bin/clang++",
+    "--c-compiler",
+    "/opt/homebrew/opt/llvm/bin/clang",
+    "--sdk",
+    "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "--deployment-target",
+    "26.0",
+    "--configuration",
+    "Release",
+    "--cxx-flags=-DNDEBUG",
+    "--test"
+  ],
+  "started": 1792754461.963952,
+  "code": 0,
+  "seconds": 5.451531887054443
+}

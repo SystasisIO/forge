@@ -1,0 +1,18 @@
+{
+  "name": "sdk-relocation",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs0-20261025/build/sdk",
+    "--target",
+    "forge_contract_sdk_relocation",
+    "-j4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 228.361,
+  "started_unix": 1792884933.076593,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

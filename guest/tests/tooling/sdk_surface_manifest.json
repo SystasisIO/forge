@@ -17,6 +17,12 @@
       "privileged"
     ]
   },
+  "extensions": {
+    "expression_v1": {
+      "count": 3,
+      "interface_version": 1
+    }
+  },
   "donor_c_headers": [
     "eosio/action.h",
     "eosio/call.h",
@@ -91,6 +97,7 @@
     "datastream",
     "deferred_transaction",
     "dispatcher",
+    "expression",
     "fixed_bytes",
     "hash_id",
     "ignore",

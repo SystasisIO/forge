@@ -470,18 +470,38 @@ add_subdirectory(../shared shared-build)
         encoding="utf-8",
     )
     (host_library / "CMakeLists.txt").write_text(
-        """forge_add_contract_library(
+        """add_library(host_public INTERFACE)
+add_library(Host::Public ALIAS host_public)
+target_compile_definitions(host_public INTERFACE HOST_PUBLIC_VALUE=42)
+add_library(host_private STATIC native_dependency.cpp)
+add_library(Host::Private ALIAS host_private)
+set(_private_dependencies Host::Private)
+if(FORGE_TEST_DUPLICATE_NATIVE_DEPENDENCY)
+   list(APPEND _private_dependencies Host::Public)
+endif()
+forge_add_contract_library(
    host_sibling ID host.sibling
    MODULE_BASE_DIRS include
    MODULE_SOURCES include/value.cppm
+   PUBLIC_LIBRARIES Host::Public
+   PRIVATE_LIBRARIES ${_private_dependencies}
 )
 """,
         encoding="utf-8",
     )
     (host_library / "include").mkdir()
     (host_library / "include" / "value.cppm").write_text(
-        "export module host.sibling;\n",
+        """module;
+#if !defined(HOST_PUBLIC_VALUE) || HOST_PUBLIC_VALUE != 42
+#error Native contract dependencies did not propagate CMake usage requirements
+#endif
+export module host.sibling;
+export namespace host { inline constexpr int sibling_value = HOST_PUBLIC_VALUE; }
+""",
         encoding="utf-8",
+    )
+    (host_library / "native_dependency.cpp").write_text(
+        "int native_dependency_value() { return 42; }\n", encoding="utf-8"
     )
     host_command = [
         cmake,
@@ -498,6 +518,26 @@ add_subdirectory(../shared shared-build)
         sdk = run("xcrun", "--sdk", "macosx", "--show-sdk-path").strip()
         host_command.append(f"-DCMAKE_OSX_SYSROOT={sdk}")
     run(*host_command)
+    build(cmake, output / "host-build", "host_sibling")
+    duplicate_host_command = list(host_command)
+    duplicate_host_command[duplicate_host_command.index(str(output / "host-build"))] = str(
+        output / "host-duplicate-build"
+    )
+    duplicate_host_command.append("-DFORGE_TEST_DUPLICATE_NATIVE_DEPENDENCY=ON")
+    run_failure(*duplicate_host_command, contains="duplicate contract dependency owner: host_public")
+    run_failure(
+        cmake,
+        "-S",
+        str(host_project),
+        "-B",
+        str(output / "host-graph-guest-build"),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_TOOLCHAIN_FILE={contract_package / 'ForgeContractToolchain.cmake'}",
+        f"-DForgeContract_DIR={contract_package}",
+        f"-DFORGE_CONTRACT_SOURCE_ROOT={host_source}",
+        contains="contract dependency is not guest-compatible: Host::Public",
+    )
 
     duplicate = source_root / "duplicate-id"
     write_negative_project(
@@ -530,6 +570,25 @@ forge_add_contract_library(
    MODULE_BASE_DIRS include
    MODULE_SOURCES include/protocol.cppm
    PUBLIC_LIBRARIES host_only
+)
+""",
+        modules={
+            "include/protocol.cppm": "export module negative.protocol;\n"
+        },
+    )
+
+    private_host_only = source_root / "private-host-only"
+    write_negative_project(
+        private_host_only,
+        cmake_body="""
+add_library(host_only STATIC IMPORTED)
+set_target_properties(host_only PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/host-only.a")
+add_library(Host::Only ALIAS host_only)
+forge_add_contract_library(
+   negative_protocol ID negative.private_host_only
+   MODULE_BASE_DIRS include
+   MODULE_SOURCES include/protocol.cppm
+   PRIVATE_LIBRARIES Host::Only
 )
 """,
         modules={
@@ -1043,6 +1102,7 @@ target_compile_definitions(negative PRIVATE UNDECLARED_VALUE=2)
     cases = (
         (duplicate, "duplicate Forge Contract owner ID"),
         (host_only, "contract dependency is not guest-compatible"),
+        (private_host_only, "contract dependency is not guest-compatible"),
         (forward_edge, "unknown Contract SDK dependency target"),
         (mutated_target, "post-declaration target mutation is unsupported"),
         (
@@ -1315,6 +1375,82 @@ def validate(
     )
 
 
+def validate_module_entry(*, cmake: str, source: Path, output: Path, contract_package: Path) -> None:
+    def command(mode: str) -> list[str]:
+        return [
+            cmake, "-S", str(source), "-B", str(output / mode), "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release", f"-DENTRY_MODE={mode}",
+            f"-DForgeContract_DIR={contract_package}",
+            f"-DCMAKE_TOOLCHAIN_FILE={contract_package / 'ForgeContractToolchain.cmake'}",
+        ]
+
+    artifacts = []
+    for mode in ("module", "legacy"):
+        run(*command(mode))
+        build(cmake, output / mode, "moduleprobe_artifacts")
+        files = {
+            suffix: (output / mode / "artifacts" / f"moduleprobe.{suffix}").read_bytes()
+            for suffix in ("wasm", "abi", "contract.json")
+        }
+        if any(not data for data in files.values()):
+            raise RuntimeError("module entry produced an empty artifact")
+        artifacts.append(files)
+    if artifacts[0] != artifacts[1]:
+        raise RuntimeError("module entry changed legacy WASM/ABI/manifest bytes")
+    abi = json.loads(artifacts[0]["abi"])
+    if [item["name"] for item in abi["actions"]] != ["ping"]:
+        raise RuntimeError("module entry lost its action")
+    if [item["name"] for item in abi["calls"]] != ["read"]:
+        raise RuntimeError("module entry lost its call")
+    records = {item["name"]: item for item in abi["structs"]}
+    for item in [*abi["actions"], *abi["calls"]]:
+        if records[item["type"]]["fields"] != [{"name": "value", "type": "uint64"}]:
+            raise RuntimeError("module entry changed direct argument ABI")
+    entry = output / "module" / "moduleprobe.generated" / "entry.cpp"
+    if entry.read_text() != "import probe.contract;\n":
+        raise RuntimeError("module entry source contains unexpected code")
+    before = entry.stat().st_mtime_ns
+    run(*command("module"))
+    if entry.stat().st_mtime_ns != before:
+        raise RuntimeError("unchanged module entry was rewritten on configure")
+    run(cmake, "--build", str(output / "module"), "--target", "clean")
+    build(cmake, output / "module", "moduleprobe_artifacts")
+    for suffix, expected in artifacts[0].items():
+        if (output / "module" / "artifacts" / f"moduleprobe.{suffix}").read_bytes() != expected:
+            raise RuntimeError("module entry clean/rebuild changed artifacts")
+    for mode, message in (
+        ("invalid", "DISPATCH_MODULE must name a primary C++ module"),
+        ("empty", "DISPATCH_MODULE requires a module name"),
+        ("sources", "DISPATCH_MODULE is exclusive with SOURCES and DISPATCH_SOURCE"),
+        ("dispatch", "DISPATCH_MODULE is exclusive with SOURCES and DISPATCH_SOURCE"),
+        ("outside", "DISPATCH_MODULE requires a valid target name"),
+    ):
+        run_failure(*command(mode), contains=message)
+    if (output / "escaped.generated").exists():
+        raise RuntimeError("rejected module entry wrote outside the build directory")
+    symlink_build = output / "symlink"
+    symlink_target = output / "outside-symlink"
+    symlink_build.mkdir(parents=True)
+    symlink_target.mkdir()
+    (symlink_build / "moduleprobe.generated").symlink_to(symlink_target, target_is_directory=True)
+    symlink_command = command("module")
+    symlink_command[symlink_command.index("-B") + 1] = str(symlink_build)
+    run_failure(*symlink_command, contains="contract module entry directory is outside its declared root")
+    if list(symlink_target.iterdir()):
+        raise RuntimeError("rejected module entry wrote through the symlink")
+    nested_build = output / "nested"
+    nested_build.mkdir()
+    (nested_build / "link").symlink_to(symlink_target, target_is_directory=True)
+    run_failure(*command("nested"), contains="DISPATCH_MODULE requires a valid target name")
+    if list(symlink_target.iterdir()):
+        raise RuntimeError("invalid target wrote through an ancestor symlink")
+    run(*command("unknown"))
+    run_failure(
+        cmake, "--build", str(output / "unknown"), "--target", "moduleprobe_artifacts", "-j", build_jobs(),
+        contains="probe.missing",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -1337,6 +1473,12 @@ def main() -> None:
         ),
         source=args.source.resolve(),
         output=args.output.resolve(),
+    )
+    validate_module_entry(
+        cmake=args.cmake,
+        source=args.source.resolve().parent / "module_entry",
+        output=args.output.resolve() / "module-entry",
+        contract_package=args.contract_package,
     )
 
 

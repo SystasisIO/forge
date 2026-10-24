@@ -10,7 +10,7 @@ function(forge_add_contract target)
       PARSE_ARGV 1
       ARG
       "ABI_METADATA"
-      "CONTRACT;SOURCE_ROOT;DISPATCH_SOURCE;RICARDIAN_CONTRACTS;RICARDIAN_CLAUSES"
+      "CONTRACT;SOURCE_ROOT;DISPATCH_SOURCE;DISPATCH_MODULE;RICARDIAN_CONTRACTS;RICARDIAN_CLAUSES"
       "SOURCES;COMPILE_CHECKS;LIBRARIES;ABI_ROOT_TYPES;COMPILE_DEFINITIONS"
    )
    if(ARG_UNPARSED_ARGUMENTS)
@@ -36,8 +36,21 @@ function(forge_add_contract target)
       endif()
       list(APPEND _definition_names "${_definition_name}")
    endforeach()
-   if(NOT ARG_SOURCES)
-      message(FATAL_ERROR "forge_add_contract(${target}) requires SOURCES")
+   if("DISPATCH_MODULE" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
+      message(FATAL_ERROR "forge_add_contract(${target}) DISPATCH_MODULE requires a module name")
+   endif()
+   if(DEFINED ARG_DISPATCH_MODULE)
+      if(NOT target MATCHES "^[A-Za-z0-9_.+-]+$")
+         message(FATAL_ERROR "forge_add_contract(${target}) DISPATCH_MODULE requires a valid target name")
+      endif()
+      if(NOT ARG_DISPATCH_MODULE MATCHES "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$")
+         message(FATAL_ERROR "forge_add_contract(${target}) DISPATCH_MODULE must name a primary C++ module")
+      endif()
+      if(ARG_SOURCES OR ARG_DISPATCH_SOURCE)
+         message(FATAL_ERROR "forge_add_contract(${target}) DISPATCH_MODULE is exclusive with SOURCES and DISPATCH_SOURCE")
+      endif()
+   elseif(NOT ARG_SOURCES)
+      message(FATAL_ERROR "forge_add_contract(${target}) requires SOURCES or DISPATCH_MODULE")
    endif()
    if(TARGET "${target}")
       message(FATAL_ERROR "forge_add_contract target already exists: ${target}")
@@ -54,9 +67,33 @@ function(forge_add_contract target)
       "${_source_root}" "contract source root"
    )
 
+   set(_source_inputs ${ARG_SOURCES})
+   if(DEFINED ARG_DISPATCH_MODULE)
+      set(_module_entry_directory "${CMAKE_CURRENT_BINARY_DIR}/${target}.generated")
+      _forge_contract_require_descendant(
+         "${CMAKE_BINARY_DIR}" "${_module_entry_directory}" "contract module entry directory"
+      )
+      set(_module_entry "${_module_entry_directory}/entry.cpp")
+      _forge_contract_require_descendant(
+         "${CMAKE_BINARY_DIR}" "${_module_entry}" "contract module entry"
+      )
+      set(_module_entry_input "${_module_entry}.in")
+      _forge_contract_require_descendant(
+         "${CMAKE_BINARY_DIR}" "${_module_entry_input}" "contract module entry template"
+      )
+      file(CONFIGURE OUTPUT "${_module_entry_input}" CONTENT "import ${ARG_DISPATCH_MODULE};\n" @ONLY)
+      add_custom_command(
+         OUTPUT "${_module_entry}"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_module_entry_input}" "${_module_entry}"
+         DEPENDS "${_module_entry_input}"
+         VERBATIM
+      )
+      list(APPEND _source_inputs "${_module_entry}")
+   endif()
+
    set(_all_inputs)
    set(_sources)
-   foreach(_source IN LISTS ARG_SOURCES)
+   foreach(_source IN LISTS _source_inputs)
       _forge_contract_normalize_file(
          "${_source_root}" "${_source}" "contract source" _absolute
       )

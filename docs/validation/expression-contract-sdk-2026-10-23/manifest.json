@@ -1,0 +1,25 @@
+{
+  "files": {
+    "README.md": "691a6c8ce126a356371d449e8cc8c790be947aa9dbb539bf7393b75165d4f83c",
+    "acceptance.json": "afef22cd7adc27cebacfb546b8867293c35f96db23e43acc79710789390e84d1",
+    "backend-tests-r1.json": "4429406433eaaa56d3f5f963e33c99a3499bb6eacdaf8fed8754ac4333b0e1f0",
+    "cleanup-result.json": "ec5da5fb7930810545fdb215733446f0f805126e9514071dd02b7d464d7af79a",
+    "installed-result.json": "1167f6670afb3d5af7524aeb1bad7d640c24ad27bace1e2a9eb7fd249cbc5099",
+    "native-final-build.json": "9162208196eea0a4ad74a2980a9e2422d2397229ab7721b30d6ca4e3e9b7f1f2",
+    "native-final-ctest.json": "e4584c9feec85b424ec4f75901b8e3cddc8d1bbc915f8aca753a68b6721bc62c",
+    "native-final-ctest.log": "a7e6bb5c47e34365b0e6778f98ce5aa651a1569886c86b3c09c013e9f93dfc2c",
+    "sdk-build-r1.json": "ea30e6b3a89799a23108b651dba8af6796c2082989cc8916294885eaeb04969a",
+    "sdk-configure-r2.json": "5c20ed472d4ec67bdca6235f76e5c09e2eb4dfcb2d8ad2b0531a0bcf7effc6f3",
+    "sdk-install-r1.json": "f45eb8ea0fc79cbcf832c169abe099aa9acfb810de40606ea1aabd23ca4031fd",
+    "sdk-registry-fixtures.json": "c3a9aaf5ccd4f7f642948db93eac2b5a4a8fb074e04cf313b67285c7febe7fa1",
+    "sdk-source.json": "034b22814c19db806eec4db0f1f9ac310e8ae4c7a7f976df038cb8aa0b5c9be6",
+    "sdk-surface-fixtures.json": "f72ffbafe679408f603843c5dcebea71fd3d1ddf7e62b9020dd045d399ac6e2e",
+    "sdk-surface-fixtures.log": "3248d8264d7af1958fcd548858fca67d8d15d7e2dc6791a84cc0059f4729c939",
+    "tariff-qualification.json": "3bb5c1bbc2549387c39876c511ca755ae838fc123727c2b5b34b7165d0da8eee",
+    "tariffs-final-ctest.json": "07489618e3684422aad3fb0eb769afe71715575fb42d1f778d768b8743ee8712",
+    "tariffs-final-ctest.log": "86ec552506fc1851ad8df49133a07e76e2577c2d0cd700475330b500213d1ca7",
+    "tariffs-final-guest-build.json": "2d6594ba362025b22e6769cdd737a6b4d315ca09a06f343cad0c3a7d8a4cf13b",
+    "tariffs-final-host-build.json": "6b4e2e1681d01349ffbdba164e4773cba5032c3409f221359e37a4ff3cc985f9",
+    "tariffs-final-host-configure.json": "9497f5c09d87c36b110b41ca444950db2aabfbffdfca8c9a437fefcdebbbeee4"
+  }
+}

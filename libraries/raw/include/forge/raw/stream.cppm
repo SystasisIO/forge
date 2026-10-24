@@ -25,6 +25,60 @@ struct allocation_limits {
    std::size_t total_elements = std::numeric_limits<std::size_t>::max();
    std::size_t bytes = std::numeric_limits<std::size_t>::max();
    std::size_t first_container_elements = std::numeric_limits<std::size_t>::max();
+   std::size_t total_bytes = std::numeric_limits<std::size_t>::max();
+   bool reject_noncanonical_varints = false;
+   bool reject_unknown_enum_values = false;
+};
+
+class allocation_budget {
+ public:
+   constexpr explicit allocation_budget(raw::detail::allocation_limits limits = {})
+       : limits_(limits), remaining_elements_(limits.total_elements), remaining_bytes_(limits.total_bytes) {}
+
+   [[nodiscard]] constexpr const raw::detail::allocation_limits& allocation_limits() const noexcept {
+      return limits_;
+   }
+
+   [[nodiscard]] constexpr std::size_t remaining_container_elements() const noexcept {
+      return remaining_elements_;
+   }
+
+   [[nodiscard]] constexpr std::size_t remaining_allocation_bytes() const noexcept {
+      return remaining_bytes_;
+   }
+
+   [[nodiscard]] constexpr bool has_consumed_container() const noexcept {
+      return consumed_container_;
+   }
+
+   constexpr bool consume_cumulative_container_elements(std::size_t count) noexcept {
+      if (count > remaining_elements_) {
+         return false;
+      }
+      remaining_elements_ -= count;
+      return true;
+   }
+
+   constexpr bool consume_container_elements(std::size_t count) noexcept {
+      const auto limit = std::min({limits_.elements, limits_.first_container_elements, remaining_elements_});
+      limits_.first_container_elements = std::numeric_limits<std::size_t>::max();
+      consumed_container_ = true;
+      return count <= limit && consume_cumulative_container_elements(count);
+   }
+
+   constexpr bool consume_allocation_bytes(std::size_t count) noexcept {
+      if (count > remaining_bytes_) {
+         return false;
+      }
+      remaining_bytes_ -= count;
+      return true;
+   }
+
+ private:
+   raw::detail::allocation_limits limits_;
+   std::size_t remaining_elements_;
+   std::size_t remaining_bytes_;
+   bool consumed_container_ = false;
 };
 } // namespace raw::detail
 
@@ -33,9 +87,11 @@ template <typename Storage, typename Enable = void> class datastream;
 template <typename Storage>
 class datastream<Storage, std::enable_if_t<std::is_same_v<Storage, char*> || std::is_same_v<Storage, const char*> ||
                                            std::is_same_v<Storage, unsigned char*> ||
-                                           std::is_same_v<Storage, const unsigned char*>>> {
+                                           std::is_same_v<Storage, const unsigned char*>>>
+    : public raw::detail::allocation_budget {
  public:
-   datastream(Storage start, std::size_t size) : start_(start), position_(start), end_(start + size) {}
+   datastream(Storage start, std::size_t size, raw::detail::allocation_limits limits = {})
+       : raw::detail::allocation_budget(limits), start_(start), position_(start), end_(start + size) {}
 
    void skip(std::size_t size) {
       if (size > remaining()) {
@@ -150,17 +206,16 @@ template <> class datastream<std::size_t, void> {
 
 template <typename Byte, typename Allocator>
 class datastream<std::vector<Byte, Allocator>,
-                 std::enable_if_t<std::is_same_v<Byte, char> || std::is_same_v<Byte, std::uint8_t>>> {
+                 std::enable_if_t<std::is_same_v<Byte, char> || std::is_same_v<Byte, std::uint8_t>>>
+    : public raw::detail::allocation_budget {
  public:
    using storage_type = std::vector<Byte, Allocator>;
 
    explicit datastream(storage_type storage = {}, raw::detail::allocation_limits allocation_limits = {})
-       : storage_(std::move(storage)), allocation_limits_(allocation_limits),
-         remaining_elements_(allocation_limits.total_elements) {}
+       : raw::detail::allocation_budget(allocation_limits), storage_(std::move(storage)) {}
 
    explicit datastream(std::span<const Byte> input, raw::detail::allocation_limits allocation_limits = {})
-       : input_(input), read_only_(true), allocation_limits_(allocation_limits),
-         remaining_elements_(allocation_limits.total_elements) {}
+       : raw::detail::allocation_budget(allocation_limits), input_(input), read_only_(true) {}
 
    std::size_t read(char* destination, std::size_t size) {
       if (size > remaining()) {
@@ -202,7 +257,7 @@ class datastream<std::vector<Byte, Allocator>,
    }
 
    bool skip(std::size_t size) {
-      return seekp(position_ + size);
+      return size <= remaining() && seekp(position_ + size);
    }
 
    bool get(char& value) {
@@ -217,32 +272,6 @@ class datastream<std::vector<Byte, Allocator>,
 
    std::size_t remaining() const {
       return length() - position_;
-   }
-
-   [[nodiscard]] const raw::detail::allocation_limits& allocation_limits() const noexcept {
-      return allocation_limits_;
-   }
-
-   [[nodiscard]] std::size_t remaining_container_elements() const noexcept {
-      return remaining_elements_;
-   }
-
-   bool consume_cumulative_container_elements(std::size_t count) noexcept {
-      if (count > remaining_elements_) {
-         return false;
-      }
-      remaining_elements_ -= count;
-      return true;
-   }
-
-   bool consume_container_elements(std::size_t count) noexcept {
-      const auto limit =
-          std::min({allocation_limits_.elements, allocation_limits_.first_container_elements, remaining_elements_});
-      allocation_limits_.first_container_elements = std::numeric_limits<std::size_t>::max();
-      if (count > limit) {
-         return false;
-      }
-      return consume_cumulative_container_elements(count);
    }
 
    storage_type& storage() {
@@ -268,8 +297,6 @@ class datastream<std::vector<Byte, Allocator>,
    std::span<const Byte> input_;
    bool read_only_ = false;
    std::size_t position_ = 0;
-   raw::detail::allocation_limits allocation_limits_;
-   std::size_t remaining_elements_;
 };
 
 #define FORGE_RAW_STREAM_SCALAR(Type)                                                                                  \

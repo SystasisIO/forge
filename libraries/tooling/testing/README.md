@@ -27,7 +27,8 @@ host.configure(forge::tooling::testing::oracle_state{});
 
 ## Responsibilities
 
-- Register all 152 functions from the canonical intrinsic registry without a
+- Register all 152 public imports, 48 runtime imports and optional capability
+  entries from the canonical intrinsic registry without a
   second hand-written registration list.
 - Execute a contract invocation with one `forge::db::object::transaction`.
 - Commit successful `apply` and `eosio_exit`; roll back assertions, DB errors
@@ -63,6 +64,42 @@ not implement RAM billing, fork choice, controller lifecycle, persistent schema
 migration or a public memory database. Product host bindings must provide their
 own policy, state models and production Forge DB drivers.
 
+## Optional Expression Capability
+
+When Forge is built with `FORGE_ENABLE_EXPRESSION=ON`, the existing host can
+borrow a caller-owned `forge::expression::runtime`. The default constructor
+keeps expression execution disabled and reports typed
+`expression_unavailable` when an expression import is called.
+
+```cpp
+import forge.expression.program;
+import forge.tooling.testing.host;
+
+forge::expression::runtime expressions({.helper = helper_executable});
+forge::tooling::testing::host host(expressions);
+```
+
+Keep `expressions` alive until the host and every invocation have finished.
+Invoke the synchronous test host on a host thread, outside Forge Asio IO
+threads. The host borrows the existing bounded worker. Compile returns a
+portable artifact; import rechecks it; evaluation imports it into a temporary
+native program object. Destruction uses the runtime's existing bounded
+asynchronous retirement. No native program ID is stored in contract state. Owner-local
+`forge.tooling.testing.conversion` maps portable activation values to the
+existing Forge variant types.
+
+The additive `invoke(..., data, invocation_options)` overload accepts an
+absolute steady-clock deadline and a stop token. Its effective deadline is
+the earlier of the caller's deadline and the host timeout. The same deadline
+and cancellation reach every native CEL operation, including queued work;
+the worker's own timeout remains an additional ceiling. Timeout or cancellation
+after a request is sent terminates and joins the worker's cleanup. Typed CEL
+errors cross the WAMR boundary and roll back the invocation transaction
+together with fixture state.
+
+Inline and deferred actions are recorded fixture effects. They do not prove
+execution of another contract or a financial transaction cycle.
+
 ## Tests
 
 `guest/tests/e2e/contract_tests.cpp` runs real generated wasm32 contracts
@@ -73,3 +110,10 @@ oracle contract executes every non-database capability family, verifies
 observable side effects and proves that assertion failures roll back ObjectDB
 and fixture state together. A malformed-pointer case verifies that guest ranges
 are rejected before a host callback touches memory.
+
+`tests/tooling_testing/expression_tests.cpp` provides a literal WASM fixture
+that calls the three expression imports through the same host. It covers
+artifact transfer across worker restart, exact Raw response bytes, malformed
+requests, untrusted artifacts, pointer bounds, typed failures and DB rollback.
+Stopped real worker cases exercise shared deadlines and cancellation inside a
+host import. The independent compute profile retains its five allowed imports.

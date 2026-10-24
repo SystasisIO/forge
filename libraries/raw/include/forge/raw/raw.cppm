@@ -442,7 +442,13 @@ struct codec_traits<T> {
          } else {
             auto encoded = enum_wire_type_t<T>{};
             forge::raw::unpack(stream, encoded);
+            if constexpr (requires { stream.allocation_limits().reject_unknown_enum_values; }) {
+               detail::require(!stream.allocation_limits().reject_unknown_enum_values ||
+                                   std::in_range<std::underlying_type_t<T>>(encoded),
+                               "enum wire value is outside its underlying range");
+            }
             value = static_cast<T>(encoded);
+            detail::validate_enum(stream, value);
          }
       } else {
          forge::reflect::for_each_member<T>([&](const char*, auto member) {
