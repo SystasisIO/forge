@@ -1,0 +1,55 @@
+{
+  "forge_base": "e51c6929fd120d13976963e9d633ba77b3044e01",
+  "source_sha256": {
+    "tests/expression_native/CMakeLists.txt": "52b5d4fbf223f55cfaf33d52b92e27bc717aaaf64caa44f761873bd829859b6d",
+    "tests/expression_native/README.md": "7c6d5c4eddcfc8045c500cf4673221337a33f67816b018b180a4253a92cfba23",
+    "tests/expression_native/benchmark.hpp": "4c7a27578944aad983f75b1eddae349450fcd43894a24e763532584ae4fbd1a3",
+    "tests/expression_native/cel/BUILD.bazel": "73e5689f8c62b325c0a14fc6771571b35cd22519d349938a9d134e0e2a65df57",
+    "tests/expression_native/cel/build.sh": "a299252c51ba55fb8c546a857308029d6d5f32a61e60056bb4d3fb401e86e050",
+    "tests/expression_native/cel.cpp": "331bf3cc803f8843c529c0dfaf74f73c626e8888e5ac6b23ffce9d49cc2734b6",
+    "tests/expression_native/compare.py": "d3cb28f5418076969e22f22d17a8dc464dd9652eed6647502f8a84aaaa9296dc",
+    "tests/expression_native/corpus.json": "3092a37192c4ae6bee522ad4219527060e2e0098e762cd40d95b9f1ae7eb5546",
+    "tests/expression_native/exprtk.cpp": "bf7476eb32fab8f5124b5f8a4915fc6ab01b8d10984c1403f60c2ba75e06317d",
+    "tests/expression_native/exprtk_int64_probe.cpp": "30ffe660c620971701c72e1d38054e34d06272363cbc0433e85c48115711e536",
+    "tests/expression_native/exprtk_lazy_probe.cpp": "a6900f503d57b9f09f4ec3b1b817a6c4b68a9174176bcd0d8bf7afd4ceb774dd",
+    "tests/expression_native/generate_cases.py": "f560ae96845abbdf802ca566035cd052b46e56a3deb26caa7fbb050c4e4d7430",
+    "tests/expression_native/prepare.py": "cc019bd518dd263580813174113235ff0fa4204badbdee5bfb68ba4d4923cea6",
+    "tests/expression_native/sources.json": "cf7dc3fc808ec598471caa17bd1397e9264cf1bdfaa19d1e3fcfb9affdc876ed",
+    "tests/expression_native/test_compare.py": "ace22442a2c93b2d4ff30d1a3485d75031bcdd733e87339eb4694cdcb624dd6a"
+  },
+  "compiler": "Homebrew clang version 22.1.8\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/Cellar/llvm/22.1.8/bin\nConfiguration file: /opt/homebrew/Cellar/llvm/22.1.8/etc/clang/arm64-apple-darwin25.cfg",
+  "python": "Python 3.14.6",
+  "cmake": "cmake version 3.31.6",
+  "ninja": "1.13.2",
+  "flags": [
+    "-O2",
+    "-g0",
+    "-fno-fast-math",
+    "-ffp-contract=off"
+  ],
+  "target": "arm64-apple-macos14.0",
+  "ambient_header_paths": "CPATH/CPLUS_INCLUDE_PATH/C_INCLUDE_PATH removed only in child build environments",
+  "source_preparation": "all 1203 original CEL files verified against archive; ExprTk header and readme verified by SHA256",
+  "not_run": [
+    "Linux",
+    "Contract SDK intrinsic integration",
+    "Spine/WAMR contract execution",
+    "paid/live provider requests"
+  ],
+  "host": {
+    "kernel": "25.1.0",
+    "architecture": "arm64",
+    "macos": "26.1"
+  },
+  "benchmark_binary_sha256": {
+    "cel": "2058d92a96cf228e598280c62b9707025009640f6df89e71add270ac7871d789",
+    "exprtk": "fb5ce2789628ff71b7a3baf946a29365c8c3ef8a0d16784b80f3d0825f33d210"
+  },
+  "review": {
+    "independent_backend_review": "PASS (macOS research only)",
+    "independent_donor_and_evidence_review": "PASS (current source hashes and all archived raw records verified)",
+    "python_harness_tests": "6/6 PASS",
+    "format_and_whitespace": "PASS",
+    "production_qualification": "NOT_RUN"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "forge.expression.native.artifacts.v1",
+  "source_base": "e51c6929fd120d13976963e9d633ba77b3044e01",
+  "corpus_sha256": "3092a37192c4ae6bee522ad4219527060e2e0098e762cd40d95b9f1ae7eb5546",
+  "files": {
+    "build-manifest.json": {
+      "sha256": "fb5097f5137e1ee52abc480e5d4db270bb3728a52686d27112e119027f589f43",
+      "bytes": 3221
+    },
+    "raw.tar.gz": {
+      "sha256": "39f7e178ac2b12b7f0edc417e0efa380bc6a2b748b3d78e50ed596aebebce37d",
+      "bytes": 22822
+    },
+    "report.json": {
+      "sha256": "189f998e483f626c919a3fad55b81bf1df1a1d19b0339ee8933bd201044e4854",
+      "bytes": 105340
+    },
+    "report.md": {
+      "sha256": "c834f9769d4ada7033298643ccc5f32436607d4afea2ac0c10684380ecd41c43",
+      "bytes": 3385
+    }
+  },
+  "raw_entries": 281,
+  "scope": "macOS native research; no Linux, guest, Spine/WAMR or live provider qualification"
+}

@@ -1,0 +1,21 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+
+cc_binary(
+    name = "cel_native",
+    srcs = ["cel.cpp", "benchmark.hpp", "cases.inc"],
+    deps = [
+        "//checker:checker_options",
+        "//checker:standard_library",
+        "//checker:type_checker_builder_factory",
+        "//common:decl",
+        "//common:minimal_descriptor_pool",
+        "//common:type",
+        "//common:value",
+        "//parser:pratt_parser",
+        "//runtime:activation",
+        "//runtime:runtime",
+        "//runtime:runtime_options",
+        "//runtime:standard_runtime_builder_factory",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
