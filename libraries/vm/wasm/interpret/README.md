@@ -542,6 +542,20 @@ including host code, gaps and another module's code. Stop and join sampling
 before moving, replacing or destroying that observer. Native maps are immutable:
 `relocate()` rejects them rather than pretending that LLVM-owned code moved.
 Product code owns the sampling driver; the VM owns mapping and lifetime.
+
+On LLVM 22+, instruction profiling disables the legacy MachineSink code-generation
+pass for that profiled module only. The pass can merge a guest instruction's
+debug location with generated scaffolding into line zero, losing the original
+WASM offset. WAMR carries the profiling policy in module metadata and applies it
+through `TargetPassConfig` in its bounded caller-thread JIT compiler. Ordinary
+JIT keeps its existing optimization pipeline; profiling can change generated
+code and execution cost. Other optimizations can still remove instructions, and
+unknown addresses remain unknown rather than inheriting a neighboring offset.
+The JIT-only `test_forge_wamr_jit_profile_map` decodes the actual native divisions
+from the public profiling fixture and checks every instruction byte, cancellation
+reuse, foreign code and unmapped gaps. The sampling tests retain their original
+timers, workloads and assertions.
+
 The [current qualification](../../../../docs/donors/forge-wamr-dev-integration-20261018.md)
 separates the implementation and static review from platform/runtime acceptance.
 

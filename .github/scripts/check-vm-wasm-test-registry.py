@@ -39,7 +39,8 @@ def main():
     }
     if args.jit == "ON":
         required.update(("test_forge_wamr_jit_bridge", "test_forge_wamr_jit_native_maps",
-                         "test_forge_wamr_jit_error_threads"))
+                         "test_forge_wamr_jit_error_threads", "test_forge_wamr_jit_profile_map",
+                         "test_forge_package_vm_wasm_interpret_component"))
     if args.aot == "ON":
         required.update(("wamr_export_names_compile", "wamr_export_names_runtime",
                          "wamr_optimizing_session_bounded", "wamr_optimizing_session_probe_late",

@@ -284,6 +284,17 @@ qualification remain acceptance gates. Ordinary JIT execution and function-level
 timing alone do not establish equivalent behavior. Callers must stop and join
 sampling before moving or destroying an observer; native maps cannot be relocated.
 
+The LLVM 22+ profiling compiler now disables legacy MachineSink only for modules
+that explicitly enable instruction profiling. In the native ARM64 reproduction,
+that pass merged both unsigned divisions' debug locations with line-zero runtime
+scaffolding, making their PCs translate to `UINT32_MAX`. The regression decodes
+the real native instructions and requires their original WASM offsets before and
+after cancellation, with unchanged native addresses and bytes. It also preserves
+unknown gaps and foreign-address rejection. This does not change the public API,
+sampling deadlines, workloads or existing assertions. Ordinary JIT retains the
+pass; profiled code may have a different execution cost. Linux/x86_64 execution
+and full package qualification remain separate gates.
+
 ## Native Signal API Break
 
 Explicitly approved on 2026-10-18. This is an intentional public C++ source/API

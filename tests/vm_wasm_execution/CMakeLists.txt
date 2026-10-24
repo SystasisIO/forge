@@ -70,6 +70,17 @@ if(FORGE_ENABLE_VM_WASM_LLVM_JIT)
    add_test(NAME test_forge_wamr_jit_native_maps COMMAND test_forge_wamr_jit_native_maps)
    set_tests_properties(test_forge_wamr_jit_native_maps PROPERTIES
       TIMEOUT 120 LABELS "vm_wasm_interpret;jit;native_mapping" RUN_SERIAL TRUE)
+   add_executable(test_forge_wamr_jit_profile_map ../vm_wamr/jit/profile_map_probe.cpp)
+   target_link_libraries(test_forge_wamr_jit_profile_map PRIVATE forge_vm_wasm_interpret LLVM)
+   target_include_directories(test_forge_wamr_jit_profile_map PRIVATE
+      "${PROJECT_SOURCE_DIR}/libraries/vm/wasm/interpret"
+      "$<TARGET_PROPERTY:forge_vm_wasm_interpret,INCLUDE_DIRECTORIES>"
+      ${LLVM_INCLUDE_DIRS})
+   target_compile_definitions(test_forge_wamr_jit_profile_map PRIVATE
+      "$<TARGET_PROPERTY:forge_vm_wasm_interpret,COMPILE_DEFINITIONS>")
+   add_test(NAME test_forge_wamr_jit_profile_map COMMAND test_forge_wamr_jit_profile_map)
+   set_tests_properties(test_forge_wamr_jit_profile_map PROPERTIES
+      TIMEOUT 30 LABELS "vm_wasm_interpret;jit;instruction_profile" RUN_SERIAL TRUE)
    add_executable(test_forge_wamr_jit_error_threads ../vm_wamr/jit/error_thread_probe.cpp)
    target_link_libraries(test_forge_wamr_jit_error_threads PRIVATE forge_vm_wasm_interpret)
    target_include_directories(test_forge_wamr_jit_error_threads PRIVATE

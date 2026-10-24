@@ -455,7 +455,7 @@ jobs:
         run: |
           read -r -a targets <<< "$VM_RUNTIME_TEST_TARGETS"
           if [[ "$WAMR_JIT" == "ON" ]]; then
-            targets+=(test_forge_wamr_jit_native_maps test_forge_wamr_jit_error_threads)
+            targets+=(test_forge_wamr_jit_native_maps test_forge_wamr_jit_error_threads test_forge_wamr_jit_profile_map)
           fi
           if [[ "$WAMR_AOT" == "ON" ]]; then
             targets+=(test_forge_vm_wasm_optimizing test_forge_vm_wasm_optimizing_traps
@@ -464,7 +464,9 @@ jobs:
             targets+=(test_forge_vm_wasm_optimizing_stack_capacity)
             targets+=(wamr_export_name_fixture test_forge_vm_wasm_optimizing_export_names)
             targets+=(wamr_optimizing_fixtures wasm_compiler)
-            # The optimizing label also selects the real installed package test.
+          fi
+          if [[ "$WAMR_JIT" == "ON" || "$WAMR_AOT" == "ON" ]]; then
+            # Both labels select real installed-package consumers.
             targets+=(test_forge_package_install)
           fi
           cmake --build "$WAMR_BUILD_DIR" --target "${targets[@]}" -j 2
@@ -521,6 +523,9 @@ jobs:
             ${{ env.WAMR_BUILD_DIR }}/tests/vm_wasm_optimizing/*.linkmap
             ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-optimizing-component/package-tests.*
             ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-optimizing-component/*.linkmap
+            ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-interpret-component/package-tests.*
+            ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-interpret-component/Testing/Temporary/LastTest.log
+            ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-interpret-component/*.linkmap
 
   llvm-wamr-linux:
     needs: linux-toolchain
