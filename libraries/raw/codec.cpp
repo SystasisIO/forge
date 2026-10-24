@@ -15,11 +15,11 @@ import forge.raw.exceptions;
 namespace forge::raw::detail {
 
 datastream<std::vector<std::uint8_t>> make_input_stream(std::span<const std::uint8_t> input, unpack_limits limits) {
-   return datastream<std::vector<std::uint8_t>>{
-       input, forge::raw::detail::allocation_limits{.elements = limits.max_container_elements,
-                                                    .total_elements = limits.max_total_container_elements,
-                                                    .bytes = limits.max_bytes,
-                                                    .first_container_elements = limits.first_container_elements}};
+   return datastream<std::vector<std::uint8_t>>{input, make_allocation_limits(limits)};
+}
+
+datastream<std::vector<std::uint8_t>> make_input_stream(std::span<const std::uint8_t> input, bounded_unpack_limits limits) {
+   return datastream<std::vector<std::uint8_t>>{input, make_allocation_limits(limits)};
 }
 
 [[noreturn]] void fail_codec(const char* message) {

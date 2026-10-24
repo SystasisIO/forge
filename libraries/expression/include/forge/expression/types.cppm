@@ -51,6 +51,9 @@ export namespace forge::raw {
 template <> struct enum_wire_type<forge::expression::type> {
    using type = std::uint8_t;
    static constexpr bool shared = true;
+   static constexpr bool is_valid(type value) {
+      return value <= static_cast<type>(forge::expression::type::map_uint64);
+   }
 };
 
 } // namespace forge::raw

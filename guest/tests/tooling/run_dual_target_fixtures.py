@@ -470,18 +470,38 @@ add_subdirectory(../shared shared-build)
         encoding="utf-8",
     )
     (host_library / "CMakeLists.txt").write_text(
-        """forge_add_contract_library(
+        """add_library(host_public INTERFACE)
+add_library(Host::Public ALIAS host_public)
+target_compile_definitions(host_public INTERFACE HOST_PUBLIC_VALUE=42)
+add_library(host_private STATIC native_dependency.cpp)
+add_library(Host::Private ALIAS host_private)
+set(_private_dependencies Host::Private)
+if(FORGE_TEST_DUPLICATE_NATIVE_DEPENDENCY)
+   list(APPEND _private_dependencies Host::Public)
+endif()
+forge_add_contract_library(
    host_sibling ID host.sibling
    MODULE_BASE_DIRS include
    MODULE_SOURCES include/value.cppm
+   PUBLIC_LIBRARIES Host::Public
+   PRIVATE_LIBRARIES ${_private_dependencies}
 )
 """,
         encoding="utf-8",
     )
     (host_library / "include").mkdir()
     (host_library / "include" / "value.cppm").write_text(
-        "export module host.sibling;\n",
+        """module;
+#if !defined(HOST_PUBLIC_VALUE) || HOST_PUBLIC_VALUE != 42
+#error Native contract dependencies did not propagate CMake usage requirements
+#endif
+export module host.sibling;
+export namespace host { inline constexpr int sibling_value = HOST_PUBLIC_VALUE; }
+""",
         encoding="utf-8",
+    )
+    (host_library / "native_dependency.cpp").write_text(
+        "int native_dependency_value() { return 42; }\n", encoding="utf-8"
     )
     host_command = [
         cmake,
@@ -498,6 +518,26 @@ add_subdirectory(../shared shared-build)
         sdk = run("xcrun", "--sdk", "macosx", "--show-sdk-path").strip()
         host_command.append(f"-DCMAKE_OSX_SYSROOT={sdk}")
     run(*host_command)
+    build(cmake, output / "host-build", "host_sibling")
+    duplicate_host_command = list(host_command)
+    duplicate_host_command[duplicate_host_command.index(str(output / "host-build"))] = str(
+        output / "host-duplicate-build"
+    )
+    duplicate_host_command.append("-DFORGE_TEST_DUPLICATE_NATIVE_DEPENDENCY=ON")
+    run_failure(*duplicate_host_command, contains="duplicate contract dependency owner: host_public")
+    run_failure(
+        cmake,
+        "-S",
+        str(host_project),
+        "-B",
+        str(output / "host-graph-guest-build"),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_TOOLCHAIN_FILE={contract_package / 'ForgeContractToolchain.cmake'}",
+        f"-DForgeContract_DIR={contract_package}",
+        f"-DFORGE_CONTRACT_SOURCE_ROOT={host_source}",
+        contains="contract dependency is not guest-compatible: Host::Public",
+    )
 
     duplicate = source_root / "duplicate-id"
     write_negative_project(
@@ -530,6 +570,25 @@ forge_add_contract_library(
    MODULE_BASE_DIRS include
    MODULE_SOURCES include/protocol.cppm
    PUBLIC_LIBRARIES host_only
+)
+""",
+        modules={
+            "include/protocol.cppm": "export module negative.protocol;\n"
+        },
+    )
+
+    private_host_only = source_root / "private-host-only"
+    write_negative_project(
+        private_host_only,
+        cmake_body="""
+add_library(host_only STATIC IMPORTED)
+set_target_properties(host_only PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/host-only.a")
+add_library(Host::Only ALIAS host_only)
+forge_add_contract_library(
+   negative_protocol ID negative.private_host_only
+   MODULE_BASE_DIRS include
+   MODULE_SOURCES include/protocol.cppm
+   PRIVATE_LIBRARIES Host::Only
 )
 """,
         modules={
@@ -1043,6 +1102,7 @@ target_compile_definitions(negative PRIVATE UNDECLARED_VALUE=2)
     cases = (
         (duplicate, "duplicate Forge Contract owner ID"),
         (host_only, "contract dependency is not guest-compatible"),
+        (private_host_only, "contract dependency is not guest-compatible"),
         (forward_edge, "unknown Contract SDK dependency target"),
         (mutated_target, "post-declaration target mutation is unsupported"),
         (

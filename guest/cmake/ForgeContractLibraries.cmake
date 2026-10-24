@@ -986,6 +986,13 @@ endfunction()
 
 function(_forge_contract_dependency input scope target_output owner_output)
    _forge_contract_resolve_target("${input}" _target)
+   if(NOT FORGE_CONTRACT_GUEST)
+      # Native composition uses ordinary CMake dependencies. Only guest compilation
+      # requires SDK ownership; aliases still share one resolved duplicate identity.
+      set(${target_output} "${_target}" PARENT_SCOPE)
+      set(${owner_output} "${_target}" PARENT_SCOPE)
+      return()
+   endif()
    get_target_property(_owner "${_target}" FORGE_CONTRACT_OWNER_ID)
    if(NOT _owner)
       get_target_property(

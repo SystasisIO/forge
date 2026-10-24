@@ -1,11 +1,13 @@
 module;
 
 #include <boost/describe.hpp>
+#include <boost/describe/enum_to_string.hpp>
 #include <boost/pfr/core.hpp>
 
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -76,17 +78,47 @@ struct unpack_limits {
    std::uint32_t first_container_elements = max_array_elements;
 };
 
+struct bounded_unpack_limits {
+   unpack_limits allocations{};
+   std::size_t max_total_bytes = max_byte_array_size;
+   bool reject_noncanonical_varints = true;
+   bool reject_unknown_enum_values = true;
+};
+
 } // namespace forge::raw
 
 namespace forge::raw::detail {
 
+constexpr allocation_limits make_allocation_limits(unpack_limits limits) {
+   return {.elements = limits.max_container_elements,
+           .total_elements = limits.max_total_container_elements,
+           .bytes = limits.max_bytes,
+           .first_container_elements = limits.first_container_elements};
+}
+
+constexpr allocation_limits make_allocation_limits(bounded_unpack_limits limits) {
+   auto result = make_allocation_limits(limits.allocations);
+   result.total_bytes = limits.max_total_bytes;
+   result.reject_noncanonical_varints = limits.reject_noncanonical_varints;
+   result.reject_unknown_enum_values = limits.reject_unknown_enum_values;
+   return result;
+}
+
 datastream<std::vector<std::uint8_t>> make_input_stream(std::span<const std::uint8_t> input, unpack_limits limits = {});
+datastream<std::vector<std::uint8_t>> make_input_stream(std::span<const std::uint8_t> input, bounded_unpack_limits limits);
 
 } // namespace forge::raw::detail
 
 export namespace forge::raw {
 
 static_assert(CHAR_BIT == 8, "Forge raw serialization requires 8-bit bytes");
+
+template <typename Byte, typename Limits = unpack_limits>
+   requires((std::is_same_v<Byte, char> || std::is_same_v<Byte, std::uint8_t>) &&
+            (std::is_same_v<Limits, unpack_limits> || std::is_same_v<Limits, bounded_unpack_limits>))
+datastream<const Byte*> make_input_stream(const Byte* data, std::size_t size, Limits limits = {}) {
+   return datastream<const Byte*>{data, size, detail::make_allocation_limits(limits)};
+}
 
 namespace detail {
 
@@ -108,10 +140,15 @@ template <typename Stream> void require_container_allocation(Stream& stream, std
    }
 }
 
-template <typename Stream> void require_byte_allocation(const Stream& stream, std::size_t size, const char* message) {
+template <typename Stream> void require_byte_allocation(Stream& stream, std::size_t size, const char* message) {
    require(size <= max_byte_array_size, message);
    if constexpr (requires { stream.allocation_limits(); }) {
       if (size > stream.allocation_limits().bytes) {
+         fail_allocation(message);
+      }
+   }
+   if constexpr (requires { stream.consume_allocation_bytes(size); }) {
+      if (!stream.consume_allocation_bytes(size)) {
          fail_allocation(message);
       }
    }
@@ -251,6 +288,11 @@ template <typename Stream> std::uint32_t unpack_unsigned_int(Stream& stream) {
       encoded |= static_cast<std::uint32_t>(octet & 0x7fU) << shift;
       shift += 7U;
    } while ((static_cast<std::uint8_t>(byte) & 0x80U) != 0U);
+   if constexpr (requires { stream.allocation_limits().reject_noncanonical_varints; }) {
+      require(!stream.allocation_limits().reject_noncanonical_varints || shift == 7U ||
+                  (static_cast<std::uint8_t>(byte) & 0x7fU) != 0U,
+              "raw unsigned varint is not canonical");
+   }
    return encoded;
 }
 
@@ -289,6 +331,24 @@ namespace detail {
 template <typename T>
 using enum_codec_type_t = std::conditional_t<shared_enum_wire_v<T>, enum_wire_type_t<T>, std::underlying_type_t<T>>;
 
+template <typename Stream, typename T> void validate_enum(Stream& stream, T value) {
+   if constexpr (requires { stream.allocation_limits().reject_unknown_enum_values; }) {
+      if (!stream.allocation_limits().reject_unknown_enum_values) {
+         return;
+      }
+      using wire = enum_wire_type_t<T>;
+      if constexpr (requires { { enum_wire_type<T>::is_valid(wire{}) } -> std::convertible_to<bool>; }) {
+         const auto encoded = static_cast<std::underlying_type_t<T>>(value);
+         require(std::in_range<wire>(encoded) && enum_wire_type<T>::is_valid(static_cast<wire>(encoded)),
+                 "raw enum value is not declared");
+      } else if constexpr (boost::describe::has_describe_enumerators<T>::value) {
+         require(boost::describe::enum_to_string(value, nullptr) != nullptr, "raw enum value is not declared");
+      } else {
+         fail_codec("raw enum has no value metadata");
+      }
+   }
+}
+
 template <typename Stream, typename T> void pack_enum(Stream& stream, T value) {
    using wire = enum_codec_type_t<T>;
    const auto underlying = static_cast<std::underlying_type_t<T>>(value);
@@ -305,6 +365,7 @@ template <typename Stream, typename T> void unpack_enum(Stream& stream, T& value
       require(std::in_range<std::underlying_type_t<T>>(encoded), "enum wire value is outside its underlying range");
    }
    value = static_cast<T>(encoded);
+   validate_enum(stream, value);
 }
 
 } // namespace detail
@@ -467,6 +528,11 @@ template <typename Stream> void unpack(Stream& stream, signed_int& value) {
       encoded |= static_cast<std::uint32_t>(octet & 0x7fU) << shift;
       shift += 7U;
    } while ((static_cast<std::uint8_t>(byte) & 0x80U) != 0U);
+   if constexpr (requires { stream.allocation_limits().reject_noncanonical_varints; }) {
+      detail::require(!stream.allocation_limits().reject_noncanonical_varints || shift == 7U ||
+                          (static_cast<std::uint8_t>(byte) & 0x7fU) != 0U,
+                      "raw signed varint is not canonical");
+   }
    value.value = static_cast<std::int32_t>((encoded >> 1U) ^ (0U - (encoded & 1U)));
 }
 
@@ -707,6 +773,11 @@ template <typename Stream, typename T, std::size_t Size> void unpack(Stream& str
    static_assert(Size <= max_array_elements, "raw array exceeds the element limit");
    if constexpr ((std::is_arithmetic_v<T> || std::is_enum_v<T>) && !std::is_same_v<std::remove_cv_t<T>, bool>) {
       detail::read_bytes(stream, std::as_writable_bytes(std::span{value}));
+      if constexpr (std::is_enum_v<T>) {
+         for (const auto item : value) {
+            detail::validate_enum(stream, item);
+         }
+      }
    } else {
       for (auto& item : value) {
          unpack(stream, item);
@@ -819,23 +890,39 @@ template <typename T> T unpack(std::span<const std::uint8_t> input, unpack_limit
    return value;
 }
 
+namespace detail {
+
+template <typename T, typename Limits>
+void unpack_exact_impl(std::span<const std::uint8_t> input, T& value, Limits limits) {
+   auto stream = make_input_stream(input, limits);
+   forge::raw::unpack(stream, value);
+   require(stream.remaining() == 0U, "raw input contains trailing bytes");
+}
+
+} // namespace detail
+
 template <typename T> void unpack_exact(std::span<const std::uint8_t> input, T& value) {
-   auto stream = detail::make_input_stream(input);
-   unpack(stream, value);
-   detail::require(stream.remaining() == 0U, "raw input contains trailing bytes");
+   detail::unpack_exact_impl(input, value, unpack_limits{});
 }
 
 template <typename T> void unpack_exact(std::span<const std::uint8_t> input, T& value, unpack_limits limits) {
-   auto stream = detail::make_input_stream(input, limits);
-   unpack(stream, value);
-   detail::require(stream.remaining() == 0U, "raw input contains trailing bytes");
+   detail::unpack_exact_impl(input, value, limits);
 }
 
 template <typename T> T unpack_exact(std::span<const std::uint8_t> input) {
    auto value = T{};
-   auto stream = detail::make_input_stream(input);
-   unpack(stream, value);
-   detail::require(stream.remaining() == 0U, "raw input contains trailing bytes");
+   detail::unpack_exact_impl(input, value, unpack_limits{});
+   return value;
+}
+
+template <typename T>
+void unpack_bounded_exact(std::span<const std::uint8_t> input, T& value, bounded_unpack_limits limits = {}) {
+   detail::unpack_exact_impl(input, value, limits);
+}
+
+template <typename T> T unpack_bounded_exact(std::span<const std::uint8_t> input, bounded_unpack_limits limits = {}) {
+   auto value = T{};
+   detail::unpack_exact_impl(input, value, limits);
    return value;
 }
 
@@ -849,10 +936,14 @@ template <typename T, typename ParentStream>
 T unpack_nested_exact(ParentStream& parent, std::span<const std::uint8_t> input) {
    const auto frame_limit =
        static_cast<std::uint32_t>(std::min<std::size_t>(input.size(), std::numeric_limits<std::uint32_t>::max()));
-   auto limits = unpack_limits{.max_container_elements = frame_limit,
-                               .max_total_container_elements = frame_limit,
-                               .max_bytes = frame_limit,
-                               .first_container_elements = frame_limit};
+   auto limits = bounded_unpack_limits{.allocations = {.max_container_elements = frame_limit,
+                                                        .max_total_container_elements = frame_limit,
+                                                        .max_bytes = frame_limit,
+                                                        .first_container_elements = frame_limit},
+                                        .max_total_bytes = std::numeric_limits<std::size_t>::max(),
+                                        .reject_noncanonical_varints = false,
+                                        .reject_unknown_enum_values = false};
+   auto& allocations = limits.allocations;
 
    if constexpr (requires {
                     parent.allocation_limits();
@@ -860,26 +951,50 @@ T unpack_nested_exact(ParentStream& parent, std::span<const std::uint8_t> input)
                     parent.consume_cumulative_container_elements(std::size_t{});
                  }) {
       const auto& parent_limits = parent.allocation_limits();
-      limits.max_container_elements = static_cast<std::uint32_t>(
+      allocations.max_container_elements = static_cast<std::uint32_t>(
           std::min<std::size_t>({parent_limits.elements, input.size(), std::numeric_limits<std::uint32_t>::max()}));
-      limits.max_total_container_elements = static_cast<std::uint32_t>(
+      allocations.max_total_container_elements = static_cast<std::uint32_t>(
           std::min<std::size_t>(parent.remaining_container_elements(), std::numeric_limits<std::uint32_t>::max()));
-      limits.max_bytes = static_cast<std::uint32_t>(
+      allocations.max_bytes = static_cast<std::uint32_t>(
           std::min<std::size_t>({parent_limits.bytes, input.size(), std::numeric_limits<std::uint32_t>::max()}));
-      limits.first_container_elements = limits.max_container_elements;
+      allocations.first_container_elements = allocations.max_container_elements;
+      if constexpr (requires { parent_limits.first_container_elements; }) {
+         allocations.first_container_elements = static_cast<std::uint32_t>(
+             std::min<std::size_t>(parent_limits.first_container_elements, allocations.max_container_elements));
+      }
+      if constexpr (requires { parent_limits.reject_noncanonical_varints; }) {
+         limits.reject_noncanonical_varints = parent_limits.reject_noncanonical_varints;
+      }
+      if constexpr (requires { parent_limits.reject_unknown_enum_values; }) {
+         limits.reject_unknown_enum_values = parent_limits.reject_unknown_enum_values;
+      }
+      if constexpr (requires { parent.remaining_allocation_bytes(); }) {
+         limits.max_total_bytes = parent.remaining_allocation_bytes();
+      }
 
       auto value = T{};
       auto nested = detail::make_input_stream(input, limits);
       unpack(nested, value);
       detail::require(nested.remaining() == 0U, "raw input contains trailing bytes");
       const auto consumed =
-          static_cast<std::size_t>(limits.max_total_container_elements) - nested.remaining_container_elements();
+          static_cast<std::size_t>(allocations.max_total_container_elements) - nested.remaining_container_elements();
+      if constexpr (requires { parent.consume_container_elements(std::size_t{}); }) {
+         if (nested.has_consumed_container() && !parent.consume_container_elements(0U)) {
+            detail::fail_allocation("raw nested input exceeds the first container limit");
+         }
+      }
       if (!parent.consume_cumulative_container_elements(consumed)) {
          detail::fail_allocation("raw nested input exceeds the cumulative element limit");
       }
+      if constexpr (requires { parent.consume_allocation_bytes(std::size_t{}); }) {
+         const auto consumed_bytes = limits.max_total_bytes - nested.remaining_allocation_bytes();
+         if (!parent.consume_allocation_bytes(consumed_bytes)) {
+            detail::fail_allocation("raw nested input exceeds the cumulative byte limit");
+         }
+      }
       return value;
    } else {
-      return unpack_exact<T>(input, limits);
+      return unpack_bounded_exact<T>(input, limits);
    }
 }
 

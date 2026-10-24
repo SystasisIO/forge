@@ -18,9 +18,43 @@ export import forge.raw.codec;
 
 export namespace forge::contract {
 
+// Opt in as Contract::decode_policy. Contracts without this member retain CDT action decoding.
+struct bounded_decode_policy {
+   std::uint32_t max_action_bytes = 16U * 1024U;
+   std::uint32_t max_call_bytes = 16U * 1024U;
+   forge::raw::bounded_unpack_limits unpack{.allocations = {.max_container_elements = 1024U,
+                                                            .max_total_container_elements = 4096U,
+                                                            .max_bytes = 16U * 1024U,
+                                                            .first_container_elements = 1024U},
+                                            .max_total_bytes = 16U * 1024U,
+                                            .reject_noncanonical_varints = true,
+                                            .reject_unknown_enum_values = true};
+};
+
 namespace detail {
 
 inline constexpr auto local_buffer_size = std::size_t{512};
+
+template <typename Contract>
+inline constexpr bool has_bounded_decode_policy_v = requires { Contract::decode_policy; };
+
+template <typename Contract> auto invocation_input_stream(const std::uint8_t* data, std::size_t size) {
+   if constexpr (has_bounded_decode_policy_v<Contract>) {
+      static_assert(std::is_same_v<std::remove_cv_t<decltype(Contract::decode_policy)>, bounded_decode_policy>,
+                    "Contract::decode_policy must be a constexpr bounded_decode_policy");
+      return forge::raw::make_input_stream(data, size, Contract::decode_policy.unpack);
+   } else {
+      return forge::datastream<const std::uint8_t*>{data, size};
+   }
+}
+
+template <typename Contract> constexpr std::uint32_t call_byte_limit() {
+   if constexpr (has_bounded_decode_policy_v<Contract>) {
+      return Contract::decode_policy.max_call_bytes;
+   } else {
+      return std::numeric_limits<std::uint32_t>::max();
+   }
+}
 
 class invocation_buffer {
  public:
@@ -86,15 +120,20 @@ void set_packed_result(const Result& result, const char* size_error, Setter&& se
 template <typename Contract, typename Result, typename... Arguments, typename Method>
 void execute_action_impl(chain::protocol::name self, chain::protocol::name first_receiver, Method method) {
    const auto size = action_data_size();
+   if constexpr (has_bounded_decode_policy_v<Contract>) {
+      check(size <= Contract::decode_policy.max_action_bytes, "action data exceeds contract decode byte limit");
+   }
    auto bytes = invocation_buffer{size};
    if (size != 0U) {
       check(read_action_data(bytes.data(), size) == size, "failed to read complete action data");
    }
 
    auto arguments = std::tuple<std::decay_t<Arguments>...>{};
-   auto stream = forge::datastream<const std::uint8_t*>{bytes.data(), bytes.size()};
+   auto stream = invocation_input_stream<Contract>(bytes.data(), bytes.size());
    forge::raw::unpack(stream, arguments);
-   // Pinned CDT intentionally accepts trailing action data after the declared argument tuple.
+   if constexpr (has_bounded_decode_policy_v<Contract>) {
+      check(stream.remaining() == 0U, "action data contains trailing bytes");
+   }
 
    auto contract_stream = typename Contract::stream_type{
        reinterpret_cast<const char*>(bytes.data()),
@@ -126,11 +165,12 @@ template <typename Contract, typename Result, typename... Arguments, typename Me
 void execute_call_impl(chain::protocol::name sender, chain::protocol::name receiver, Method method) {
    static_cast<void>(sender);
    const auto size = get_call_data(nullptr, 0U);
+   check(size <= call_byte_limit<Contract>(), "sync call data exceeds contract decode byte limit");
    auto bytes = invocation_buffer{size};
    if (size != 0U) {
       check(get_call_data(bytes.data(), size) == size, "failed to read complete sync call data");
    }
-   auto stream = forge::datastream<const std::uint8_t*>{bytes.data(), bytes.size()};
+   auto stream = invocation_input_stream<Contract>(bytes.data(), bytes.size());
    auto header = call_data_header{};
    forge::raw::unpack(stream, header);
    check(header.version == 0U, "unsupported sync call data version");

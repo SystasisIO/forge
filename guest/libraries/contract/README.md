@@ -29,6 +29,54 @@ implementations do not live here.
 The raw codec owns CDT-compatible aggregate and fixed C-array traversal; the
 EOSIO compatibility header only aliases the same `forge::datastream`.
 
+Contracts may opt in to exact bounded invocation decoding:
+
+```cpp
+import forge.contract.dispatcher;
+
+class [[forge::contract("bounded")]] bounded : public forge::contract::context {
+ public:
+   using context::context;
+   static constexpr auto decode_policy = forge::contract::bounded_decode_policy{
+       .max_action_bytes = 16U * 1024U,
+       .max_call_bytes = 16U * 1024U};
+   // Actions and synchronous calls use this one policy.
+};
+```
+
+The generated dispatcher checks the complete payload size before allocating or
+reading its payload, decodes arguments with Raw budgets, and rejects trailing
+bytes before constructing the contract or invoking a method. A call's byte cap
+includes its 12-byte version/function header. Call routing first reads only that
+fixed-size header into stack storage; the selected entry checks its complete
+envelope before allocating or reading the argument payload. This also supports
+manually composed tables with different contract policies without changing
+the existing two-field `call_entry` source contract.
+
+Defaults are 16 KiB per action/call, 1,024 entries per element-counted container,
+4,096 cumulative entries, and 16 KiB both per string/byte vector and cumulatively
+for their contents. `decode_policy.unpack` holds the ordinary
+`forge::raw::bounded_unpack_limits`; its `allocations` member reuses the ordinary
+four-field `unpack_limits` and can select smaller budgets. Defaults also reject
+nonminimal varints and enum values outside their declared domain. Enum metadata
+comes from `enum_wire_type<Enum>::is_valid(wire_value)` or Boost.Describe; strict
+decoding rejects enums without either. Boolean decoding already requires 0/1
+in all profiles.
+
+The bounded policy controls SDK/Raw decoding. Custom codecs must recurse through
+Raw using their supplied stream, and framed codecs must use
+`unpack_nested_exact(parent, frame)` to preserve budgets and strict flags.
+Independent streams and arbitrary C++ allocations inside custom codecs are not
+sandboxed. Element counts and byte-content budgets do not bound all physical
+heap overhead or `sizeof(T)`; execution memory limits and suitable contract DTOs
+remain necessary. A truncated value may allocate within those admitted limits
+before its range check fails.
+
+Contracts without `decode_policy` retain CDT-compatible action decoding,
+including permitted trailing action bytes. Existing calls continue to require
+exact input. No existing contract silently acquires the new limits, enum-domain
+checks or minimal-varint requirement.
+
 The installed C surface, including `<forge/contract/types.h>` and
 `<forge/contract/intrinsics.h>`, is generated during SDK assembly. C ABI records
 come from `guest/cmake/types.h.in`; generated `.h` files are not source headers
@@ -130,3 +178,9 @@ end to end. The unchanged CDT database C fixture and an independent
 Spring-derived signature manifest prove all 60 database imports through the
 generated headers and VM parser. The full donor manifest separately verifies
 all 152 imports and capability sets.
+
+The installed `recordtest` consumer opts in with smaller limits to exercise real
+WASM action and call dispatch: valid Raw arguments, limits before payload reads,
+constructor effects, malformed lengths, cumulative budgets, unknown enums,
+nonminimal varints, invalid bools, truncation, trailing bytes and no-argument
+entry points. The unchanged legacy consumer retains its CDT trailing-byte test.

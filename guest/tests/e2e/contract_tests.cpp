@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -106,6 +107,10 @@ struct invocation {
    std::vector<std::uint8_t> return_value;
    std::vector<std::uint8_t> call_data;
    std::vector<std::uint8_t> call_return_value;
+   std::optional<std::uint32_t> reported_action_size;
+   std::optional<std::uint32_t> reported_call_size;
+   mutable std::size_t action_reads = 0;
+   mutable std::size_t call_reads = 0;
 
    void eosio_assert_message(std::uint32_t test, wasm::span<const char> message) {
       if (test == 0U) {
@@ -114,10 +119,11 @@ struct invocation {
    }
 
    std::uint32_t action_data_size() const {
-      return static_cast<std::uint32_t>(action_data.size());
+      return reported_action_size.value_or(static_cast<std::uint32_t>(action_data.size()));
    }
 
    std::uint32_t read_action_data(wasm::span<char> destination) const {
+      ++action_reads;
       const auto size = std::min(destination.size(), action_data.size());
       if (size == 0U) {
          return static_cast<std::uint32_t>(action_data.size());
@@ -132,6 +138,10 @@ struct invocation {
    }
 
    std::uint32_t get_call_data(wasm::span<char> destination) const {
+      if (destination.size() == 0U) {
+         return reported_call_size.value_or(static_cast<std::uint32_t>(call_data.size()));
+      }
+      ++call_reads;
       const auto size = std::min(destination.size(), call_data.size());
       std::copy_n(call_data.begin(), size, destination.begin());
       return static_cast<std::uint32_t>(size == 0U ? call_data.size() : size);
@@ -372,6 +382,130 @@ BOOST_AUTO_TEST_CASE(contract_sdk_stream_operator_preserves_canonical_bool_bytes
    const auto packed = forge::raw::unpack_exact<std::vector<std::uint8_t>>(host.return_value);
    const auto expected = std::vector<std::uint8_t>{0x01U, 0xa5U};
    BOOST_TEST(packed == expected, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(bounded_dispatch_checks_action_and_call_size_before_payload_read_or_constructor) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_RECORD_WASM);
+   auto action_host = invocation{.reported_action_size = std::numeric_limits<std::uint32_t>::max()};
+   BOOST_CHECK_EXCEPTION(apply(code, action_host, "recordtest", "ping"), contract_abort, [](const auto& error) {
+      return std::string_view{error.what()}.find("decode byte limit") != std::string_view::npos;
+   });
+   BOOST_TEST(action_host.action_reads == 0U);
+   BOOST_CHECK(action_host.return_value.empty());
+
+   auto call_host = invocation{.reported_call_size = std::numeric_limits<std::uint32_t>::max()};
+   call_host.call_data = forge::raw::pack(std::uint32_t{0}, call_id("pingcall"));
+   BOOST_CHECK_EXCEPTION(call(code, call_host, "alice", "recordtest"), contract_abort, [](const auto& error) {
+      return std::string_view{error.what()}.find("decode byte limit") != std::string_view::npos;
+   });
+   BOOST_TEST(call_host.call_reads == 1U); // Only the fixed 12-byte stack header was read.
+   BOOST_CHECK(call_host.return_value.empty());
+   BOOST_CHECK(call_host.call_return_value.empty());
+}
+
+BOOST_AUTO_TEST_CASE(bounded_dispatch_uses_real_raw_arguments_for_actions_and_calls) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_RECORD_WASM);
+   const auto arguments = forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                           std::vector<std::vector<std::uint32_t>>{{7U, 11U}},
+                                           std::vector<std::string>{"a", "b"});
+   auto action_host = invocation{.action_data = arguments};
+   BOOST_CHECK_NO_THROW(apply(code, action_host, "recordtest", "bounded"));
+   BOOST_TEST(action_host.return_value == forge::raw::pack(std::uint8_t{7}), boost::test_tools::per_element());
+
+   auto call_host = invocation{};
+   call_host.call_data = forge::raw::pack(std::uint32_t{0}, call_id("boundedcall"));
+   call_host.call_data.insert(call_host.call_data.end(), arguments.begin(), arguments.end());
+   BOOST_CHECK_NO_THROW(call(code, call_host, "alice", "recordtest"));
+   BOOST_TEST(call_host.call_return_value == action_host.return_value, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(bounded_dispatch_rejects_malformed_raw_before_constructor_or_method) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_RECORD_WASM);
+   const auto valid = forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                      std::vector<std::vector<std::uint32_t>>{{7U, 11U}},
+                                      std::vector<std::string>{"a", "b"});
+   struct malformed_case {
+      std::vector<std::uint8_t> bytes;
+      std::string_view message;
+   };
+   auto cases = std::vector<malformed_case>{};
+   auto trailing = valid;
+   trailing.push_back(0U);
+   cases.push_back({std::move(trailing), "trailing bytes"});
+   auto invalid_bool = valid;
+   invalid_bool[0] = 2U;
+   cases.push_back({std::move(invalid_bool), "not canonical"});
+   auto invalid_enum = valid;
+   invalid_enum[1] = 3U;
+   cases.push_back({std::move(invalid_enum), "not declared"});
+   auto overlong = valid;
+   overlong[2] |= 0x80U;
+   overlong.insert(overlong.begin() + 3, 0U);
+   cases.push_back({std::move(overlong), "not canonical"});
+   cases.push_back({forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                      forge::unsigned_int{std::numeric_limits<std::uint32_t>::max()}),
+                    "element limit"});
+   cases.push_back({forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                      std::vector<std::vector<std::uint32_t>>{{1U, 2U}, {3U, 4U}, {5U, 6U}},
+                                      std::vector<std::string>{}),
+                    "element limit"});
+   cases.push_back({forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                      std::vector<std::vector<std::uint32_t>>{},
+                                      std::vector<std::string>{std::string(25U, 'a'), std::string(25U, 'b')}),
+                    "byte limit"});
+   cases.push_back({forge::raw::pack(true, std::uint8_t{1}, forge::unsigned_int{7U},
+                                      std::vector<std::vector<std::uint32_t>>{}, forge::unsigned_int{1U},
+                                      forge::unsigned_int{33U}),
+                    "byte limit"});
+   auto truncated = valid;
+   truncated.pop_back();
+   cases.push_back({std::move(truncated), "datastream"});
+
+   for (const auto& item : cases) {
+      BOOST_TEST_CONTEXT(item.message) {
+         auto action_host = invocation{.action_data = item.bytes};
+         BOOST_CHECK_EXCEPTION(apply(code, action_host, "recordtest", "bounded"), contract_abort,
+                                [&](const auto& error) {
+                                   return std::string_view{error.what()}.find(item.message) != std::string_view::npos;
+                                });
+         BOOST_CHECK(action_host.return_value.empty());
+         auto call_host = invocation{};
+         call_host.call_data = forge::raw::pack(std::uint32_t{0}, call_id("boundedcall"));
+         call_host.call_data.insert(call_host.call_data.end(), item.bytes.begin(), item.bytes.end());
+         BOOST_CHECK_EXCEPTION(call(code, call_host, "alice", "recordtest"), contract_abort, [&](const auto& error) {
+            return std::string_view{error.what()}.find(item.message) != std::string_view::npos;
+         });
+         BOOST_CHECK(call_host.return_value.empty());
+         BOOST_CHECK(call_host.call_return_value.empty());
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(bounded_dispatch_requires_empty_payload_for_no_argument_actions_and_calls) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_RECORD_WASM);
+   auto action_host = invocation{.action_data = forge::raw::pack(std::uint8_t{0})};
+   BOOST_CHECK_THROW(apply(code, action_host, "recordtest", "ping"), contract_abort);
+   BOOST_CHECK(action_host.return_value.empty());
+   auto call_host = invocation{};
+   call_host.call_data = forge::raw::pack(std::uint32_t{0}, call_id("pingcall"), std::uint8_t{0});
+   BOOST_CHECK_THROW(call(code, call_host, "alice", "recordtest"), contract_abort);
+   BOOST_CHECK(call_host.return_value.empty());
+   BOOST_CHECK(call_host.call_return_value.empty());
+}
+
+BOOST_AUTO_TEST_CASE(bounded_decode_options_preserve_portable_native_and_wasm_wire) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_RECORD_WASM);
+   auto host = invocation{};
+   BOOST_CHECK_NO_THROW(apply(code, host, "recordtest", "limitswire"));
+   const auto bytes = forge::raw::unpack_exact<std::vector<std::uint8_t>>(host.return_value);
+   const auto expected = forge::raw::pack(std::uint32_t{4}, std::uint32_t{6}, std::uint32_t{32}, std::uint32_t{4});
+   BOOST_TEST(bytes == expected, boost::test_tools::per_element());
+   BOOST_TEST(bytes.size() == 16U);
 }
 
 BOOST_AUTO_TEST_CASE(legacy_dispatcher_serializes_user_defined_action_records) {
