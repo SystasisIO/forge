@@ -1,4 +1,5 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+include("${CMAKE_CURRENT_LIST_DIR}/expression.cmake")
 
 add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
 target_link_libraries(test_forge_auth_attestation PRIVATE
@@ -2746,8 +2747,42 @@ add_custom_target(
    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --prefix ${FORGE_PACKAGE_INSTALL_PREFIX} --component dev
    DEPENDS forge
 )
+if(TARGET forge_expression_worker)
+   add_dependencies(test_forge_package_install forge_expression_worker)
+endif()
 if(TARGET wasm_compiler)
    add_dependencies(test_forge_package_install wasm_compiler)
+endif()
+
+if(TARGET forge_expression)
+   set(FORGE_EXPRESSION_PACKAGE_TEST_ROOT "" CACHE PATH
+      "Nonexistent external directory for installed expression acceptance; empty creates a fresh temporary directory")
+   set(_forge_expression_package_test
+      "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/package_expression_component/verify_relocation.py"
+      --source-root "${CMAKE_SOURCE_DIR}"
+      --build-root "${CMAKE_BINARY_DIR}"
+      --toolchain-cache "${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
+      --worker "$<TARGET_FILE:forge_expression_worker>"
+      --generator "${CMAKE_GENERATOR}"
+      --cmake "${CMAKE_COMMAND}"
+      --configuration "$<CONFIG>"
+      --libdir "${CMAKE_INSTALL_LIBDIR}"
+      --datadir "${CMAKE_INSTALL_DATADIR}"
+      "--boost-dir=${Boost_DIR}")
+   foreach(_forge_expression_dependency_prefix IN LISTS CMAKE_PREFIX_PATH)
+      list(APPEND _forge_expression_package_test --dependency-prefix "${_forge_expression_dependency_prefix}")
+   endforeach()
+   if(FORGE_EXPRESSION_PACKAGE_TEST_ROOT)
+      list(APPEND _forge_expression_package_test --work-root "${FORGE_EXPRESSION_PACKAGE_TEST_ROOT}")
+   endif()
+   add_custom_target(test_forge_package_expression_component
+      COMMAND ${_forge_expression_package_test} DEPENDS forge forge_expression_worker VERBATIM)
+   if(TARGET wasm_compiler)
+      add_dependencies(test_forge_package_expression_component wasm_compiler)
+   endif()
+   add_test(NAME test_forge_package_expression_component COMMAND ${_forge_expression_package_test})
+   set_tests_properties(test_forge_package_expression_component PROPERTIES
+      DEPENDS test_forge_package_install RUN_SERIAL TRUE TIMEOUT 1800 LABELS "package;expression;macos")
 endif()
 
 if(TARGET forge_vm_wasm_compiler AND TARGET wasm_compiler AND UNIX AND FORGE_WAMR_COMPILER_TEST_AS_BYTES)

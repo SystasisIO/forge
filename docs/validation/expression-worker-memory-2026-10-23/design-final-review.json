@@ -1,0 +1,151 @@
+{
+  "schema": "forge.expression.design.review.v1",
+  "reviewed_at_utc": "2026-10-23T10:11:40.492249+00:00",
+  "checkout": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1",
+  "status": "PASS_NATIVE_AND_GENUINE_INSTALLED_SCOPE",
+  "mode": "Independent read-only source and retained-artifact review; no configure, build, test execution or product edit",
+  "scope": [
+    "private native allocation domain",
+    "parent/worker lifetime boundary",
+    "CMake dependency discovery and exports",
+    "genuine installed/relocated consumer fixture"
+  ],
+  "findings": [
+    {
+      "id": "expression-package-dependency-closure",
+      "severity": "blocking",
+      "status": "CLOSED_EXECUTION_VERIFIED",
+      "previous_problem": "The expression export required Forge Asio, Forge Raw and Boost::process, but expression component discovery expanded only exceptions/variant and did not discover Boost process. The fixture separately discovered and linked Threads, masking incomplete package discovery.",
+      "files": [
+        "cmake/ForgeConfig.cmake.in:170",
+        "cmake/ForgeConfig.cmake.in:908",
+        "tests/package_expression_component/CMakeLists.txt:11",
+        "tests/package_expression_component/CMakeLists.txt:38"
+      ],
+      "verified_fix": "expression now expands asio/raw; expression requests Boost process; the consumer only finds Forge expression and only links Forge::forge_expression. Asio expansion reaches the existing Threads discovery.",
+      "execution_acceptance": "PASS: the genuine relocated consumer configures, rebuilds public modules, links and runs with only find_package(Forge COMPONENTS expression) and Forge::forge_expression, without manual Threads discovery/linkage."
+    },
+    {
+      "id": "late-preparation-cancellation-ownership",
+      "status": "CLOSED",
+      "files": [
+        "libraries/expression/program.cpp:96",
+        "libraries/expression/program.cpp:134",
+        "libraries/expression/runtime_impl.cpp"
+      ],
+      "verified_fix": "Both preparation routes pass the preallocated state ID slot into the joined strand invocation, which records an accepted remote ID before outer reply delivery. State destruction retires that ID."
+    },
+    {
+      "id": "private-implementation-pairing",
+      "status": "CLOSED",
+      "verified_fix": "runtime.cpp remains paired with the public runtime partition; runtime_impl.cpp is paired with details/runtime_impl.hxx and is listed in the expression target."
+    },
+    {
+      "id": "worker-export-and-provenance",
+      "status": "CLOSED_EXECUTION_VERIFIED",
+      "verified_fix": "Build-tree sidecars use actual TARGET_FILE per configuration; installed helper paths are relative from LIBDIR/cmake/Forge to BINDIR. The fixture binds installed worker identity to worker/backend/runtime manifests, pins and notices, and probes actual producer/source/Bazel denial before relocation."
+    }
+  ],
+  "open_blocking_findings": [],
+  "observed_checks": {
+    "git_diff_check": "PASS",
+    "worker_binary_sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+    "worker_binary_matches_manifest": true,
+    "stale_worker_source_hashes": [],
+    "retained_native_ctest": "PASS: 17 public cases and 5 direct worker cases, 2/2 targets, 3.90 seconds; reviewed in the preceding retained-artifact pass",
+    "installed_relocated_consumer": "PASS",
+    "installed_gate_result_reviewed": true
+  },
+  "residual_risks_and_exclusions": [
+    "Only the owned native allocation pool is capped; total RSS, virtual address space, loader/stdio/TSD/unwinder overhead and fixed runtime image storage are outside that pool. The native stack has its own 8 MiB bound.",
+    "System imports are qualified by source reachability for the pinned scalar CEL profile, not asserted generally allocation-free. Profile/runtime changes require renewed review.",
+    "Current-host macOS 26.1 ARM64 qualification does not establish support on older macOS despite the producer deployment target.",
+    "An injected executor must remain running through shutdown; destroying a live runtime is a host-thread operation unless shutdown_async has completed.",
+    "Queue saturation and parent allocator failure injection were not independently executed by this reviewer.",
+    "Installed acceptance is for this current-host macOS ARM64 Release configuration. External Boost and normal parent C++ runtime remain package dependencies; this is not a standalone dependency-free bundle or a full Forge test-suite pass."
+  ],
+  "reviewed_file_sha256": {
+    "cmake/ForgeConfig.cmake.in": "4b3718351f250969aa98e3b24177d9b972dfab063ceed68eeb8d04e7fe411239",
+    "cmake/ForgeCEL.cmake": "456d0e2757e484126104f27ad117fe3ff3614c95d4f26cac0c915dc452e7f9b3",
+    "cmake/ForgeCELTargets.cmake.in": "61ac616a220c5e53e2a720fb5ee82e784cc690c190fdc8637cac8fcc99d15b7d",
+    "libraries/expression/CMakeLists.txt": "ec27cb0acea5331360cbeb425c9bf2ef4d5c1fb02971cce346909f68eb88aacc",
+    "libraries/expression/include/forge/expression/program.cppm": "c57f4b2ebced81be904e80c304ac828e26f9e3e37edaf7ae396b6cdd803d6f26",
+    "libraries/expression/include/forge/expression/runtime.cppm": "58b0022940c572810440559ccbfefc154a7a6bc4775943d884073c78137c1994",
+    "libraries/expression/program.cpp": "f3fc643ef1da48426581df8d188bd51d410e504ce7909af71bec428caaf280fd",
+    "libraries/expression/runtime.cpp": "d3c27d1fd086afdc4f966cdefdfb19418b6b5ed4c7c9be552b762b152ab09c69",
+    "libraries/expression/runtime_impl.cpp": "2b96d306f70d07fd4612a6818bc66cb8e22de86a31987bdd170eb97ffec24e20",
+    "libraries/expression/details/runtime_impl.hxx": "bb0b90932767c00f9580b16b1df1ce321e0a8497abe840009c358349ecec3996",
+    "tests/package_expression_component/CMakeLists.txt": "c4002827a757f5a89f7ce51197fbe0b6b9120e52230a4a474077392a641c92dc",
+    "tests/package_expression_component/verify_relocation.py": "0ac40340e40a893b2e80d38eb0e905d95942de01bcb003481d06c8c85daed2bb",
+    "tools/expression-worker/CMakeLists.txt": "d9a565a7d7d55620261f2c9b2cb1877e8f635974c5529b7e1e83a79d3ca426b7"
+  },
+  "installed_gate_review": {
+    "root": "/private/tmp/forge-expression-installed-20261023/gate",
+    "result_sha256": "0aa8e8857c82a13b81874bff98d389ae9fefb395bc189637da1ab6b88b749284",
+    "commands_sha256": "6944f35a02a9015ebe1a69c91436ec409011196dea6a50a92803b4fcb34d7141",
+    "commands_reviewed": 8,
+    "install_command": "genuine cmake --install producer --component dev --config Release",
+    "only_explicit_consumer_package": "Forge CONFIG REQUIRED COMPONENTS expression",
+    "only_explicit_consumer_link": "Forge::forge_expression",
+    "configure_build_runtime_all_under_same_sandbox": true,
+    "denial_probe_exit_codes": {
+      "source": 1,
+      "build": 1,
+      "old_prefix": 1,
+      "bazel": 71
+    },
+    "all_denial_logs_report_operation_not_permitted": true,
+    "source_build_and_old_prefix_file_reads_denied": true,
+    "actual_producer_bazel_execution_denied": true,
+    "original_prefix_absent": true,
+    "relocated_worker": "/private/tmp/forge-expression-installed-20261023/gate/relocated/bin/forge-expression-worker",
+    "installed_worker_sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+    "worker_matches_producer_and_manifest": true,
+    "installed_worker_manifest_matches_producer": true,
+    "provenance_hashes": {
+      "worker_manifest_sha256": "ed80eb21bcd7f2f1200c04660a5b409ef9ce4ee13223f16869479f377e7433e8",
+      "backend_manifest_sha256": "b5752605ebce268489d53eb9feb4e3712251f8c244b70c34538340f62ac09cb5",
+      "runtime_manifest_sha256": "78a3d2836a30bc448168f86e25a5f6a5bc31333b7418dc68fa41269366b8fd8b",
+      "source_pins_sha256": "d1a9548c9f7bddb1cb20118c2ae63262d68450d1146ea7d9b632005d2b201cbc",
+      "verified_notices": 46
+    },
+    "verified_notices": 46,
+    "consumer_sha256": "0eb040460fddb142c1cefb6e34e171015b036e0442b81045d8281bbdc3bf1d53",
+    "rebuilt_public_module_source_count": 60,
+    "all_rebuilt_public_module_sources_under_relocated_prefix": true,
+    "selected_forge_archives_match_real_producer": {
+      "libforge_expression.a": true,
+      "libforge_asio.a": true,
+      "libforge_raw.a": true,
+      "libforge_variant.a": true,
+      "libforge_codec_base64.a": true,
+      "libforge_codec_hex.a": true,
+      "libforge_exceptions.a": true,
+      "libforge_core.a": true
+    },
+    "consumer_private_cel_runtime_or_allocator_objects": [],
+    "consumer_uses_ordinary_shared_libcxx_and_external_boost": true,
+    "worker_shared_dependencies": [
+      "CoreFoundation",
+      "libSystem"
+    ],
+    "gate_total_seconds": 10.495105,
+    "review_method": "Read-only inspection of raw commands/logs, actual installed files, CMake metadata, compiler dependency records, link map, otool output and SHA-256 comparisons. No build, configuration or runtime execution by reviewer."
+  },
+  "installed_evidence_sha256": {
+    "result.json": "0aa8e8857c82a13b81874bff98d389ae9fefb395bc189637da1ab6b88b749284",
+    "commands.jsonl": "6944f35a02a9015ebe1a69c91436ec409011196dea6a50a92803b4fcb34d7141",
+    "sandbox.sb": "5b03b9229feda12bba7be5bd17cb03c44b971fd5ab004c4bb442fd5f0b540dcf",
+    "install.log": "c29147b7927d692df3faf9f2270d7890390e2494e31bb113aae27c3a33a07682",
+    "configure.log": "365b7cd781ffe3578b5c143dc34bcc12a509313b816b3121c07a01f2365206f7",
+    "build.log": "cd8a3ab6966cd1ece8090547c61499b4e37e2ddea20f736429a1e9fe1235eb5e",
+    "runtime.log": "e196e5a80b5b8a8524766c45dbf58aa909ddb3939d2a4a8fe2f8345d4950dce6",
+    "deny-source.log": "6f8e3a6e57705402ccbbd73f1e4adb626e7f789b6a53351b80ec3507e3f1f503",
+    "deny-build.log": "1e773b64e7e1fbdf6b4812cab44f67df2c6c43ddd60adadcf3236ba5a088b9cf",
+    "deny-old_prefix.log": "b048e688627e0a1a41ad3fa5da673d5aa863998a286f3a23fad66330e794a391",
+    "deny-bazel.log": "b235fc356cf34ee55f00b11fe767d5937de7afd3736eeecac71a7cf266c7c2e4",
+    "consumer-source/CMakeLists.txt": "c4002827a757f5a89f7ce51197fbe0b6b9120e52230a4a474077392a641c92dc",
+    "consumer-source/main.cpp": "cab007df5ea52428da0cd39a5d8dfa395db927a74decdd5183730d3001c660ba",
+    "consumer-build/expression.linkmap": "15eef104c820589f7abbb1a3e53c2403cacc334353910ca0b8be9311fbbc19ce"
+  }
+}

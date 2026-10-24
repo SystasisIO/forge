@@ -1,0 +1,89 @@
+{
+  "schema": "forge.expression.worker.acceptance.v1",
+  "status": "PASS",
+  "baseline": "2d299f016b2c7f8b3ee1a9cd8ffb10f640d6c9d7",
+  "dev_base": "e51c6929fd120d13976963e9d633ba77b3044e01",
+  "platform": {
+    "os": "macOS 26.1",
+    "build": "25B78",
+    "architecture": "arm64",
+    "llvm": "22.1.8",
+    "deployment_target": "15.0",
+    "older_macos_qualified": false
+  },
+  "worker": {
+    "name": "forge-expression-worker",
+    "sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+    "architecture": "arm64"
+  },
+  "memory_contract": {
+    "scope": "owned allocation pool, not RSS or virtual address space",
+    "maximum_pool_bytes": 67108864,
+    "stack_bytes": 8388608,
+    "program_slots": 64,
+    "pending_callers": 16,
+    "os_and_fixed_runtime_image_overhead_separate": true
+  },
+  "gates": {
+    "native_link_audit": "PASS",
+    "focused_ctest": {
+      "status": "PASS",
+      "tests": 2,
+      "public_cases": 17,
+      "direct_worker_cases": 5,
+      "elapsed_seconds": 3.9
+    },
+    "arithmetic_oracle": {
+      "status": "PASS",
+      "cases": 1460
+    },
+    "real_prepare_oom": {
+      "status": "PASS",
+      "capacities_bytes": [
+        262144,
+        524288
+      ]
+    },
+    "real_evaluate_oom": {
+      "status": "PASS",
+      "capacities_bytes": [
+        524288,
+        655360,
+        786432,
+        917504,
+        1048576
+      ],
+      "same_input_success_with_sufficient_pool": true
+    },
+    "public_real_oom": {
+      "status": "PASS",
+      "pool_bytes": 524288
+    },
+    "format": "PASS",
+    "library_pairing": "PASS",
+    "full_forge_aggregate": "PASS",
+    "installed_relocated_consumer": {
+      "status": "PASS",
+      "elapsed_seconds": 10.495105,
+      "ninja_steps": 85,
+      "original_prefix_absent": true,
+      "sandbox_denials": {
+        "source": 1,
+        "build": 1,
+        "old_prefix": 1,
+        "bazel": 71
+      },
+      "verified_notices": 46,
+      "helper_matches_native_oom_binary": true,
+      "consumer_only_expression_target": true
+    }
+  },
+  "resource_note": "The genuine full Forge aggregate passed after measured resource pauses and a one-job exception for heavy translation units. Explicitly approved foreign CMakeFiles were removed after process checks and diagnostic preservation. Focused and relocated-consumer builds used four jobs. The installed relocation/runtime gate passed independently.",
+  "not_run": [
+    "Linux",
+    "Contract SDK/WASM/WAMR",
+    "Spine",
+    "Turbine",
+    "live providers"
+  ]
+}

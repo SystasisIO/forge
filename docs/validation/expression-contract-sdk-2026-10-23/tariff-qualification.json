@@ -1,0 +1,10 @@
+{
+  "scope": "macos-forge-testhost-only",
+  "forge_version": "8.29.1",
+  "forge_config": "$QUALIFICATION/installed-native-r1/relocated/lib/cmake/Forge",
+  "sdk_prefix": "$QUALIFICATION/sdk-prefix",
+  "sdk_foundation_sha256": "24353aa33bdb91f84a049de4ad099c192789dee45c2397d04926e432d043dbbf",
+  "tariffs_wasm_sha256": "1f75e1de54dbc1b125bc52ba95c18bdaf77bed5ab140a28e0da8d0d3c8fd04de",
+  "consumer_wasm_sha256": "68249fffb4ef8923d6a484c2d42616ee7650c9bf809d0adbf3e42133dacce883",
+  "expression_worker_sha256": "5860185e74867e084861dd0553212194722d9c06548b9ac5721c45283b52da4c"
+}

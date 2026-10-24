@@ -1,0 +1,14 @@
+{
+  "name": "tariffs-final-host-build",
+  "cwd": "$SPINE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "--build",
+    "build/tariffs-host",
+    "--parallel",
+    "4"
+  ],
+  "started": 1792755661.725353,
+  "code": 0,
+  "seconds": 5.681296110153198
+}

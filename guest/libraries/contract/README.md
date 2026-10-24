@@ -41,6 +41,43 @@ EOSIO compatibility headers such as `<eosio/db.h>`.
 C++23 API over those declarations; they do not link host Forge DB code into a
 contract.
 
+## Optional CEL Expressions
+
+`forge.contract.expression` exposes the optional `expression_v1` host
+capability. It uses three imports from the same canonical registry:
+`expression_compile_v1`, `expression_import_v1` and `expression_evaluate_v1`.
+The existing 152 public CDT/Spring imports and 48 compiler/runtime imports
+retain their signatures. Generated `forge::contract::host::interface` retains
+the required baseline; the separate `host::expression_v1` interface describes
+the optional extension. A host must explicitly provide CEL support.
+
+```cpp
+#include <cstdint>
+
+import forge.contract.expression;
+
+auto program = forge::contract::expression::compile({
+   .source = "x + 1",
+   .variables = {{"x", forge::expression::type::int64}}
+});
+auto checked = forge::contract::expression::load(program);
+auto result = forge::contract::expression::evaluate({
+   .program = checked,
+   .inputs = {{"x", std::int64_t{41}}}
+});
+```
+
+`program` is a portable Raw artifact suitable for a contract table. It contains
+versioned checked CEL bytes and a digest, with no process-local program handle.
+Loading rechecks its CEL tree, types and references in the host; its digest is
+an identity check, not evidence that a supplied artifact is safe. The SDK does
+not include CEL, a parser, an evaluator, or the native worker in guest code.
+Requests and responses use the shared `forge.expression.artifact` DTOs and
+Forge Raw. The finite standard `std::variant` alternatives preserve signed and
+unsigned integers without a second serialization format. The wire limit is
+128 KiB; output storage belongs to the caller. Host failures terminate the
+invocation through the host's typed error path.
+
 ```cpp
 #include <forge/contract/serialize.hpp>
 
@@ -73,7 +110,8 @@ the host invocation transaction.
 ## Dependencies And Boundary
 
 The target depends only on `forge_guest_runtime`, the guest lanes of
-`forge.raw`, `forge.codec.*` and `forge.chain.protocol`, and the generated
+`forge.raw`, `forge.codec.*`, `forge.chain.protocol`, portable
+`forge.expression.artifact` values, and the generated
 intrinsic C header. Codec algorithms are prebuilt once into wasm32 archives;
 consumer builds compile their module interfaces and link those archives. The
 target owns no host binding implementation, filesystem, threads, deployment

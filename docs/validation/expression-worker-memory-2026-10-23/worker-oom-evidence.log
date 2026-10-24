@@ -1,0 +1,10 @@
+Running 2 test cases...
+actual CEL preparation allocation refusal at cap=262144
+actual CEL preparation allocation refusal at cap=524288
+actual CEL evaluation allocation refusal at cap=524288
+actual CEL evaluation allocation refusal at cap=655360
+actual CEL evaluation allocation refusal at cap=786432
+actual CEL evaluation allocation refusal at cap=917504
+actual CEL evaluation allocation refusal at cap=1048576
+
+*** No errors detected

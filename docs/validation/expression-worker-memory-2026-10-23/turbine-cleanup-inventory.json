@@ -1,0 +1,14 @@
+[
+  {
+    "worktree": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/turbine",
+    "configured_build_metadata": []
+  },
+  {
+    "worktree": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/turbine-app-stage0-composition",
+    "configured_build_metadata": []
+  },
+  {
+    "worktree": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/turbine-app-stage0-plugins",
+    "configured_build_metadata": []
+  }
+]

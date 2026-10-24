@@ -33,22 +33,25 @@ struct host::impl : compiler_builtins {
       using base::from_wasm;
 
       FORGE_VM_WASM_INTERPRET_FROM_WASM(copy_arguments, (forge::vm::wasm::interpret::wasm_ptr_t destination,
-                                               forge::vm::wasm::interpret::wasm_ptr_t source, forge::vm::wasm::interpret::wasm_size_t size)) {
+                                                         forge::vm::wasm::interpret::wasm_ptr_t source,
+                                                         forge::vm::wasm::interpret::wasm_size_t size)) {
          auto* destination_ptr = this->template validate_pointer<char>(destination, size);
          const auto* source_ptr = this->template validate_pointer<const char>(source, size);
          this->template validate_pointer<char>(destination, 1);
          return {destination_ptr, source_ptr, size};
       }
 
-      FORGE_VM_WASM_INTERPRET_FROM_WASM(compare_arguments, (forge::vm::wasm::interpret::wasm_ptr_t left, forge::vm::wasm::interpret::wasm_ptr_t right,
-                                                  forge::vm::wasm::interpret::wasm_size_t size)) {
+      FORGE_VM_WASM_INTERPRET_FROM_WASM(compare_arguments, (forge::vm::wasm::interpret::wasm_ptr_t left,
+                                                            forge::vm::wasm::interpret::wasm_ptr_t right,
+                                                            forge::vm::wasm::interpret::wasm_size_t size)) {
          const auto* left_ptr = this->template validate_pointer<const char>(left, size);
          const auto* right_ptr = this->template validate_pointer<const char>(right, size);
          return {left_ptr, right_ptr, size};
       }
 
-      FORGE_VM_WASM_INTERPRET_FROM_WASM(fill_arguments, (forge::vm::wasm::interpret::wasm_ptr_t destination, std::int32_t value,
-                                               forge::vm::wasm::interpret::wasm_size_t size)) {
+      FORGE_VM_WASM_INTERPRET_FROM_WASM(fill_arguments,
+                                        (forge::vm::wasm::interpret::wasm_ptr_t destination, std::int32_t value,
+                                         forge::vm::wasm::interpret::wasm_size_t size)) {
          auto* destination_ptr = this->template validate_pointer<char>(destination, size);
          this->template validate_pointer<char>(destination, 1);
          return {destination_ptr, value, size};
@@ -56,8 +59,10 @@ struct host::impl : compiler_builtins {
    };
 
    using functions =
-       forge::vm::wasm::interpret::registered_host_functions<impl, forge::vm::wasm::interpret::execution_interface, type_converter>;
-   using backend = forge::vm::wasm::interpret::backend<functions, wasm, forge::vm::wasm::interpret::compatibility_options>;
+       forge::vm::wasm::interpret::registered_host_functions<impl, forge::vm::wasm::interpret::execution_interface,
+                                                             type_converter>;
+   using backend =
+       forge::vm::wasm::interpret::backend<functions, wasm, forge::vm::wasm::interpret::compatibility_options>;
    template <typename T, std::size_t Alignment = alignof(T)>
    using input = forge::vm::wasm::interpret::argument_proxy<const T*, Alignment>;
    template <typename T, std::size_t Alignment = alignof(T)>
@@ -78,10 +83,17 @@ struct host::impl : compiler_builtins {
    using checksum512_output = output<capi_checksum512>;
 
    explicit impl(execution_limits limits);
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   impl(forge::expression::runtime& expressions, execution_limits limits);
+#endif
    ~impl();
 
    invocation_result invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
-                            std::uint64_t action, std::vector<std::uint8_t> data);
+                            std::uint64_t action, std::vector<std::uint8_t> data, invocation_options options = {});
+
+   std::uint32_t expression_compile_v1(std::span<const char> request, std::span<char> response);
+   std::uint32_t expression_import_v1(std::span<const char> request, std::span<char> response);
+   std::uint32_t expression_evaluate_v1(std::span<const char> request, std::span<char> response);
    std::optional<table> find_table(std::uint64_t code, std::uint64_t scope, std::uint64_t table_name);
    std::optional<key_value> find_primary(std::uint64_t code, std::uint64_t scope, std::uint64_t table_name,
                                          std::uint64_t primary);
@@ -290,14 +302,17 @@ struct host::impl : compiler_builtins {
 
    template <typename T> T run(boost::asio::awaitable<T> operation);
    void run(boost::asio::awaitable<void> operation);
-   void begin_invocation(std::uint64_t receiver, std::uint64_t first_receiver, std::vector<std::uint8_t> data);
+   void begin_invocation(std::uint64_t receiver, std::uint64_t first_receiver, std::vector<std::uint8_t> data,
+                         invocation_options options);
    void commit_invocation();
    void rollback_invocation();
    [[nodiscard]] std::chrono::steady_clock::duration remaining_execution_time() const;
    template <typename... Args> void execute(backend& vm, std::string_view function, Args&&... args) {
-      const auto remaining = remaining_execution_time();
-      vm.timed_run(forge::vm::wasm::interpret::watchdog{remaining},
-                   [&] { vm(*this, "env", function, std::forward<Args>(args)...); });
+      vm.with_invocation(this, forge::vm::wasm::interpret::compatibility_options{}, remaining_execution_time(),
+                         invocation_cancel_, [&] {
+                            static_cast<void>(remaining_execution_time());
+                            vm(*this, "env", function, std::forward<Args>(args)...);
+                         });
    }
    void register_intrinsics();
    void require_writable() const;
@@ -331,13 +346,16 @@ struct host::impl : compiler_builtins {
 
    forge::asio::runtime runtime_;
    execution_limits limits_;
+#if defined(FORGE_TOOLING_TESTING_EXPRESSION)
+   forge::expression::runtime* expressions_ = nullptr;
+#endif
    std::shared_ptr<memory_driver> driver_;
    std::optional<forge::db::object::store> store_;
    std::optional<forge::db::object::transaction> transaction_;
-   forge::vm::wasm::interpret::wasm_allocator allocator_;
    oracle_state state_;
    std::optional<oracle_state> state_before_invocation_;
    std::optional<std::chrono::steady_clock::time_point> invocation_deadline_;
+   std::stop_token invocation_cancel_;
    std::map<std::uint64_t, std::vector<std::uint8_t>> contracts_;
    std::uint64_t receiver_ = 0;
    std::uint64_t first_receiver_ = 0;

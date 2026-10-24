@@ -1,0 +1,21 @@
+{
+  "name": "sdk-surface-fixtures",
+  "cwd": "$FORGE",
+  "argv": [
+    "/opt/homebrew/bin/python3",
+    "guest/tests/tooling/check_sdk_surface.py",
+    "--manifest",
+    "guest/tests/tooling/sdk_surface_manifest.json",
+    "--registry",
+    "$QUALIFICATION/sdk-prefix/share/forge-contract/registry/intrinsics.json",
+    "--golden",
+    "guest/tests/tooling/spring_intrinsics.txt",
+    "--data-dir",
+    "$QUALIFICATION/sdk-prefix/share/forge-contract",
+    "--source-root",
+    "."
+  ],
+  "started": 1792755054.1207821,
+  "code": 0,
+  "seconds": 0.07848763465881348
+}

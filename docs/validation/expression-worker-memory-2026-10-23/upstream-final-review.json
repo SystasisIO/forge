@@ -1,0 +1,151 @@
+{
+  "schema": "forge.expression.upstream.final_review.v1",
+  "reviewed_at_utc": "2026-10-23T10:03:03.794696+00:00",
+  "status": "NATIVE_AND_INSTALLED_SCOPE_PASS",
+  "mode": "Product read-only; no builds, tests, or product edits performed in this final review",
+  "worker": {
+    "sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+    "architecture": "arm64",
+    "matches_live_manifest": true,
+    "matches_retained_manifest": true
+  },
+  "checks": {
+    "source_hash_count": 27,
+    "source_hash_mismatches": [],
+    "backend_manifest_reference_matches": true,
+    "runtime_manifest_reference_matches": true,
+    "runtime_object_mismatches": [],
+    "runtime_resolved_header_mismatches": [],
+    "runtime_depfile_mismatches": [],
+    "allocation_runtime_symbols_all_local": true,
+    "new_delete_binding": "Official llvm-nm identifies local __TEXT,__lcxx_override new/new[]; llvm-objdump shows operator new directly calling private _malloc at0x10000314c",
+    "shared_libraries": [
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "first_image_initializer": {
+      "image_offset": "0x000012DC",
+      "dyld_symbol": "<anon-000012DC>"
+    },
+    "first_initializer_address_proof": "dyld_info image offset0x12DC plus llvm-nm image base0x100000000 equals local hook0x1000012DC",
+    "diagnostics_policy": {
+      "first_initializer": "forge_expression_initialize_diagnostics",
+      "fatal_log_symbolization": false,
+      "fatal_log_stack_frames": 0,
+      "mutex_deadlock_detection": "ignore",
+      "native_stack_bytes": 8388608,
+      "core_dump_bytes": 0,
+      "sigpipe": "ignored before dependency C++ initializers",
+      "linked_unreachable_symbolizer_imports": [
+        "_backtrace_symbols"
+      ],
+      "os_unwinder_bookkeeping_outside_pool": true
+    },
+    "qualified_profile": {
+      "cel_commit": "9c562a306569e90c8dea6d3af71f4433aa386162",
+      "llvm_version": "22.1.8",
+      "profile_version": 1
+    },
+    "new_confirmed_allocator_escapes": [],
+    "unreachable_import_evidence": "Previously reviewed cctz local timezone, libc++ named/file/float/wide facets and Abseil log/mutex symbolization boundaries unchanged; no new runtime/profile source hash mismatch"
+  },
+  "existing_acceptance_evidence_reviewed": {
+    "focused_ctest": "PASS2/2 in3.90s;17 public cases and5 direct-worker cases, read retained final XML/log",
+    "arithmetic_oracle_cases": 1460,
+    "real_prepare_oom_capacities_bytes": [
+      262144,
+      524288
+    ],
+    "real_evaluate_oom_capacities_bytes": [
+      524288,
+      655360,
+      786432,
+      917504,
+      1048576
+    ],
+    "same_activation_success_with_sufficient_pool": true,
+    "reviewer_reran_tests": false
+  },
+  "artifact_followup": {
+    "file": "docs/validation/expression-worker-memory-2026-10-23/artifact-manifest.json",
+    "finding": "native-import-source-review.md checksum became stale after final addendum; all other reviewed artifact checksums matched",
+    "owner_resolution": "Root acknowledged; regenerate after final gate results and documentation edits"
+  },
+  "separate_gates": {
+    "full_forge_aggregate": "Genuine cmake --install --component dev succeeded; full aggregate status owned by sole builder and not independently rerun here",
+    "installed_relocated_consumer": "PASS; actual relocated worker hash and installed provenance chain independently rechecked; sandboxed configure/build/run evidence reviewed"
+  },
+  "not_run": [
+    "Linux",
+    "Contract SDK/WASM/WAMR",
+    "Spine",
+    "Turbine",
+    "live providers",
+    "older macOS execution"
+  ],
+  "memory_claim": "Owned allocation pool up to64MiB; no RSS/virtual-address/stack/OS-overhead claim. Stack8MiB is separate; fixed runtime image state and OS loader/unwinder/stdio/thread bookkeeping are explicitly outside pool.",
+  "evidence_directory": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/docs/validation/expression-worker-memory-2026-10-23",
+  "installed_gate_review": {
+    "reviewed_at_utc": "2026-10-23T10:10:37.125114+00:00",
+    "status": "PASS",
+    "gate_result_sha256": "0aa8e8857c82a13b81874bff98d389ae9fefb395bc189637da1ab6b88b749284",
+    "commands_sha256": "6944f35a02a9015ebe1a69c91436ec409011196dea6a50a92803b4fcb34d7141",
+    "worker_sha256": "de3a3cc989bcf3bb34aa17422e365fdda642941d79eb9b3835c316b447a1e43e",
+    "installed_worker_path": "/private/tmp/forge-expression-installed-20261023/gate/relocated/bin/forge-expression-worker",
+    "consumer_sha256": "0eb040460fddb142c1cefb6e34e171015b036e0442b81045d8281bbdc3bf1d53",
+    "installed_manifest_chain_checks": {
+      "worker_binary": true,
+      "worker_to_backend_manifest": true,
+      "worker_to_runtime_manifest": true,
+      "worker_to_backend_archive_identity": true,
+      "backend_source_pins": true,
+      "runtime_source_pins": true,
+      "runtime_archive_identity": true,
+      "unmodified_single_thread_runtime": true,
+      "source_pins_hash": true,
+      "BUILD_definition_hash": true,
+      "module_lock_hash": true,
+      "result_worker_manifest_hash": true,
+      "result_backend_manifest_hash": true,
+      "result_runtime_manifest_hash": true
+    },
+    "verified_notices": 46,
+    "consumer_linkmap_sha256": "15eef104c820589f7abbb1a3e53c2403cacc334353910ca0b8be9311fbbc19ce",
+    "consumer_linkmap_object_count": 50,
+    "consumer_linkmap_object_path_forbidden_hits": {
+      "private_CEL_backend": [],
+      "producer_source_or_build": [],
+      "old_install_prefix": []
+    },
+    "producer_diagnostic_literal_count": 12,
+    "producer_diagnostic_literals": [
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/expression/program.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/expression/runtime.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/expression/runtime_impl.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/expression/worker_protocol.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/raw/include/forge/raw/raw.cppm",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/asio/child_signal_registration_impl.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/asio/gate.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/raw/codec.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/raw/stream.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/variant/value.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/codec/base64/base64.cpp",
+      "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/libraries/codec/hex/hex.cpp"
+    ],
+    "producer_path_scope": "No producer source/build input objects or private CEL backend in actual consumer link-map. Diagnostic std::source_location literal strings retain12 producer paths; these are not read/link dependencies.",
+    "sandbox_denial_exit_codes": {
+      "source": 1,
+      "build": 1,
+      "old_prefix": 1,
+      "bazel": 71
+    },
+    "sandboxed_configure_build_run_exit_codes": {
+      "configure.log": 0,
+      "build.log": 0,
+      "runtime.log": 0
+    },
+    "original_prefix_absent": true,
+    "runtime_log": "Installed expression: exact arithmetic, named rounding, typed errors, concurrency and worker memory snapshot PASS",
+    "reviewer_reran_build_or_runtime": false
+  }
+}

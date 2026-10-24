@@ -1,0 +1,1108 @@
+{
+  "schema": "forge.expression.cel.build.v1",
+  "sources": {
+    "schema": "forge.expression.cel.sources.v1",
+    "cel": {
+      "commit": "9c562a306569e90c8dea6d3af71f4433aa386162",
+      "url": "https://codeload.github.com/cel-expr/cel-cpp/tar.gz/9c562a306569e90c8dea6d3af71f4433aa386162",
+      "sha256": "219218598ad5e64a69b2878c82df503feb3f8acf02c19b2356e840c15a7b0616"
+    },
+    "bazel": {
+      "version": "8.7.0",
+      "url": "https://github.com/bazelbuild/bazel/releases/download/8.7.0/bazel-8.7.0-darwin-arm64",
+      "sha256": "575f20fb23955e02f73519befd180df635b4ed0960c60f0e70fcc8d74014a713"
+    },
+    "llvm": {
+      "version": "22.1.8",
+      "files": {
+        "libcxxabi/src/cxa_exception_storage.cpp": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/src/cxa_exception_storage.cpp",
+          "sha256": "7de17cefbedbf94d7282fe3cde0e23e592b90c1d5e50db5d63009d7cfc877721"
+        },
+        "libcxxabi/src/cxa_exception.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/src/cxa_exception.h",
+          "sha256": "f6867fd35fc8bafde2f9348a017a2ca9938f577d648d7258d9aef780064ddb52"
+        },
+        "libcxxabi/LICENSE.TXT": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxxabi/LICENSE.TXT",
+          "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+        },
+        "libcxx/LICENSE.TXT": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libcxx/LICENSE.TXT",
+          "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+        },
+        "libunwind/LICENSE.TXT": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libunwind/LICENSE.TXT",
+          "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+        },
+        "compiler-rt/LICENSE.TXT": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/compiler-rt/LICENSE.TXT",
+          "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+        },
+        "libc/hdr/float_macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/float_macros.h",
+          "sha256": "84967a9f6b97010c64f30641fdecc4ca84c9fd6efd955a3937e918e2d6b2cf10"
+        },
+        "libc/hdr/func/aligned_alloc.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/aligned_alloc.h",
+          "sha256": "327c966e69b44fdf0332df460182ddac2d83ab840bd2add168b284d3728bfbc3"
+        },
+        "libc/hdr/func/free.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/free.h",
+          "sha256": "af289ee06d318c55c54ce7618cbf0ccb9342997e0434db3b7a6ddfcbf398270e"
+        },
+        "libc/hdr/func/malloc.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/func/malloc.h",
+          "sha256": "218300fe45990e8dcdf1ad6bda891e2a93983d9af41da51a4256c80e72e5d78d"
+        },
+        "libc/hdr/limits_macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/limits_macros.h",
+          "sha256": "46031d2df427a3d6e25c3c4091a62529cc1ce9607376f5c22e1dc05cf2fbb668"
+        },
+        "libc/hdr/stdint_proxy.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/stdint_proxy.h",
+          "sha256": "661348f7d45c035e904ec99c4eb8dea9e09c860a31218c40e39c841cd5b7bcf5"
+        },
+        "libc/hdr/types/atexithandler_t.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/types/atexithandler_t.h",
+          "sha256": "1d067ae45c75e2c403509cc698e551e94bc1f29ea2d38085c8d1f0366614e556"
+        },
+        "libc/hdr/types/size_t.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/hdr/types/size_t.h",
+          "sha256": "a47c73b8a31d6b31bc9ddfc8681ea8d68221f0dc466bce66e7dc17b28309b3a9"
+        },
+        "libc/include/llvm-libc-macros/cfloat128-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/cfloat128-macros.h",
+          "sha256": "d9d3ff9c342e4a218f3dea6c8dc467a43a1d78688446217a4b36c6e96ddb5510"
+        },
+        "libc/include/llvm-libc-macros/cfloat16-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/cfloat16-macros.h",
+          "sha256": "4110a4b63fa76caf25ddd491c3ef08495af410f5c92afa6d43907ccf59782ba3"
+        },
+        "libc/include/llvm-libc-macros/float-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/float-macros.h",
+          "sha256": "daf1a4104c7ed73d89049f6a8d40660cef78951f01de6fcf688788eb5065bbd4"
+        },
+        "libc/include/llvm-libc-macros/float16-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/float16-macros.h",
+          "sha256": "e3e18a3d3884a221b996aef98620e4ee3e42d8809e390c6c274f73faf0da78c1"
+        },
+        "libc/include/llvm-libc-macros/limits-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/limits-macros.h",
+          "sha256": "e855b46230611b23c62e306ec8b732c06b04001edb3dc3a46cfac5625362f768"
+        },
+        "libc/include/llvm-libc-macros/stdfix-macros.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-macros/stdfix-macros.h",
+          "sha256": "b760f61b4da46e9c8b763e891affe087dfb89553b6ecb4985567cb1b13c8aae8"
+        },
+        "libc/include/llvm-libc-types/__atexithandler_t.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/__atexithandler_t.h",
+          "sha256": "63b1548bd217f08e8a3f9524f798f6b7a171eff8a4f1c44bebfd3d4a04335fdd"
+        },
+        "libc/include/llvm-libc-types/cfloat128.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/cfloat128.h",
+          "sha256": "10d15329e8149cfefb6385f19cf14e4a86aca6cbf83cdcf36801fb5113af9aed"
+        },
+        "libc/include/llvm-libc-types/cfloat16.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/cfloat16.h",
+          "sha256": "bb0fb2145874d45a9c89505ead6f3a5bcf98c1c89e057b067e3f6b0ac0ccd11e"
+        },
+        "libc/include/llvm-libc-types/float128.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/float128.h",
+          "sha256": "940638bee993f2c4e5e96c66ea97478d1067131797a379db416b9d09240f4d82"
+        },
+        "libc/include/llvm-libc-types/size_t.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/include/llvm-libc-types/size_t.h",
+          "sha256": "5a7a6ed640a5f29f7e63d936980d77e087c1ba60eba572f61dc59d83a71b293f"
+        },
+        "libc/src/__support/CPP/array.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/array.h",
+          "sha256": "dfda1b4f82e9b261acf54dd720a73c6cc9713109a95a4f8a9d3cd15a1ed155cb"
+        },
+        "libc/src/__support/CPP/bit.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/bit.h",
+          "sha256": "ba59641b9efd37a358b95cd943ddf26a9019768b7edf984983c8615bd106fcc0"
+        },
+        "libc/src/__support/CPP/cstddef.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/cstddef.h",
+          "sha256": "2f744e654509271ee4d51aff901b08d0eb1da80f32321b4ae399dfb948d47a8c"
+        },
+        "libc/src/__support/CPP/iterator.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/iterator.h",
+          "sha256": "16e50508dcb40ed48e5f03fcc90aa29568222409fb5227ae2216f7066155796d"
+        },
+        "libc/src/__support/CPP/limits.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/limits.h",
+          "sha256": "268b3946d33d0adb83b2894511dcbec14ce71c6011f2cf313df5301d6aa4bb54"
+        },
+        "libc/src/__support/CPP/mutex.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/mutex.h",
+          "sha256": "adedde883a29b9c5836494330007f84c7e990ce9c56127e4e72bd265b410f535"
+        },
+        "libc/src/__support/CPP/new.cpp": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/new.cpp",
+          "sha256": "a817de7c3839196bca13d07f112440bd6f6a9a4defab36c8575ef78214d89928"
+        },
+        "libc/src/__support/CPP/new.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/new.h",
+          "sha256": "1c149d2654c20f6a0ad6efec2d10f0921052ca7a4f00c755626c99373fb5badf"
+        },
+        "libc/src/__support/CPP/type_traits.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits.h",
+          "sha256": "75bb93fa75f54abfcfbb05253cdd407ac476b0ce2fb4e8bb3892af32d4016b80"
+        },
+        "libc/src/__support/CPP/type_traits/add_lvalue_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_lvalue_reference.h",
+          "sha256": "922ccbd50ba6aa312dba09f34f5a273024dd60f5fcc164b143f3ee36df4b09a8"
+        },
+        "libc/src/__support/CPP/type_traits/add_pointer.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_pointer.h",
+          "sha256": "41129ca66f61c275f4f141dc1b51262dc7a177e951b2904803609864dd659a72"
+        },
+        "libc/src/__support/CPP/type_traits/add_rvalue_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/add_rvalue_reference.h",
+          "sha256": "22d9d1d1c7ddb951a850d5609856f702b650f020388d7c49940b0f0f06ad0178"
+        },
+        "libc/src/__support/CPP/type_traits/aligned_storage.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/aligned_storage.h",
+          "sha256": "c30bad387a0e992db668532acb6e6d1a311f2004ffbdb17b29c1ffc33fe6a795"
+        },
+        "libc/src/__support/CPP/type_traits/always_false.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/always_false.h",
+          "sha256": "ab9f97d0b3e128fc22f67086d7854b35dbeec1b8fdd7de66792e24f9f5132597"
+        },
+        "libc/src/__support/CPP/type_traits/bool_constant.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/bool_constant.h",
+          "sha256": "a4d91d87d201d6953c68fdbbfbcd6e009bfc1e4d3468f2779fcf468a39873032"
+        },
+        "libc/src/__support/CPP/type_traits/conditional.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/conditional.h",
+          "sha256": "9a4a2074bdc737b7e1ab586b5062617178da7def7b29b0d62b1f9c31c59c5656"
+        },
+        "libc/src/__support/CPP/type_traits/decay.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/decay.h",
+          "sha256": "1680751c40cc6f1ee9d30a8e672391bad151109d230b122594b0d546a7e2e21c"
+        },
+        "libc/src/__support/CPP/type_traits/enable_if.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/enable_if.h",
+          "sha256": "d5c360cbfc74283eb2ac17089607f740d0ee874cea6dba1bd598404364f924d6"
+        },
+        "libc/src/__support/CPP/type_traits/false_type.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/false_type.h",
+          "sha256": "a4b8de2e728c787d64f23ddc363de6c79d3873ba11446ea437b19da00d13972d"
+        },
+        "libc/src/__support/CPP/type_traits/has_unique_object_representations.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/has_unique_object_representations.h",
+          "sha256": "47c255fce1da848fdfacc0869b8f350066fe998439c821bf337a05c8faca37f3"
+        },
+        "libc/src/__support/CPP/type_traits/integral_constant.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/integral_constant.h",
+          "sha256": "43bf74239a5d69812c4aff16603aa80d2b39498a4628d7bbd4dd2be135473c70"
+        },
+        "libc/src/__support/CPP/type_traits/invoke.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/invoke.h",
+          "sha256": "1bcc5872ffb795c0385d3f1384d2fe3ecdac88346af0067d1aaf74ec1c89f394"
+        },
+        "libc/src/__support/CPP/type_traits/invoke_result.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/invoke_result.h",
+          "sha256": "bd95e0166f8e424f77c94aaa70660155fcd2d77af270b4021e5d5645bd4a176c"
+        },
+        "libc/src/__support/CPP/type_traits/is_arithmetic.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_arithmetic.h",
+          "sha256": "7c81ee9037216e29afbf75401d15773a53ec23fe49a4e5e5de6765ab1b7269a3"
+        },
+        "libc/src/__support/CPP/type_traits/is_array.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_array.h",
+          "sha256": "dc7c5f40390770e5c3864098411ab9bd712f3b01eb75720f05a4d0a671494767"
+        },
+        "libc/src/__support/CPP/type_traits/is_base_of.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_base_of.h",
+          "sha256": "beffe971074adaa39b08824e58e23d4052b1972d805c6d6ed75c6c4f33fea60a"
+        },
+        "libc/src/__support/CPP/type_traits/is_class.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_class.h",
+          "sha256": "42210e9500a70f4a8ee77fe2d8362d00e81e5fc50f6cb18705eca75456595499"
+        },
+        "libc/src/__support/CPP/type_traits/is_complex.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_complex.h",
+          "sha256": "7b2f538ccfab6f46392712214378a0128d14fb1af9e103f8a8ec087da641411e"
+        },
+        "libc/src/__support/CPP/type_traits/is_const.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_const.h",
+          "sha256": "529905320a2def61fbb656bcf65fa9f68984b74ff22d73fbb1d22fa530a7b1a9"
+        },
+        "libc/src/__support/CPP/type_traits/is_constant_evaluated.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_constant_evaluated.h",
+          "sha256": "17964d270de81197101c8d90485a361853f3c9ee27263ae37856e5ef95da777f"
+        },
+        "libc/src/__support/CPP/type_traits/is_convertible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_convertible.h",
+          "sha256": "731b42f6fb289be2efac5d6accb637bfdbadd5f41b13bb7a7285c9cb6af79f25"
+        },
+        "libc/src/__support/CPP/type_traits/is_copy_assignable.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_copy_assignable.h",
+          "sha256": "ba3c0c25ef47d917ada6b595787aab82c6ef1de3eed4279a4ea28399bd1bf343"
+        },
+        "libc/src/__support/CPP/type_traits/is_copy_constructible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_copy_constructible.h",
+          "sha256": "008981be8da6bbc3afed4a3821da1ea84dd972306b5d1f18f80c45a12093da42"
+        },
+        "libc/src/__support/CPP/type_traits/is_destructible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_destructible.h",
+          "sha256": "aa63de7204de21908593af635fbd0fae2b50a6d113137aa493cd6614158fd61d"
+        },
+        "libc/src/__support/CPP/type_traits/is_enum.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_enum.h",
+          "sha256": "e9cbccc3b8995b663fa71e0f607b6e75a5eae792592409b342cd80e5c90898a2"
+        },
+        "libc/src/__support/CPP/type_traits/is_fixed_point.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_fixed_point.h",
+          "sha256": "06c89f063a4f867729a9fe2d77d0f1e0f26b1e46c8b10e81b27ffcef196ed87b"
+        },
+        "libc/src/__support/CPP/type_traits/is_floating_point.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_floating_point.h",
+          "sha256": "3e60201074dcd81bc927ac3242b5658cdcdc03ab7100a56bfc87d7b4a80d8e62"
+        },
+        "libc/src/__support/CPP/type_traits/is_function.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_function.h",
+          "sha256": "d89f1c400b0825bba2fc6f7efe5225a3e41f1135fafbebbebbbc1f0650b1bbcd"
+        },
+        "libc/src/__support/CPP/type_traits/is_integral.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_integral.h",
+          "sha256": "be8fff4cc3666d8992d310ae833657084eddb14110f903302b656083b4a92cec"
+        },
+        "libc/src/__support/CPP/type_traits/is_lvalue_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_lvalue_reference.h",
+          "sha256": "cf4a9b93b5d0e5ea11bab046d57581fec1848a1081663a8a2903582984ccb2c9"
+        },
+        "libc/src/__support/CPP/type_traits/is_member_pointer.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_member_pointer.h",
+          "sha256": "3bc303a9f8791e316cc3fe74cc51789db05b96220e118d00184bf0555a929dd2"
+        },
+        "libc/src/__support/CPP/type_traits/is_move_assignable.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_move_assignable.h",
+          "sha256": "afb2104c9eb287688d842e33b864807b20127b3512c540728673d393418f0350"
+        },
+        "libc/src/__support/CPP/type_traits/is_move_constructible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_move_constructible.h",
+          "sha256": "c95843514b2015c82f60d4822620ee9f1f6e93086a7405b0ca997dce63c3390c"
+        },
+        "libc/src/__support/CPP/type_traits/is_null_pointer.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_null_pointer.h",
+          "sha256": "c9cb3e4d760b4668ebfe562c5ca8f0e3d2acfb9452e77d3dd3db3076f7cf0fb4"
+        },
+        "libc/src/__support/CPP/type_traits/is_object.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_object.h",
+          "sha256": "e6699d0bb2c281953850510233ba96ffb9f6652c653041746ef9a5b755b28943"
+        },
+        "libc/src/__support/CPP/type_traits/is_pointer.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_pointer.h",
+          "sha256": "c8e3190c920ef43b005aff035be389466a5e4541add7390e7b786e7ba809ef43"
+        },
+        "libc/src/__support/CPP/type_traits/is_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_reference.h",
+          "sha256": "0038d53f09e175cd3b4ebfb1cd64905e8e4163da73af93362af36bef185676cb"
+        },
+        "libc/src/__support/CPP/type_traits/is_rvalue_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_rvalue_reference.h",
+          "sha256": "ed403b81ecbf4c43c0e2b27aeae0ba94dec98f8f4f2dd548a274d0e85c4353f7"
+        },
+        "libc/src/__support/CPP/type_traits/is_same.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_same.h",
+          "sha256": "74daede907df025779b94241e9fa10d53260ed24c52f38cb56c93fd9076e22d8"
+        },
+        "libc/src/__support/CPP/type_traits/is_scalar.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_scalar.h",
+          "sha256": "7bd3331a0355f28480aada6b9721607ce71e1266a629413d3d16dd0bad789d08"
+        },
+        "libc/src/__support/CPP/type_traits/is_signed.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_signed.h",
+          "sha256": "94fbbd7b03f8a0379d13a59077befba31d6679a3af13ecae5185ffe574321da8"
+        },
+        "libc/src/__support/CPP/type_traits/is_trivially_constructible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_constructible.h",
+          "sha256": "2653f581cdf445832dc72705c17369c327764b6cb6796ade2a0edadf35950c83"
+        },
+        "libc/src/__support/CPP/type_traits/is_trivially_copyable.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_copyable.h",
+          "sha256": "50060eeec4366f16e648bcacf9abff8ea0d0ec089699c6d6e217851f5dc66a4f"
+        },
+        "libc/src/__support/CPP/type_traits/is_trivially_destructible.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_trivially_destructible.h",
+          "sha256": "1df8de725bb5dbd8cc6e11e639271a8f7e913073f51c0e134b53b7b9142ba899"
+        },
+        "libc/src/__support/CPP/type_traits/is_union.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_union.h",
+          "sha256": "fb6acc5fb26edf7f5d22bd91463cad0db6c09402d1f3a7089f5758b1350fc276"
+        },
+        "libc/src/__support/CPP/type_traits/is_unsigned.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_unsigned.h",
+          "sha256": "db5759d754379c10a527356730278da675063dee07e31835436e5d24256005b3"
+        },
+        "libc/src/__support/CPP/type_traits/is_void.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/is_void.h",
+          "sha256": "bc64bdc46ec4d650429c8f7a3d782e5809385e8c76c7e2c1f1e6fc3c325d27a5"
+        },
+        "libc/src/__support/CPP/type_traits/make_signed.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/make_signed.h",
+          "sha256": "e709c3a504402d84894365aeac63f2697f41388117aaf24e03183efaeb16d8c2"
+        },
+        "libc/src/__support/CPP/type_traits/make_unsigned.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/make_unsigned.h",
+          "sha256": "29f471097b205e69b11320c40f58e7411b1160de4815cb9b499fc68bc68b33ea"
+        },
+        "libc/src/__support/CPP/type_traits/remove_all_extents.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_all_extents.h",
+          "sha256": "4daf6b639b3036f35d2bd8fccf3466901aad767508302831d3f15838371b6789"
+        },
+        "libc/src/__support/CPP/type_traits/remove_cv.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_cv.h",
+          "sha256": "d2ff553aa2b7107a7ba7c6688bf89177004e6773fbb8e69a58ff2891d5e6675b"
+        },
+        "libc/src/__support/CPP/type_traits/remove_cvref.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_cvref.h",
+          "sha256": "dbd0593b8c1b29496690fa9408f049843b62906fcf32831b463c79556e4b9460"
+        },
+        "libc/src/__support/CPP/type_traits/remove_extent.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_extent.h",
+          "sha256": "7ae0793eb6e0daf115424f47b7256e79b810801c1e878018df08fc9067e2265d"
+        },
+        "libc/src/__support/CPP/type_traits/remove_reference.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/remove_reference.h",
+          "sha256": "995e117692af3b126160c3ea7520e206f6694c35ae5d43d79cc995dbce855cee"
+        },
+        "libc/src/__support/CPP/type_traits/true_type.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/true_type.h",
+          "sha256": "a2fa1d166c63b4bb4e8952c8374d0eddbf61f3cff4702ae09fde1b2a2b171b49"
+        },
+        "libc/src/__support/CPP/type_traits/type_identity.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/type_identity.h",
+          "sha256": "b2d8ceca585983753db2acb1e96b5fe4e72d5de57f336cfa7e80fe20511ea1c1"
+        },
+        "libc/src/__support/CPP/type_traits/void_t.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/type_traits/void_t.h",
+          "sha256": "f89033a8d0598d1e957fa995289d8303259f27c1445bcaaa0c305ffcca61a066"
+        },
+        "libc/src/__support/CPP/utility/declval.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/utility/declval.h",
+          "sha256": "f3869c2bda6765a7df97abe0ec63ec02616dbbe56df5101675375536279a8f65"
+        },
+        "libc/src/__support/CPP/utility/forward.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/CPP/utility/forward.h",
+          "sha256": "4289b79740595823b703136e09330a1e86f1a77a1a694a37507fc3a89c67d5f4"
+        },
+        "libc/src/__support/alloc-checker.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/alloc-checker.h",
+          "sha256": "358e1e83e9f60956ef00bb8101d11959add383a50dffc4e66fa5d07c43d8f1a6"
+        },
+        "libc/src/__support/blockstore.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/blockstore.h",
+          "sha256": "d9345a5fb62eb1041c69f7727f4c745e8da035bed26c8ab2a6c5cda90d57d15e"
+        },
+        "libc/src/__support/common.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/common.h",
+          "sha256": "acbc74aa26f2a403e46c05bd1f52537203a302cd4f4cd738e0bb224e5cfbc22b"
+        },
+        "libc/src/__support/endian_internal.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/endian_internal.h",
+          "sha256": "774d303da34408660699a3b3fd754aecd4975b6de778eeee25ec99ce48e88c1f"
+        },
+        "libc/src/__support/fixedvector.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/fixedvector.h",
+          "sha256": "896ca1f56144864f61f7c4446532018d94c9e55b8ce6dcad041809a80e03a68b"
+        },
+        "libc/src/__support/libc_assert.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/libc_assert.h",
+          "sha256": "aefb07ff46f0a73d6c80070791a27d36aa23640ce16b024cce4b18660a829407"
+        },
+        "libc/src/__support/macros/attributes.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/attributes.h",
+          "sha256": "b21c56a327797d376a3d64c10a82ef33f032b46fd0252accec0ceb60d6208d2e"
+        },
+        "libc/src/__support/macros/config.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/config.h",
+          "sha256": "561fbccf826192c961fdba05d2eb09e444bde33f46979015db4379aa021e3cc8"
+        },
+        "libc/src/__support/macros/optimization.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/optimization.h",
+          "sha256": "feac37982a8901b108a21a541a94b6994cfd0531de32edd046da25827ee3418d"
+        },
+        "libc/src/__support/macros/properties/architectures.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/architectures.h",
+          "sha256": "e09525988d5318cc302bc38266c8eecc77b1c93a4ae82ecd4ebb9290abe1c8d9"
+        },
+        "libc/src/__support/macros/properties/compiler.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/compiler.h",
+          "sha256": "83fe28dbec8b4e778a1ca5b0db9f134251ddd388e9e9ad4d330145e92e288539"
+        },
+        "libc/src/__support/macros/properties/complex_types.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/complex_types.h",
+          "sha256": "65e63f890b0a49aa3484af23ea021f48a4252679b6de199144ff6fea3ebea416"
+        },
+        "libc/src/__support/macros/properties/cpu_features.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/cpu_features.h",
+          "sha256": "b5f52bd9699575bf179e03ae168f0a06ac7d7bb081d698d2b02266bc23fab7fc"
+        },
+        "libc/src/__support/macros/properties/os.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/os.h",
+          "sha256": "da82ac476c0ba817f603852e18515d06487fe93af59e067739b35b47dce321f2"
+        },
+        "libc/src/__support/macros/properties/types.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/properties/types.h",
+          "sha256": "e73dc777e0cd1d39188a3a03508ddb9346949c6fff78eefde642de1b8eb43cbb"
+        },
+        "libc/src/__support/macros/sanitizer.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/macros/sanitizer.h",
+          "sha256": "bbf6cb8f7da84175d87e50ab0f3898e7ddce797522355fd3e04a23c31472f250"
+        },
+        "libc/src/__support/threads/mutex.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/threads/mutex.h",
+          "sha256": "9104ab5dd23a26072838e7e296989626a10d00e66a054293d48aeed579110b6f"
+        },
+        "libc/src/__support/threads/mutex_common.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/__support/threads/mutex_common.h",
+          "sha256": "8de713d425ccdb1d85e8bdcbae1688190ec6da93ed363b0d3249e51c1208f722"
+        },
+        "libc/src/stdlib/atexit.cpp": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/atexit.cpp",
+          "sha256": "39a55c3464176c87bd22f8f778e885686d7f86d1f735343e3f9a0d560b751a4a"
+        },
+        "libc/src/stdlib/atexit.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/atexit.h",
+          "sha256": "b2691e9725e129113867aa91445ccd5e2b21bac7d47cf63fb5ff0a5f3b9edd2f"
+        },
+        "libc/src/stdlib/exit_handler.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/stdlib/exit_handler.h",
+          "sha256": "75edae3e15445e5517439a2dc7c9dddc1dcc25a2f342b8da1a62d30466d8617d"
+        },
+        "libc/src/string/memory_utils/aarch64/inline_memset.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/aarch64/inline_memset.h",
+          "sha256": "eefc78007ca47c3b596b9f6a3ded80940500d6758709d38204ce69ddb32671ee"
+        },
+        "libc/src/string/memory_utils/inline_memset.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/inline_memset.h",
+          "sha256": "0e0bb4f57d56657388fc2a5665ee5c0869a49159c5368c43f8be5efd9a317059"
+        },
+        "libc/src/string/memory_utils/op_aarch64.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_aarch64.h",
+          "sha256": "65ed6d6b82f4d5d57562c99e9349ae3c3c2511fac2417ff09d5c2cdcfedec63b"
+        },
+        "libc/src/string/memory_utils/op_builtin.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_builtin.h",
+          "sha256": "0b54ee6db1eaf6865b14590312f6d74b0e0e9ecb0b0978521d1f6cce0f9fbaf7"
+        },
+        "libc/src/string/memory_utils/op_generic.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/op_generic.h",
+          "sha256": "0d4d176688115e71dd65259de4ddcd97956f3388923d726e45fd426ce1e3bff4"
+        },
+        "libc/src/string/memory_utils/utils.h": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/src/string/memory_utils/utils.h",
+          "sha256": "f2f5b860bd54a24294a0318015981ab3bc4b70d049781972b7644f04f9e35b34"
+        },
+        "libc/LICENSE.TXT": {
+          "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/libc/LICENSE.TXT",
+          "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+        }
+      }
+    }
+  },
+  "verified_upstream_files": 1203,
+  "module_lock_sha256": "a51e5c6a8105ecda2a807cfcf5da40983993322712bb68cbf78715d2af9ed92e",
+  "private_package_sha256": "412d1d891ffdf4f6122daeb4d648568259badb54a45ec98ccb0ddddda32423db",
+  "private_sources": {
+    "BUILD.bazel": "412d1d891ffdf4f6122daeb4d648568259badb54a45ec98ccb0ddddda32423db",
+    "libraries/expression/arithmetic.cpp": "a99b00902dccb5e21b9454d4d125095ccf6a9d73015c77d3569eb3397ce538ae",
+    "libraries/expression/backend.cpp": "faf700e7ddfa0c27e5b08e4b616655c03858b4f76744a2ced7ced363d5a156c2",
+    "libraries/expression/details/arithmetic.hxx": "7dc582ef1d32acd90c2239f55dcd52501fa903283928871791d38339ddd201b2",
+    "libraries/expression/details/backend.hxx": "6436b05f05b038b918ff92b22a3d23282f95303c7f6076e9fbb986f0e971c8cb",
+    "libraries/expression/details/memory.hxx": "9ae39e3d4c6c43f6305725758663bae1724f8e76cb0d988f0eb29d1a51632a12",
+    "libraries/expression/details/run_worker.hxx": "88ad1c5e2ed5f007afd9f60f79abb1bf1021d4d01b918f2ca02022203b9f5be2",
+    "libraries/expression/details/runtime_impl.hxx": "bb0b90932767c00f9580b16b1df1ce321e0a8497abe840009c358349ecec3996"
+  },
+  "configuration": "Release",
+  "compiler": "/opt/homebrew/opt/llvm/bin/clang++",
+  "compiler_version": "Homebrew clang version 22.1.8",
+  "c_compiler_version": "Homebrew clang version 22.1.8",
+  "c_compiler_realpath": "/opt/homebrew/Cellar/llvm/22.1.8/bin/clang-22",
+  "cxx_compiler_realpath": "/opt/homebrew/Cellar/llvm/22.1.8/bin/clang-22",
+  "bazel_toolchain": {
+    "compile_arguments": [
+      [
+        "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+        "-U_FORTIFY_SOURCE",
+        "-fstack-protector",
+        "-Wall",
+        "-Wthread-safety",
+        "-Wself-assign",
+        "-Wunused-but-set-parameter",
+        "-Wno-free-nonheap-object",
+        "-fcolor-diagnostics",
+        "-fno-omit-frame-pointer",
+        "-g0",
+        "-O2",
+        "-D_FORTIFY_SOURCE=1",
+        "-DNDEBUG",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-std=c++17",
+        "-frandom-seed=bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/backend.pic.o",
+        "-fPIC",
+        "-DEXCLUDE_CEL_ANTLR_PARSER",
+        "-mmacosx-version-min=10.11",
+        "-MD",
+        "-MF",
+        "bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/backend.pic.d",
+        "-iquote",
+        ".",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin",
+        "-iquote",
+        "external/abseil-cpp+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/abseil-cpp+",
+        "-iquote",
+        "external/protobuf+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/protobuf+",
+        "-iquote",
+        "external/zlib+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/zlib+",
+        "-iquote",
+        "external/cel-spec+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/cel-spec+",
+        "-iquote",
+        "external/re2+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/re2+",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf_layering_check_legacy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/any_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/internal_visibility",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/micro_string",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_align",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/port",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/os_macros",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/stubs/_virtual_includes/lite",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_allocation_policy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_cleanup",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/string_block",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf_lite",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/endian",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/varint_shuffle",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/io",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/io_win32",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/third_party/utf8_range/_virtual_includes/utf8_validity",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/third_party/utf8_range/_virtual_includes/utf8_range",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy_iterator",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy_traits",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/symbol_checker",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/gzip_stream",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/stubs/_virtual_includes/stubs",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/printer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/zero_copy_sink",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/tokenizer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/api_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/source_context_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/type_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/duration_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/empty_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/field_mask_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/struct_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/timestamp_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/wrappers_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/compiler/_virtual_includes/importer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/delimited_message_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/differencer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/field_mask_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/json_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/json",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/lexer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/message_path",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/zero_copy_buffered_stream",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/parser",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/descriptor_traits",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/untyped_message",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/type_resolver",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/descriptor_legacy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/unparser",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/writer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/time_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/internal_timeval",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/syntax_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/checked_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/value_proto",
+        "-isystem",
+        "external/zlib+/zlib/include",
+        "-isystem",
+        "bazel-out/darwin_arm64-opt/bin/external/zlib+/zlib/include",
+        "-O2",
+        "-g0",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-isysroot",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-mmacosx-version-min=15.0",
+        "-faligned-allocation",
+        "-mmacosx-version-min=10.13",
+        "-std=c++23",
+        "-femulated-tls",
+        "-fno-c++-static-destructors",
+        "-mmacosx-version-min=15.0",
+        "-DNDEBUG",
+        "-g0",
+        "-c",
+        "forge_native/libraries/expression/backend.cpp",
+        "-o",
+        "bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/backend.pic.o",
+        "-no-canonical-prefixes",
+        "-Wno-builtin-macro-redefined",
+        "-D__DATE__=\"redacted\"",
+        "-D__TIMESTAMP__=\"redacted\"",
+        "-D__TIME__=\"redacted\""
+      ],
+      [
+        "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+        "-U_FORTIFY_SOURCE",
+        "-fstack-protector",
+        "-Wall",
+        "-Wthread-safety",
+        "-Wself-assign",
+        "-Wunused-but-set-parameter",
+        "-Wno-free-nonheap-object",
+        "-fcolor-diagnostics",
+        "-fno-omit-frame-pointer",
+        "-g0",
+        "-O2",
+        "-D_FORTIFY_SOURCE=1",
+        "-DNDEBUG",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-std=c++17",
+        "-frandom-seed=bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/arithmetic.pic.o",
+        "-fPIC",
+        "-DEXCLUDE_CEL_ANTLR_PARSER",
+        "-mmacosx-version-min=10.11",
+        "-MD",
+        "-MF",
+        "bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/arithmetic.pic.d",
+        "-iquote",
+        ".",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin",
+        "-iquote",
+        "external/abseil-cpp+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/abseil-cpp+",
+        "-iquote",
+        "external/protobuf+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/protobuf+",
+        "-iquote",
+        "external/zlib+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/zlib+",
+        "-iquote",
+        "external/cel-spec+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/cel-spec+",
+        "-iquote",
+        "external/re2+",
+        "-iquote",
+        "bazel-out/darwin_arm64-opt/bin/external/re2+",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf_layering_check_legacy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/any_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/internal_visibility",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/micro_string",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_align",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/port",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/os_macros",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/stubs/_virtual_includes/lite",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_allocation_policy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/arena_cleanup",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/string_block",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/protobuf_lite",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/endian",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/varint_shuffle",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/io",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/io_win32",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/third_party/utf8_range/_virtual_includes/utf8_validity",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/third_party/utf8_range/_virtual_includes/utf8_range",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy_iterator",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/repeated_field_proxy_traits",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/symbol_checker",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/gzip_stream",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/stubs/_virtual_includes/stubs",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/printer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/zero_copy_sink",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/io/_virtual_includes/tokenizer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/api_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/source_context_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/type_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/duration_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/empty_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/field_mask_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/struct_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/timestamp_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/wrappers_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/compiler/_virtual_includes/importer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/delimited_message_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/differencer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/field_mask_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/json_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/json",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/lexer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/message_path",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/zero_copy_buffered_stream",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/parser",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/descriptor_traits",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/untyped_message",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/type_resolver",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/_virtual_includes/descriptor_legacy",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/unparser",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/json/_virtual_includes/writer",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/time_util",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/protobuf+/src/google/protobuf/util/_virtual_includes/internal_timeval",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/syntax_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/checked_proto",
+        "-Ibazel-out/darwin_arm64-opt/bin/external/cel-spec+/proto/cel/expr/_virtual_includes/value_proto",
+        "-isystem",
+        "external/zlib+/zlib/include",
+        "-isystem",
+        "bazel-out/darwin_arm64-opt/bin/external/zlib+/zlib/include",
+        "-O2",
+        "-g0",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-isysroot",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-mmacosx-version-min=15.0",
+        "-faligned-allocation",
+        "-mmacosx-version-min=10.13",
+        "-std=c++23",
+        "-femulated-tls",
+        "-fno-c++-static-destructors",
+        "-mmacosx-version-min=15.0",
+        "-DNDEBUG",
+        "-g0",
+        "-c",
+        "forge_native/libraries/expression/arithmetic.cpp",
+        "-o",
+        "bazel-out/darwin_arm64-opt/bin/forge_native/_objs/backend/arithmetic.pic.o",
+        "-no-canonical-prefixes",
+        "-Wno-builtin-macro-redefined",
+        "-D__DATE__=\"redacted\"",
+        "-D__TIMESTAMP__=\"redacted\"",
+        "-D__TIME__=\"redacted\""
+      ]
+    ],
+    "resolved_wrappers": [
+      {
+        "wrapper": "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+        "wrapper_sha256": "6537cb8f744c51639da0f7a33ebd89ea9bdd4c160db570be70ae88309259ab8a",
+        "driver": "/opt/homebrew/Cellar/llvm/22.1.8/bin/clang-22",
+        "builtin_include_roots": [
+          "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/include",
+          "/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/share",
+          "/opt/homebrew/Cellar/llvm/22.1.8/include/c++/v1",
+          "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+        ]
+      }
+    ]
+  },
+  "sdk": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+  "deployment_target": "15.0",
+  "architecture": "arm64",
+  "command": [
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/downloads/bazel-8.7.0-darwin-arm64",
+    "--nosystem_rc",
+    "--nohome_rc",
+    "--output_user_root=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/bazel",
+    "--host_jvm_args=-Xmx768m",
+    "build",
+    "//forge_native:archive",
+    "--jobs=4",
+    "--compilation_mode=opt",
+    "--copt=-O2",
+    "--host_copt=-O2",
+    "--copt=-g0",
+    "--copt=-fno-fast-math",
+    "--host_copt=-fno-fast-math",
+    "--copt=-ffp-contract=off",
+    "--host_copt=-ffp-contract=off",
+    "--force_pic",
+    "--features=-layering_check",
+    "--host_features=-layering_check",
+    "--cxxopt=-std=c++23",
+    "--host_cxxopt=-std=c++23",
+    "--cxxopt=-femulated-tls",
+    "--cxxopt=-fno-c++-static-destructors",
+    "--cxxopt=-mmacosx-version-min=15.0",
+    "--host_cxxopt=-mmacosx-version-min=15.0",
+    "--lockfile_mode=error",
+    "--repository_cache=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/repository-cache",
+    "--symlink_prefix=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/Release/bazel-",
+    "--copt=-isysroot",
+    "--copt=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "--copt=-mmacosx-version-min=15.0",
+    "--linkopt=-isysroot",
+    "--linkopt=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "--linkopt=-mmacosx-version-min=15.0",
+    "--linkopt=-L/opt/homebrew/Cellar/llvm/22.1.8/lib/c++",
+    "--linkopt=-Wl,-rpath,/opt/homebrew/Cellar/llvm/22.1.8/lib/c++",
+    "--host_copt=-isysroot",
+    "--host_copt=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "--host_copt=-mmacosx-version-min=15.0",
+    "--host_linkopt=-isysroot",
+    "--host_linkopt=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "--host_linkopt=-mmacosx-version-min=15.0",
+    "--host_linkopt=-L/opt/homebrew/Cellar/llvm/22.1.8/lib/c++",
+    "--host_linkopt=-Wl,-rpath,/opt/homebrew/Cellar/llvm/22.1.8/lib/c++",
+    "--cxxopt=-DNDEBUG",
+    "--host_cxxopt=-DNDEBUG",
+    "--cxxopt=-g0",
+    "--host_cxxopt=-g0",
+    "--output_groups=default,linkdeps,linkopts"
+  ],
+  "archive_sha256": "68ae3c96667b90f1dc5f159699ebd644ec52c83adf5b0521910d4c0829a0516f",
+  "linkdeps": [],
+  "linkopts": [
+    "-lpthread",
+    "-lm",
+    "-framework",
+    "CoreFoundation",
+    "-lpthread",
+    "-lm",
+    "-framework",
+    "CoreFoundation",
+    "-lpthread",
+    "-lm",
+    "-framework",
+    "CoreFoundation",
+    "-lpthread",
+    "-lm",
+    "-framework",
+    "CoreFoundation",
+    "-lpthread",
+    "-lm",
+    "-framework",
+    "CoreFoundation",
+    "-pthread",
+    "-pthread",
+    "-Wl,-framework,CoreFoundation",
+    "-pthread"
+  ],
+  "notices": [
+    {
+      "repository": "cel-cpp",
+      "file": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "cel-cpp",
+      "file": "eval/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "cel-cpp",
+      "file": "eval/compiler/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "cel-cpp",
+      "file": "eval/eval/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "cel-cpp",
+      "file": "eval/public/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "cel-cpp",
+      "file": "eval/tests/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "abseil-cpp+",
+      "file": "AUTHORS",
+      "sha256": "1fd39030c119b4c97014f59e0ad0ed65f23475bbdf55a52740f31eb82b34b4ee"
+    },
+    {
+      "repository": "abseil-cpp+",
+      "file": "LICENSE",
+      "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.base/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.compiler/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.instrument/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.logging/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.management/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.naming/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.security.sasl/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.sql/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.transaction.xa/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/java.xml/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/jdk.crypto.ec/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/jdk.management/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "jdk/legal/jdk.unsupported/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "third_party/py/abseil/AUTHORS",
+      "sha256": "6282ee76cca569083b5b998b9f816ba1032e127b8dc7c46942b86477fc6fbfa5"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "third_party/py/abseil/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "bazel_tools",
+      "file": "third_party/py/six/LICENSE",
+      "sha256": "8bb850c565aa389fdc16f3a46965ad23d82adff60f2393fc2762b63185e8e6c9"
+    },
+    {
+      "repository": "cel-spec+",
+      "file": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "platforms",
+      "file": "LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "repository": "protobuf+",
+      "file": "LICENSE",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
+    },
+    {
+      "repository": "protobuf+",
+      "file": "src/google/protobuf/compiler/notices.h",
+      "sha256": "b47ca1ea743623d50c6e02faa136dea4f6574a98e200666f859dbf57fb491721"
+    },
+    {
+      "repository": "protobuf+",
+      "file": "third_party/utf8_range/LICENSE",
+      "sha256": "02de69b64fc36d9e938f418e52723e42f0b2b226d58a9cb3c8dcbdf7059f5074"
+    },
+    {
+      "repository": "re2+",
+      "file": "LICENSE",
+      "sha256": "6040cda75d90b1738292a631d89934c411ef7ffd543c4d6a1b7edfc8edf29449"
+    },
+    {
+      "repository": "re2+",
+      "file": "python/LICENSE",
+      "sha256": "6040cda75d90b1738292a631d89934c411ef7ffd543c4d6a1b7edfc8edf29449"
+    },
+    {
+      "repository": "rules_cc+",
+      "file": "AUTHORS",
+      "sha256": "7f6d10100174647542f6e76204f725a89dd1a88830ced3211a53af0e036171cd"
+    },
+    {
+      "repository": "rules_cc+",
+      "file": "LICENSE",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "rules/license.bzl",
+      "sha256": "1cb4a02d91dcdc8cabae47ffdb787a62b309ed720237afcf2f26e21a64023531"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "rules/license_impl.bzl",
+      "sha256": "7e7d6aa7fd4983db6c5f3889522ff92ce02e28a7e4064b339257d21d5d7d4f7f"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "rules/license_kind.bzl",
+      "sha256": "1ab4d4f073bcc3af07bd9039cac60af4c4e0151fc12ce36d551594840062c632"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "rules/licenses_core.bzl",
+      "sha256": "e951b05b8273e9b1daf9c0b26944c7bfd5f70fad3da1b373c37947a9ee673dcc"
+    },
+    {
+      "repository": "rules_license+",
+      "file": "sample_reports/licenses_used.bzl",
+      "sha256": "444909f7f5308ad0faf3d2e6d70a596919332cbd543e3f613e544583fb1cfc1e"
+    },
+    {
+      "repository": "zlib+",
+      "file": "LICENSE",
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243"
+    },
+    {
+      "repository": "zlib+",
+      "file": "contrib/dotzlib/LICENSE_1_0.txt",
+      "sha256": "36266a8fd073568394cb81cdb2b124f7fdae2c64c1a7ed09db34b4d22efa2951"
+    }
+  ]
+}

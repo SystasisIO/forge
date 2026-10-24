@@ -1,0 +1,1 @@
+sandbox-exec: execvp() of '/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/downloads/bazel-8.7.0-darwin-arm64' failed: Operation not permitted

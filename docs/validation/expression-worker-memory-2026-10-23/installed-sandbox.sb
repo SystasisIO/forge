@@ -1,0 +1,7 @@
+(version 1)
+(allow default)
+(deny file-read* (subpath "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1"))
+(deny file-read* (subpath "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory"))
+(deny file-read* (subpath "/private/tmp/forge-expression-installed-20261023/gate/original"))
+(deny process-exec (regex #".*/(bazel|bazelisk)([^/]*)$"))
+(deny process-exec (literal "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-expression-cel-profile-v1/build/expression-memory/_deps/cel/downloads/bazel-8.7.0-darwin-arm64"))

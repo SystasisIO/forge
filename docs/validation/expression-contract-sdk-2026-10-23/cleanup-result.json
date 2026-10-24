@@ -1,0 +1,43 @@
+{
+  "open_files_after_task_bazel_shutdown": [],
+  "targets": [
+    {
+      "path": "$FORGE/build/expression-contract",
+      "allocated_bytes": 4080619520,
+      "removed": true,
+      "seconds": 2.47
+    },
+    {
+      "path": "$FORGE/build/expression-contract-sdk",
+      "allocated_bytes": 470102016,
+      "removed": true,
+      "seconds": 0.25
+    },
+    {
+      "path": "$SPINE/build/tariffs-guest",
+      "allocated_bytes": 293523456,
+      "removed": true,
+      "seconds": 0.07
+    },
+    {
+      "path": "$SPINE/build/tariffs-host",
+      "allocated_bytes": 938336256,
+      "removed": true,
+      "seconds": 0.14
+    },
+    {
+      "path": "$QUALIFICATION/installed-native-r1/consumer-build",
+      "allocated_bytes": 503799808,
+      "removed": true,
+      "seconds": 0.06
+    }
+  ],
+  "preserved": [
+    "raw logs and command receipts",
+    "worker/backend/runtime manifests",
+    "installed native Forge and guest SDK",
+    "tariffs and tariffclient WASM/ABI/contract manifests"
+  ],
+  "allocated_bytes_removed": 6286381056,
+  "free_bytes_after": 37090906112
+}

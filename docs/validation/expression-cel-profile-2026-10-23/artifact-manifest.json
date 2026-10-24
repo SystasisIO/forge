@@ -1,0 +1,315 @@
+{
+  "schema": "forge.expression.profile.artifacts.v1",
+  "files": {
+    "acceptance.json": {
+      "sha256": "2f68c81dc909844e7079366ddabf044f4a74e93af5689765b2a11a97ca6d45db",
+      "bytes": 1182
+    },
+    "build-manifest.json": {
+      "sha256": "26c7c12005226f9c100618c0a267de614d222eb11c7e26aa1c601ce0322d68f7",
+      "bytes": 30746
+    },
+    "raw.tar.gz": {
+      "sha256": "e222ef2fe609eb6e4973ad79eb20c3361599289bab1ce74576d00f08d587005a",
+      "bytes": 2369198
+    },
+    "reviews.json": {
+      "sha256": "618c8f73ca91fe149aa60328461e43b8c2e2cdc93ffbecd0a32ec524bf503b36",
+      "bytes": 1895
+    },
+    "source-manifest.json": {
+      "sha256": "d2b5241ee9f8d2f0c7f70fb4cfc78a62c1311d5b94d3f071a36027327e8c1131",
+      "bytes": 3260
+    }
+  },
+  "raw_entries": {
+    "consumer/CMakeLists.txt": {
+      "sha256": "a3b564dd60521186383c05ad7a154833f4229a28e16931d3df764d610fb2af9d",
+      "bytes": 359
+    },
+    "consumer/main.cpp": {
+      "sha256": "5aef360b6f93b3fcc3167b845b84cad9a8638366a023b05fbfa8bf38ef055784",
+      "bytes": 599
+    },
+    "logs/acceptance-build.log": {
+      "sha256": "b625ed78b2eaeac36ef7ad019f45f2d1163ddbb045f110359c2d2b5c4a1a4ebf",
+      "bytes": 432878
+    },
+    "logs/acceptance-tests.log": {
+      "sha256": "45b5462064595583f2de0fc449d1af29b850da6975dbf2bf008e0a1cfa0f6a72",
+      "bytes": 533
+    },
+    "logs/add-subdirectory-configure.log": {
+      "sha256": "707fe08dba6af25f8527195922647d61aa25698a94efc502c3c8b5477cfe8b5a",
+      "bytes": 19584
+    },
+    "logs/arithmetic-native.log": {
+      "sha256": "1a60429b5fa352775f14374b9c34ae826303c84d30f4ca9c8c08ddcd365ed5fd",
+      "bytes": 401931
+    },
+    "logs/arithmetic-report.log": {
+      "sha256": "78791e97ba029dec7f6ad1c9079c3ffb09e506fedd591ab82313a142e19eed4b",
+      "bytes": 77
+    },
+    "logs/build-helper-final.log": {
+      "sha256": "4c49b2bc136e1a94abdd53cc64d981722ca848ade40fea4027ba159b66969791",
+      "bytes": 5457
+    },
+    "logs/consumer-acceptance-build.log": {
+      "sha256": "18a1c8e034a83686a41aec902128bee341d6671d4a14453084d09a21d2531b2a",
+      "bytes": 49
+    },
+    "logs/consumer-acceptance-run.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "logs/consumer-build-final.log": {
+      "sha256": "fd65edda3a83ebbcd5698c0d22a8dd24bccd2a2292689b5949c4688d8f484650",
+      "bytes": 280
+    },
+    "logs/consumer-build.log": {
+      "sha256": "fd65edda3a83ebbcd5698c0d22a8dd24bccd2a2292689b5949c4688d8f484650",
+      "bytes": 280
+    },
+    "logs/consumer-configure.log": {
+      "sha256": "f6563bd01519d5e8010255489626be567f71e8c56afe9adf7c532d7f6e610bf1",
+      "bytes": 405
+    },
+    "logs/consumer-run-final.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "logs/donor-failure.log": {
+      "sha256": "94a5924b192513a3b61c48e570294e8c64a6b32ceab9d470074063835296011a",
+      "bytes": 17347
+    },
+    "logs/feature-off-configure.log": {
+      "sha256": "539b01e31199ffeff4d471f442da510d1aece86b0eacf5daf8ce246aae74c2f6",
+      "bytes": 19401
+    },
+    "logs/first-build.log": {
+      "sha256": "fdbb2196ef91169718168e319ab750f0d5524a3fafe85753893efbcac86ccb5d",
+      "bytes": 14369
+    },
+    "logs/lock-bootstrap.log": {
+      "sha256": "d0b2ff28be27d0fbc92280015d3c3e15f1671169fec1a5f2577751cedb1e37c1",
+      "bytes": 1602
+    },
+    "logs/lock-build.log": {
+      "sha256": "fd562f0184586acab0059dc8a0b7384a170e0fe9d980c61813e0972496ca7a80",
+      "bytes": 45906451
+    },
+    "logs/mixed-driver-negative.log": {
+      "sha256": "b8198a8d588e713dafd4d66035f10fdf2769c786a1858f8800b0d566c4a2ec34",
+      "bytes": 19518
+    },
+    "logs/native-build-final.log": {
+      "sha256": "0c059a73e9c9996f2b278db7f0703bca4867e7209dcb9b01888112d03b02dac2",
+      "bytes": 1967537
+    },
+    "logs/native-build.log": {
+      "sha256": "ab58dd1f1ffd28b64d4f934d2a338c87e358a7fb020f7e7ffc797348e4d6a9a9",
+      "bytes": 857469
+    },
+    "logs/package-metadata.log": {
+      "sha256": "d87537b0cf735605cd08389b83a936630911c40b1c0abb4d0782c4069b5c1d9f",
+      "bytes": 310
+    },
+    "logs/package-review-fix-build.log": {
+      "sha256": "8b542624e14f95289fac7f81f7f7a91f856d898719343226b129c189fef86b23",
+      "bytes": 2035
+    },
+    "logs/public-build.log": {
+      "sha256": "1ccb89816935e4346b230395a3e402d041fdf44ab1e4035e652864a231f6515d",
+      "bytes": 1620
+    },
+    "logs/public-report.log": {
+      "sha256": "0034b17a2ec7b6c405203f8b4fd76bb9784f73c70f17d71bf8742b5a64715bc3",
+      "bytes": 24
+    },
+    "logs/public-tests-final.log": {
+      "sha256": "7f0b081203f4b3de541c98764d0d19d660430b4961c62ac59ee9d9f782e570a0",
+      "bytes": 411
+    },
+    "logs/public-tests.log": {
+      "sha256": "09eff691a40c8b5f6f24982c3315b0cbd46f2b3c7a7f37ce35f6f7d10c962e92",
+      "bytes": 1308
+    },
+    "logs/unpinned-rc-negative.log": {
+      "sha256": "a193d266a52fbfcd0abbaa313465cf7b6426aa53b7d3705ee3a745c286332aa4",
+      "bytes": 76
+    },
+    "notices/abseil-cpp+/AUTHORS": {
+      "sha256": "1fd39030c119b4c97014f59e0ad0ed65f23475bbdf55a52740f31eb82b34b4ee",
+      "bytes": 295
+    },
+    "notices/abseil-cpp+/LICENSE": {
+      "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747",
+      "bytes": 11361
+    },
+    "notices/bazel_tools/jdk/legal/java.base/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.compiler/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.instrument/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.logging/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.management/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.naming/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.security.sasl/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.sql/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.transaction.xa/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/java.xml/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/jdk.crypto.ec/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/jdk.management/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/jdk/legal/jdk.unsupported/LICENSE": {
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "bytes": 19274
+    },
+    "notices/bazel_tools/third_party/py/abseil/AUTHORS": {
+      "sha256": "6282ee76cca569083b5b998b9f816ba1032e127b8dc7c46942b86477fc6fbfa5",
+      "bytes": 296
+    },
+    "notices/bazel_tools/third_party/py/abseil/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/bazel_tools/third_party/py/six/LICENSE": {
+      "sha256": "8bb850c565aa389fdc16f3a46965ad23d82adff60f2393fc2762b63185e8e6c9",
+      "bytes": 1066
+    },
+    "notices/cel-cpp/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-cpp/eval/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-cpp/eval/compiler/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-cpp/eval/eval/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-cpp/eval/public/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-cpp/eval/tests/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/cel-spec+/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/platforms/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357
+    },
+    "notices/protobuf+/LICENSE": {
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+      "bytes": 1732
+    },
+    "notices/protobuf+/src/google/protobuf/compiler/notices.h": {
+      "sha256": "b47ca1ea743623d50c6e02faa136dea4f6574a98e200666f859dbf57fb491721",
+      "bytes": 12928
+    },
+    "notices/protobuf+/third_party/utf8_range/LICENSE": {
+      "sha256": "02de69b64fc36d9e938f418e52723e42f0b2b226d58a9cb3c8dcbdf7059f5074",
+      "bytes": 1091
+    },
+    "notices/re2+/LICENSE": {
+      "sha256": "6040cda75d90b1738292a631d89934c411ef7ffd543c4d6a1b7edfc8edf29449",
+      "bytes": 1558
+    },
+    "notices/re2+/python/LICENSE": {
+      "sha256": "6040cda75d90b1738292a631d89934c411ef7ffd543c4d6a1b7edfc8edf29449",
+      "bytes": 1558
+    },
+    "notices/rules_cc+/AUTHORS": {
+      "sha256": "7f6d10100174647542f6e76204f725a89dd1a88830ced3211a53af0e036171cd",
+      "bytes": 299
+    },
+    "notices/rules_cc+/LICENSE": {
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "bytes": 11357
+    },
+    "notices/rules_license+/LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "notices/rules_license+/rules/license.bzl": {
+      "sha256": "1cb4a02d91dcdc8cabae47ffdb787a62b309ed720237afcf2f26e21a64023531",
+      "bytes": 5263
+    },
+    "notices/rules_license+/rules/license_impl.bzl": {
+      "sha256": "7e7d6aa7fd4983db6c5f3889522ff92ce02e28a7e4064b339257d21d5d7d4f7f",
+      "bytes": 1370
+    },
+    "notices/rules_license+/rules/license_kind.bzl": {
+      "sha256": "1ab4d4f073bcc3af07bd9039cac60af4c4e0151fc12ce36d551594840062c632",
+      "bytes": 2240
+    },
+    "notices/rules_license+/rules/licenses_core.bzl": {
+      "sha256": "e951b05b8273e9b1daf9c0b26944c7bfd5f70fad3da1b373c37947a9ee673dcc",
+      "bytes": 8866
+    },
+    "notices/rules_license+/sample_reports/licenses_used.bzl": {
+      "sha256": "444909f7f5308ad0faf3d2e6d70a596919332cbd543e3f613e544583fb1cfc1e",
+      "bytes": 2185
+    },
+    "notices/zlib+/LICENSE": {
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "bytes": 1002
+    },
+    "notices/zlib+/contrib/dotzlib/LICENSE_1_0.txt": {
+      "sha256": "36266a8fd073568394cb81cdb2b124f7fdae2c64c1a7ed09db34b4d22efa2951",
+      "bytes": 1359
+    },
+    "reports/acceptance.xml": {
+      "sha256": "9e3496e4beb6e973cb15f752f5acc772800db94d1fb06d7071bb929a1cf374f8",
+      "bytes": 1800
+    },
+    "reports/public-report.xml": {
+      "sha256": "0ddcc0ac36391ff4810627c57b57fd1e4c275c52d039eb6f146ce9b70eff83f1",
+      "bytes": 1925
+    }
+  }
+}

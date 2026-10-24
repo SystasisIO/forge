@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="2"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="3"
+	timestamp="2026-10-23T14:43:52"
+	>
+	<testcase name="test_forge_expression" classname="test_forge_expression" time="3.15536" status="run">
+		<properties/>
+		<system-out>Running 17 test cases...
+
+[NON-XML-CHAR-0x1B][1;32;49m*** No errors detected
+[NON-XML-CHAR-0x1B][0;39;49m
+</system-out>
+	</testcase>
+	<testcase name="test_forge_expression_worker" classname="test_forge_expression_worker" time="0.700168" status="run">
+		<properties>
+			<property name="cmake_labels" value="expression;macos"/>
+		</properties>
+		<system-out>Running 5 test cases...
+
+[NON-XML-CHAR-0x1B][1;32;49m*** No errors detected
+[NON-XML-CHAR-0x1B][0;39;49m
+</system-out>
+	</testcase>
+</testsuite>

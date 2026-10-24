@@ -1,0 +1,14 @@
+{
+  "name": "tariffs-final-host-configure",
+  "cwd": "$SPINE",
+  "argv": [
+    "/opt/homebrew/bin/cmake",
+    "-S",
+    "tests/integration/tariffs",
+    "-B",
+    "build/tariffs-host"
+  ],
+  "started": 1792755661.312568,
+  "code": 0,
+  "seconds": 0.3854081630706787
+}
