@@ -7,10 +7,12 @@
 #include <cstdint>
 #include <exception>
 #include <latch>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <span>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -151,6 +153,7 @@ sample_buffer collect(const vm::profile_instr_map& map, const vm::profile_instr_
 
 sample verify_samples(const sample_buffer& samples, const profile_fixture& fixture, std::size_t function) {
    std::set<std::uint32_t> offsets;
+   std::size_t mapped_samples = 0;
    sample known{};
    for (std::sig_atomic_t i = 0; i < samples.count; ++i) {
       const auto value = samples.values[i];
@@ -160,10 +163,25 @@ sample verify_samples(const sample_buffer& samples, const profile_fixture& fixtu
       BOOST_CHECK(std::ranges::find(fixture.opcodes[function], value.offset) != fixture.opcodes[function].end());
       BOOST_TEST(value.offset > fixture.code_section);
       offsets.insert(value.offset);
+      ++mapped_samples;
       known = value;
    }
-   BOOST_TEST(samples.count > 0);
-   BOOST_REQUIRE_GE(offsets.size(), 2U);
+   std::ostringstream diagnostic;
+   if (offsets.size() < 2U) {
+      // Build failure evidence after sampling has stopped. Keep different
+      // attributions of the same native PC distinct in the diagnostic.
+      std::map<std::pair<std::uintptr_t, std::uint32_t>, std::size_t> counts;
+      for (std::sig_atomic_t i = 0; i < samples.count; ++i)
+         ++counts[{samples.values[i].pc, samples.values[i].offset}];
+      for (const auto& [address, count] : counts)
+         diagnostic << "\n pc=" << reinterpret_cast<const void*>(address.first) << " offset=" << address.second
+                    << " samples=" << count;
+   }
+   BOOST_TEST_CONTEXT("function=" << function << " total_samples=" << samples.count << " mapped_samples="
+                                  << mapped_samples << " distinct_offsets=" << offsets.size() << diagnostic.str()) {
+      BOOST_TEST(samples.count > 0);
+      BOOST_REQUIRE_GE(offsets.size(), 2U);
+   }
    return known;
 }
 #endif
