@@ -1,0 +1,206 @@
+{
+  "reviewer": "job0_wire",
+  "status": "GO",
+  "scope": "Independent Forge strict bounded decode + additive native helper source review",
+  "source_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-contract-bounded-dispatch-v1",
+  "source_commit": "569cc72ed870ac91fc3334143d646545b7ac8663",
+  "combined_sha256": "130fa30db72a465724137fdac8cb773e14b4c2a52e802b35c1cab2d684c8e91d",
+  "files": [
+    {
+      "path": "guest/cmake/ForgeContractLibraries.cmake",
+      "sha256": "faf01f2150d7eea99c3145eaf60e4cbe608c2920fbdf6a4ea11395769ac7eb31"
+    },
+    {
+      "path": "guest/libraries/contract/README.md",
+      "sha256": "ad887abef169c5c51691987a349a37cda54e771b17f785ca83067b37496efca4"
+    },
+    {
+      "path": "guest/libraries/contract/include/forge/contract/dispatcher.cppm",
+      "sha256": "48903ade43464ca9e4e50893c2d21daed7938e76b6c037c0cb8c0297eea487c4"
+    },
+    {
+      "path": "guest/tests/consumer/record_contract.cpp",
+      "sha256": "29a80e3037dbbcbac62cf39054d05dd82756c92aed51895ccc699b164a24ae86"
+    },
+    {
+      "path": "guest/tests/e2e/contract_tests.cpp",
+      "sha256": "5e16ad5cb98ec17706e8f1ae355e09ecdec13fbec0273235a51f8bef9f978a79"
+    },
+    {
+      "path": "guest/tests/tooling/run_dual_target_fixtures.py",
+      "sha256": "a0326be2d98e8d477db06cd0b5239a89226b7f93203eb72b568f3d61053ba34b"
+    },
+    {
+      "path": "libraries/expression/include/forge/expression/types.cppm",
+      "sha256": "2e7dafbd213751313078409b5fd40e0da038db7571d840aa4dde733ac1c60677"
+    },
+    {
+      "path": "libraries/raw/README.md",
+      "sha256": "79533d5b0ec6a1fbd10cf37c553a24422118b16953ee332a7dd45b4b15faa7ec"
+    },
+    {
+      "path": "libraries/raw/codec.cpp",
+      "sha256": "69a93d34aeda104242bde7c1a220442b0409a096df6afe9b512aadd79398a302"
+    },
+    {
+      "path": "libraries/raw/include/forge/raw/codec.cppm",
+      "sha256": "101fd2156e91b1e5d2950161f91274ca4dc8991c8b97cbf0ce023d91e147f3b2"
+    },
+    {
+      "path": "libraries/raw/include/forge/raw/raw.cppm",
+      "sha256": "279a8350e8f0548f396ca55997d3c26f90f7f4c8ee843380087bbe2591e7edc6"
+    },
+    {
+      "path": "libraries/raw/include/forge/raw/stream.cppm",
+      "sha256": "274b4b0ce7114f79d69c09b819636307ccd712217a59704e38843e9a74375c13"
+    },
+    {
+      "path": "tests/package_raw_bounded/CMakeLists.txt",
+      "sha256": "586757fb1770744f5351451a5502f2ad83fbce7de849e5018f70647028c6f0c7"
+    },
+    {
+      "path": "tests/package_raw_bounded/bounded.cpp",
+      "sha256": "ed87388f8dd7c2a5c95d4b1eed86b1c0595a6001316ad92579954f1c4225ef88"
+    },
+    {
+      "path": "tests/package_raw_bounded/codec_only.cpp",
+      "sha256": "db5a333ac306117c9e1b65a6c4e85cea73dfb0cb7729b3c9081b2963b3f35527"
+    }
+  ],
+  "findings": [],
+  "verified": [
+    "unpack_limits retains original four fields and old overloads plus 16-byte wire",
+    "bounded_unpack_limits/unpack_bounded_exact additive APIs avoid bare {} ambiguity",
+    "action byte cap precedes invocation buffer/read/constructor; call cap precedes full payload allocation/read",
+    "nested frame decodes inherit enum/varint/per-container/first-container/cumulative element and byte limits",
+    "shared enum trait and described enums validated before narrowing; bulk enum arrays covered without wire normalization",
+    "native helper resolves ordinary CMake targets, guest retains SDK ownership rejection",
+    "source tests use real WASM/custom constructor effect for pre-dispatch rejection plus unchanged legacy Raw regression target"
+  ],
+  "runtime": "Scoped native Raw and actual SDK/WASM action/call evidence verified. No open code finding.",
+  "qualification_scope": "Exact Forge commit source + installed Raw/SDK headers/helper identity + scoped native Raw regression and genuine WASM action/call E2E. No full SDK ALL or product acceptance claim.",
+  "source_tree": "3f879c1add7a65888d3198e0de58dee4b91f79ba",
+  "working_tree": "clean",
+  "installed_source_identity": [
+    {
+      "source": "libraries/raw/include/forge/raw/codec.cppm",
+      "installed": "host-prefix/include/forge/raw/codec.cppm",
+      "sha256": "101fd2156e91b1e5d2950161f91274ca4dc8991c8b97cbf0ce023d91e147f3b2"
+    },
+    {
+      "source": "libraries/raw/include/forge/raw/raw.cppm",
+      "installed": "host-prefix/include/forge/raw/raw.cppm",
+      "sha256": "279a8350e8f0548f396ca55997d3c26f90f7f4c8ee843380087bbe2591e7edc6"
+    },
+    {
+      "source": "libraries/raw/include/forge/raw/stream.cppm",
+      "installed": "host-prefix/include/forge/raw/stream.cppm",
+      "sha256": "274b4b0ce7114f79d69c09b819636307ccd712217a59704e38843e9a74375c13"
+    },
+    {
+      "source": "libraries/raw/include/forge/raw/codec.cppm",
+      "installed": "sdk-prefix/share/forge-contract/modules/forge/raw/codec.cppm",
+      "sha256": "101fd2156e91b1e5d2950161f91274ca4dc8991c8b97cbf0ce023d91e147f3b2"
+    },
+    {
+      "source": "libraries/raw/include/forge/raw/stream.cppm",
+      "installed": "sdk-prefix/share/forge-contract/modules/forge/raw/stream.cppm",
+      "sha256": "274b4b0ce7114f79d69c09b819636307ccd712217a59704e38843e9a74375c13"
+    },
+    {
+      "source": "guest/libraries/contract/include/forge/contract/dispatcher.cppm",
+      "installed": "sdk-prefix/share/forge-contract/modules/forge/contract/dispatcher.cppm",
+      "sha256": "48903ade43464ca9e4e50893c2d21daed7938e76b6c037c0cb8c0297eea487c4"
+    },
+    {
+      "source": "libraries/expression/include/forge/expression/types.cppm",
+      "installed": "sdk-prefix/share/forge-contract/modules/forge/expression/types.cppm",
+      "sha256": "2e7dafbd213751313078409b5fd40e0da038db7571d840aa4dde733ac1c60677"
+    },
+    {
+      "source": "guest/cmake/ForgeContractLibraries.cmake",
+      "installed": "sdk-prefix/lib/cmake/ForgeContract/ForgeContractLibraries.cmake",
+      "sha256": "faf01f2150d7eea99c3145eaf60e4cbe608c2920fbdf6a4ea11395769ac7eb31"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "raw-final-tests.xml",
+      "sha256": "9679b3800ce2e3ecb37892c95fa68afd78d938f1fd68c68ecb69218d4e07c5e6",
+      "tests": 2,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "jobs-tests.xml",
+      "sha256": "2c041a438265fec3578b595785398df16bd9e43d86ecb16c48d1331faff1c05a",
+      "tests": 3,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "e2e-tests.xml",
+      "sha256": "da5ae931c26852a6a09158cf2505221d913d3a238cdb729ce5e3e951d7e67ed7",
+      "tests": 1,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "raw-final-ctest.json",
+      "sha256": "e8748cdbe169ece4f9adc930653a7193862b76e4778703cc6d401259efa28a91",
+      "exit_code": 0
+    },
+    {
+      "path": "jobs-ctest.json",
+      "sha256": "530679db2dfd27ea0909327eb01763695792e53958ce844b93e266b53c368e94",
+      "exit_code": 0
+    },
+    {
+      "path": "consumer-e2e-fixtures.json",
+      "sha256": "dc6d928573b69235030c03c371e4c56edf1f0692b00b9573f42a8a63ed29e4e9",
+      "exit_code": 0
+    },
+    {
+      "path": "e2e-ctest.json",
+      "sha256": "3afdc4dd86bbabcc0b23c6f84803acfc4c6fc52f650bada4fdb936442ee8ac2e",
+      "exit_code": 0
+    },
+    {
+      "path": "sdk-relocation.log",
+      "sha256": "19bf2b509078a978c0a02c10e4eb1782e89ba9161d6e296416e1c395be174691"
+    },
+    {
+      "path": "sdk-prefix/share/forge-contract/foundation.json",
+      "sha256": "80bbd6a558aa8dddf7db7b50b10c4e817c98664c3390526d5027fe9919f529a7"
+    },
+    {
+      "path": "build/jobs-guest/artifacts/jobswire.wasm",
+      "sha256": "2645d0301f5619511b4fbb8a1c520f4de952238ecd8857a09ee99f31f35b1052"
+    },
+    {
+      "path": "build/jobs-guest/artifacts/jobswire.abi",
+      "sha256": "73b120bffe424cf67e0e534ec5b40c3ac87fa33071c3b5fb27a5921b531263f4"
+    },
+    {
+      "path": "build/jobs-guest/artifacts/jobswire.contract.json",
+      "sha256": "07c1cd380a79978021280d6cb68c5ca49fed66791762787e4bf42f9880b1a21b"
+    }
+  ],
+  "test_results": {
+    "installed_raw": "2/2 CTest PASS; 6 bounded + 51 unchanged legacy Boost cases; no skips",
+    "jobs_evidence": "3/3 CTest PASS; 208 accepted + 47 rejected real WASM/native cases; no skips",
+    "consumer_fixtures": "17 genuine e2e fixtures built PASS",
+    "sdk_relocation": "Root execution reported PASS; relocated native/guest/helper/negative project artifacts independently checked",
+    "actual_generic_sdk_action_call_e2e": "1/1 CTest PASS, 53 Boost cases including all 5 new bounded cases; no skips"
+  },
+  "known_failure": {
+    "path": "consumer-build.json",
+    "exit_code": 1,
+    "reason": "Full consumer donor_compatibility.cpp freestanding regex/locale/stream APIs unavailable; preserved, not counted as PASS"
+  },
+  "limitations": [
+    "No JOB1 state machine, live Spine, native authority graph, billing/token execution tree, Labs or Linux acceptance",
+    "No full SDK ALL PASS: unrelated donor compatibility build failure retained",
+    "Reviewer performed read-only source/artifact validation; did not run new builds or tests"
+  ]
+}

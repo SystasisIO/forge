@@ -1,0 +1,16 @@
+{
+  "name": "consumer-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs0-20261025/build/consumer",
+    "-j4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 1,
+  "elapsed_seconds": 13.81,
+  "started_unix": 1792885043.643935,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

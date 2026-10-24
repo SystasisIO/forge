@@ -1,0 +1,18 @@
+{
+  "name": "e2e-ctest",
+  "command": [
+    "ctest",
+    "--test-dir",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs0-20261025/build/e2e",
+    "--output-on-failure",
+    "--output-junit",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs0-20261025/e2e-tests.xml"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 0.87,
+  "started_unix": 1792885244.229547,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

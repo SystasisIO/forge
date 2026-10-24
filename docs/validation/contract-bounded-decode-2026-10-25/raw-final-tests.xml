@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="2"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="0"
+	timestamp="2026-10-25T04:35:51"
+	>
+	<testcase name="forge_raw_bounded_consumer" classname="forge_raw_bounded_consumer" time="0.308276" status="run">
+		<properties/>
+		<system-out>Running 6 test cases...
+
+[NON-XML-CHAR-0x1B][1;32;49m*** No errors detected
+[NON-XML-CHAR-0x1B][0;39;49m
+</system-out>
+	</testcase>
+	<testcase name="forge_raw_legacy_regression" classname="forge_raw_legacy_regression" time="0.29378" status="run">
+		<properties/>
+		<system-out>Running 51 test cases...
+
+[NON-XML-CHAR-0x1B][1;32;49m*** No errors detected
+[NON-XML-CHAR-0x1B][0;39;49m
+</system-out>
+	</testcase>
+</testsuite>

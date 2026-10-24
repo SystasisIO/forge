@@ -1,0 +1,341 @@
+{
+  "date": "2026-10-25",
+  "status": "PASS_SCOPED_JOB0",
+  "forge_source": "569cc72ed870ac91fc3334143d646545b7ac8663",
+  "forge_tree": "3f879c1add7a65888d3198e0de58dee4b91f79ba",
+  "forge_dev_base": "8fa21d936042efe3805d3ba571970aa1f751918d",
+  "accepted_integrations": [
+    "7b95c3af31bcd1a567264ba5b56ca79cec2d16d7",
+    "2bd4b2a0947b288c6e23a7d0c8e19050c0c71113"
+  ],
+  "turbine_base": "32a83b2a65294bbaf8d3a336898319d056f9c461",
+  "turbine_reviewed_files": 64,
+  "turbine_fingerprint": "8130af71e13bd2bb68d8ae518454154a68bfa306f413efcb28dc0863f081c036",
+  "forge_version": "8.29.1",
+  "platform": "macOS arm64",
+  "toolchain": "Homebrew LLVM22.1.8, Ninja, Release, Boost1.90, OpenSSL3.6.4",
+  "environment": "CPATH/CPLUS_INCLUDE_PATH/C_INCLUDE_PATH/OBJC_INCLUDE_PATH removed for each child; global environment unchanged",
+  "runtime": "Forge WAMR interpreter; expression backend OFF (expression_values/Contract SDK built)",
+  "tests": {
+    "raw": {
+      "ctest": 2,
+      "passed": 2,
+      "boost_cases": 57,
+      "focused": 6,
+      "legacy": 51
+    },
+    "contract_e2e": {
+      "ctest": 1,
+      "passed": 1,
+      "boost_cases": 53,
+      "new_bounded_cases": 5
+    },
+    "jobs": {
+      "ctest": 3,
+      "passed": 3,
+      "accepted": 208,
+      "rejected": 47,
+      "abi": "real Abigen fields/order/width",
+      "hash": "independent hashlib over fixed Raw bytes; no alternate serializer"
+    },
+    "sdk_relocation": "PASS: archive relocated, real aligned VM, native/guest dependency probes and negative graphs",
+    "fixtures": "17 genuine E2E fixture targets PASS"
+  },
+  "limitations": {
+    "full_consumer_all": "FAILED donorcompat: reused freestanding upstream sysroot lacks regex/locale/stream APIs; raw log retained; no all-SDK PASS claimed",
+    "allocator": "container/byte-content budgets, not physical allocator isolation or arbitrary custom-codec allocations",
+    "job1": "NOT_STARTED financial state machine/authority/funding/settlement",
+    "tlsnotary_fairswap": "profile cryptographic payload NOT_IMPLEMENTED/JOB3-4",
+    "live_spine": "NOT_RUN",
+    "linux": "NOT_RUN",
+    "real_labs": "NOT_RUN",
+    "full_turbine_runtime": "NOT_RUN; unrelated pending refactor preserved",
+    "ci": "NOT_RUN: skip ci publication keeps Linux excluded"
+  },
+  "source_reviews": {
+    "forge-cross-review-final.json": "0ff31ad0ca60aa29e7b642213d5f14b344925f9ed0f5543bb956030ddb7fd5b0",
+    "review-turbine-final.json": "5c657f556f5ae0b44099eff81df570040651f81b8d3651896a484720e4d65ef6",
+    "review-final.json": "1f21343da55c83a70994a9d4b91337540c66a088aabed74d5a0f389ead0ed4d9"
+  },
+  "evidence": {
+    "e2e-tests.xml": {
+      "sha256": "da5ae931c26852a6a09158cf2505221d913d3a238cdb729ce5e3e951d7e67ed7",
+      "bytes": 462
+    },
+    "jobs-tests.xml": {
+      "sha256": "2c041a438265fec3578b595785398df16bd9e43d86ecb16c48d1331faff1c05a",
+      "bytes": 1048
+    },
+    "raw-final-tests.xml": {
+      "sha256": "9679b3800ce2e3ecb37892c95fa68afd78d938f1fd68c68ecb69218d4e07c5e6",
+      "bytes": 743
+    },
+    "raw-tests.xml": {
+      "sha256": "22fef72b00992df9c2565d06b7f437d87f90a7b6f03d150fcefe5659c831be86",
+      "bytes": 744
+    },
+    "raw-final-ctest.json": {
+      "sha256": "e8748cdbe169ece4f9adc930653a7193862b76e4778703cc6d401259efa28a91",
+      "bytes": 521
+    },
+    "raw-final-ctest.log": {
+      "sha256": "cee592d2e9791a4c9d99352fc6d62e9cef9a750f69a636a33b93dbd312bc0b0e",
+      "bytes": 547
+    },
+    "jobs-ctest.json": {
+      "sha256": "530679db2dfd27ea0909327eb01763695792e53958ce844b93e266b53c368e94",
+      "bytes": 520
+    },
+    "jobs-ctest.log": {
+      "sha256": "733f8959aeb986a37a0ce7e5b8c560a7a9821f29a63f77b8847bec9258213e86",
+      "bytes": 832
+    },
+    "e2e-ctest.json": {
+      "sha256": "3afdc4dd86bbabcc0b23c6f84803acfc4c6fc52f650bada4fdb936442ee8ac2e",
+      "bytes": 570
+    },
+    "e2e-ctest.log": {
+      "sha256": "e4c4ce0b13bdc5db71ac4628e5119e62768d447576da7fd29275ea80c88262e2",
+      "bytes": 435
+    },
+    "sdk-relocation.json": {
+      "sha256": "3317cc922a9e9ff1e96a0dc5762a87a264f9d0436beb8fa855cfabbe6eedd88a",
+      "bytes": 420
+    },
+    "consumer-e2e-fixtures.json": {
+      "sha256": "dc6d928573b69235030c03c371e4c56edf1f0692b00b9573f42a8a63ed29e4e9",
+      "bytes": 716
+    },
+    "consumer-build.json": {
+      "sha256": "9433264242d415a40800cd131caa748f4487f429603af5a41f30f2a750f7fd3d",
+      "bytes": 370
+    },
+    "consumer-build.log": {
+      "sha256": "8504447f30648914e6e276e66d5ddaf05110b074f861682bf866618160d37045",
+      "bytes": 104881
+    },
+    "e2e-LastTest.log": {
+      "sha256": "cde12f60f8c8e246b3278224d3d5fd9f92c9c75660de9e8f11715389472bfb1e",
+      "bytes": 903
+    },
+    "jobs-native-LastTest.log": {
+      "sha256": "927d6b7c47d91e607279d6614797a22c712b9e32548bee994f2a69b4d4358db1",
+      "bytes": 2872
+    },
+    "raw-LastTest.log": {
+      "sha256": "8ab20bcad50e31ec581b261dd63d132522f4bcf9c610017affba02bdfb073282",
+      "bytes": 1714
+    },
+    "sdk-LastTest.log": {
+      "sha256": "3e28fd277e0fbd145c4da283d906fd769802a20ed773307246995b811b6fcf23",
+      "bytes": 121
+    }
+  },
+  "deliverables": [
+    {
+      "path": "deliverables/jobs-guest/jobswire.abi",
+      "sha256": "73b120bffe424cf67e0e534ec5b40c3ac87fa33071c3b5fb27a5921b531263f4",
+      "bytes": 27096
+    },
+    {
+      "path": "deliverables/jobs-guest/jobswire.contract.json",
+      "sha256": "07c1cd380a79978021280d6cb68c5ca49fed66791762787e4bf42f9880b1a21b",
+      "bytes": 2733
+    },
+    {
+      "path": "deliverables/jobs-guest/jobswire.wasm",
+      "sha256": "2645d0301f5619511b4fbb8a1c520f4de952238ecd8857a09ee99f31f35b1052",
+      "bytes": 163147
+    },
+    {
+      "path": "deliverables/consumer/allocatortst.abi",
+      "sha256": "fdece3cfd6927c325f6b384f0a0c23295aa0362d21a063b8d8a0ab9dd076ee94",
+      "bytes": 2656
+    },
+    {
+      "path": "deliverables/consumer/allocatortst.wasm",
+      "sha256": "78a97b480de26c0a14d7f03376e18165e34ea4aaf68aea194fd1ac9c5501b7d1",
+      "bytes": 21981
+    },
+    {
+      "path": "deliverables/consumer/dbhost.abi",
+      "sha256": "7a09fa00e93ed06d213df3488ab6be51d6827a8f42f9751aa2e3d85c67d26a2f",
+      "bytes": 520
+    },
+    {
+      "path": "deliverables/consumer/dbhost.wasm",
+      "sha256": "afb7a4ec81d2613477d6a7af7774b2f4299c9cc19e52c6e04b4c28df3c93e648",
+      "bytes": 36209
+    },
+    {
+      "path": "deliverables/consumer/dispatchshdw.abi",
+      "sha256": "7394060aca4d3133b303987d251bca9be9614da5c6ea410b662e3ca13cc10e2f",
+      "bytes": 1310
+    },
+    {
+      "path": "deliverables/consumer/equivalent.abi",
+      "sha256": "cc8d485e2749edb56da9a75d09a91e2358c3b1d15da3ad0bed243eb88002f161",
+      "bytes": 994
+    },
+    {
+      "path": "deliverables/consumer/guestmacro.abi",
+      "sha256": "bfff8b4725e12417fad08e363750d0bc880bc3c49540259de44baf668819095e",
+      "bytes": 797
+    },
+    {
+      "path": "deliverables/consumer/guestmacro.wasm",
+      "sha256": "f72501be54308896c60776a531c569e826ae7e287d2e93872511a24a89e51501",
+      "bytes": 11116
+    },
+    {
+      "path": "deliverables/consumer/hello.abi",
+      "sha256": "faeb97b0399e808bdc4b5b770145f5385eae7672ce9039aeac39e33209039ffe",
+      "bytes": 3394
+    },
+    {
+      "path": "deliverables/consumer/hello.wasm",
+      "sha256": "3080f76cbbc9e1c9379208fc9823fe0a287601ae877202f0cc3d43f40d6ffab1",
+      "bytes": 25977
+    },
+    {
+      "path": "deliverables/consumer/legacyhello.abi",
+      "sha256": "d32e9e0ae3369a6107985f5b9b1626bff437e625b248ee0b301e046788ee5886",
+      "bytes": 1858
+    },
+    {
+      "path": "deliverables/consumer/legacyhello.wasm",
+      "sha256": "afb6c362ef12b945d28ed13098deb4b37ddafa9f03235f567583ad6e06d02674",
+      "bytes": 22672
+    },
+    {
+      "path": "deliverables/consumer/legacymidx.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/legacymidx.wasm",
+      "sha256": "ae893f2ee6e3ca47e241764e330c277016c1cb7733f7fdcaea2c014485853193",
+      "bytes": 56320
+    },
+    {
+      "path": "deliverables/consumer/legacynotify.abi",
+      "sha256": "96ceb5bd872d1272e533296af1d7d249fde8034918a65564c348fb092ee1e17e",
+      "bytes": 1011
+    },
+    {
+      "path": "deliverables/consumer/legacynotify.wasm",
+      "sha256": "157b2fefc7b47cf66f85c2af96865230cde596641d0685342824299e88736dcc",
+      "bytes": 12899
+    },
+    {
+      "path": "deliverables/consumer/legmidxerr.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/legmidxerr.wasm",
+      "sha256": "1a62b649f64ae85184f506d8865223c1f9f1665cf44db51bcd1870307ac88206",
+      "bytes": 29581
+    },
+    {
+      "path": "deliverables/consumer/legmidxext.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/legmidxext.wasm",
+      "sha256": "6ceb22213a3a5230fe9516d0ed87e3a9777c0ee214b75d49f7ae829f078f6f55",
+      "bytes": 56619
+    },
+    {
+      "path": "deliverables/consumer/looping.abi",
+      "sha256": "aa220aecdbe1870a85758fcc8084e4fb912873dfb9f42ab46dbfa42b248b59a4",
+      "bytes": 1480
+    },
+    {
+      "path": "deliverables/consumer/looping.wasm",
+      "sha256": "68cd7d1271936eb1b277d8c1f8c3f1cb99ce0d06908c6b332d85c36a8573dcea",
+      "bytes": 19293
+    },
+    {
+      "path": "deliverables/consumer/midxerrors.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/midxerrors.wasm",
+      "sha256": "cd02c6c41a7cedec05d771541694cb930b9195c9aef317dfdaf5a88535fac406",
+      "bytes": 29950
+    },
+    {
+      "path": "deliverables/consumer/midxextend.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/midxextend.wasm",
+      "sha256": "d012f7f2b2ec2f842c180d042c49dc725bcbf4c8cd84efa2ed8ecb35ee1d9edf",
+      "bytes": 57142
+    },
+    {
+      "path": "deliverables/consumer/minimal.abi",
+      "sha256": "b30eefafcd2689dad53dbe8631d08d44afdd3238fdef1d467510e80e2caaa67a",
+      "bytes": 520
+    },
+    {
+      "path": "deliverables/consumer/multiidx.abi",
+      "sha256": "60aa0e2230667ce35c95f66d6e6ee6fb57b0f63ca7a090ce38439ef0230f19ca",
+      "bytes": 1553
+    },
+    {
+      "path": "deliverables/consumer/multiidx.wasm",
+      "sha256": "76f90044e21c9cde0eb496e726bd256d5832ed850f6b613edb89887586788350",
+      "bytes": 56958
+    },
+    {
+      "path": "deliverables/consumer/multisource.abi",
+      "sha256": "7411c32135712b42bc2c47ee0d47d02d2c953e7c280c89a74da87e1a3cff633b",
+      "bytes": 785
+    },
+    {
+      "path": "deliverables/consumer/oracle.abi",
+      "sha256": "2acf76bf6e9a4f58b7aca39f791d6956f067ff15de8befb3a087fc608cc25b17",
+      "bytes": 1018
+    },
+    {
+      "path": "deliverables/consumer/oracle.wasm",
+      "sha256": "ef8d8fbaa8cc798ce17c43f0b8eb56b6debb5d20c50ab5a6b35645aca01399bf",
+      "bytes": 47036
+    },
+    {
+      "path": "deliverables/consumer/recordtest.abi",
+      "sha256": "7e4ea78c1d43e99adb5be6004a88fb0e07775dcd6c6ee7ad08ccd52311b53ac9",
+      "bytes": 3558
+    },
+    {
+      "path": "deliverables/consumer/recordtest.wasm",
+      "sha256": "06fdadd62af5445afb0327db9edcd6e59fddfffbde9261f476b659e9f98c28d6",
+      "bytes": 30103
+    },
+    {
+      "path": "deliverables/consumer/recovery.abi",
+      "sha256": "69023fb7a7f2ba136f341b167fbe637263162f5cc875ecf00fe4bc27b035c231",
+      "bytes": 822
+    },
+    {
+      "path": "deliverables/consumer/recovery.wasm",
+      "sha256": "3cd099210bb0a5cf14f5a9d850953883ce9e284e8cd8a95d7a84a16c641a3dd8",
+      "bytes": 23948
+    },
+    {
+      "path": "deliverables/consumer/dbintrinsics.wasm",
+      "sha256": "f09989d9fda2fcce202f3c671a0299e4d2617c9598478c61f79811e4ea430d0a",
+      "bytes": 2953
+    },
+    {
+      "path": "deliverables/forge-contract-sdk-8.29.1-macos-arm64.tar.gz",
+      "sha256": "7a929cc7c18d08be015343a83804bd7dbd71ce2495e8f47d98e890d2e81393a8",
+      "bytes": 131058561
+    }
+  ]
+}
