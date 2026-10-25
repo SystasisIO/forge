@@ -9,3 +9,6 @@
 __pycache__/
 *.py[cod]
 compile_commands.json
+# Pinned, opt-in expression comparison dependency downloads (not product dependencies).
+/vendor/cel-cpp/
+/vendor/exprtk/
