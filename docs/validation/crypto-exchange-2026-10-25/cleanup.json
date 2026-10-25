@@ -1,0 +1,19 @@
+{
+  "result": "COMPLETE",
+  "removed": [
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/python",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/python312"
+  ],
+  "protected": [
+    "primary checkouts and pending changes",
+    "foreign sysroot",
+    "shared Cargo/Bazel/cache/toolchains",
+    "source/raw evidence/reviews/deliverables"
+  ],
+  "deliverables": 27,
+  "df_before": "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n/dev/disk3s5   482797652 357714900  86208080    81% 5978068 862080800    1%   /System/Volumes/Data\n",
+  "df_after": "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n/dev/disk3s5   482797652 346469948  97453032    79% 5946759 974530320    1%   /System/Volumes/Data\n",
+  "checked_unix": 1792941414.076256
+}

@@ -62,6 +62,8 @@
   "full_sdk_consumer": "FAILED_DONORCOMPAT_FREESTANDING_SYSROOT",
   "source_base_forge": "6a34cb8eac3b4545e3fa0ef745f0381e54889daa",
   "source_base_turbine": "baaa45a36df53f2366ac77c529d80cf1700fd80d",
-  "cleanup": "PENDING",
-  "publication": "PENDING"
+  "cleanup": "COMPLETE",
+  "publication": "Forge Draft PR208 published; dev promotion BLOCKED by existing compatibility gate",
+  "dev_promotion": "BLOCKED",
+  "promotion_gate": "promotion-gate.json"
 }

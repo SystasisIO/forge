@@ -1,0 +1,16 @@
+{
+  "status": "BLOCKED_DEV_PROMOTION",
+  "reason": "AGENTS.md:906 Failing compatibility tests are blockers",
+  "task_gates": "16/16 scoped PASS",
+  "baseline_gate": "P2P donor matrix static registry",
+  "exit_code": 1,
+  "diagnostics": 58,
+  "stdout_sha256": "16eead57148548dd0a0555ca87cef3d66ac082649c026d8aeb61adac3028149f",
+  "baseline_document_sha256": "16eead57148548dd0a0555ca87cef3d66ac082649c026d8aeb61adac3028149f",
+  "byte_equal_to_documented_baseline": true,
+  "owner": "Forge network owner per existing baseline note",
+  "forge_pr": "https://github.com/SystasisIO/forge/pull/208",
+  "merge_to_dev": "NOT_PERFORMED",
+  "p2p_runtime": "NOT_RUN",
+  "linux": "NOT_RUN"
+}

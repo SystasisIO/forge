@@ -4,6 +4,15 @@ Date: 2026-10-25. **PASS for the restricted local engineering scope only.**
 Experimental crypto profile; no production enable, generic FairSwap circuit,
 Labs/OpenAI qualification, economic acceptance or live blockchain claim.
 
+**Dev promotion is BLOCKED.** The pre-existing P2P donor-matrix compatibility
+validator still returns 58 static registry errors. The current candidate output
+is byte-identical to the documented baseline (SHA256
+`16eead57148548dd0a0555ca87cef3d66ac082649c026d8aeb61adac3028149f`).
+AGENTS.md says failing compatibility tests are blockers. PR208 remains Draft;
+no merge, waiver, weakened checker or runtime claim is made. The existing
+[baseline note](../../iterations/p2p-donor-matrix-baseline-2026-10-25.md) assigns
+closure to the Forge network owner. See `promotion-gate.json` and the raw log.
+
 ## Scope
 
 - `forge.crypto.exchange`: same physical declarations/implementation compiled
