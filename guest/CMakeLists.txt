@@ -852,3 +852,10 @@ add_custom_target(
    DEPENDS forge_contract_sdk_archive
    VERBATIM
 )
+
+install(FILES
+   "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/crypto/core/include/forge/crypto/core/types.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/crypto/core")
+install(FILES
+   "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/crypto/exchange/include/forge/crypto/exchange/exchange.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/crypto/exchange")

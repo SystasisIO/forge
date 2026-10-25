@@ -366,3 +366,19 @@ forge_contract_register_guest_component(
       forge.contract.compatibility_name
       forge.contract.compatibility_asset
 )
+
+forge_contract_register_guest_component(
+   ID forge.crypto.core
+   TARGET forge_crypto_core
+   MODULES forge/crypto/core/types.cppm
+   MODULE_NAMES forge.crypto.core.types
+)
+
+forge_contract_register_guest_component(
+   ID forge.crypto.exchange
+   TARGET forge_crypto_exchange
+   ARCHIVE libforge_guest_crypto_exchange.a
+   PUBLIC_LIBRARIES forge.crypto.core forge.crypto.digest forge.raw forge.contract.runtime
+   MODULES forge/crypto/exchange/exchange.cppm
+   MODULE_NAMES forge.crypto.exchange
+)

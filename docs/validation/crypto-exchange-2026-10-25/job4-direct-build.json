@@ -1,0 +1,17 @@
+{
+  "name": "job4-direct-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/jobs4-direct",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 12.646,
+  "started_unix": 1792938235.3619058,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

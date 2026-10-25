@@ -1,0 +1,19 @@
+{
+  "name": "job5-bill-product-rebuild-r2",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/contract-guest",
+    "--target",
+    "spine.bill",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 3.13,
+  "started_unix": 1792940594.241148,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

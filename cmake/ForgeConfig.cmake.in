@@ -93,6 +93,7 @@ set(
    crypto_core
    crypto_digest
    crypto_symmetric
+   crypto_exchange
    crypto_asymmetric_values
    crypto_asymmetric
    crypto_signer
@@ -518,6 +519,11 @@ macro(_forge_add_component component)
          _forge_add_component(exceptions)
          _forge_add_component(raw)
          _forge_add_component(variant)
+      elseif("${component}" STREQUAL "crypto_exchange")
+         _forge_add_component(crypto_core)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(raw)
+         _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "crypto_symmetric")
          _forge_add_component(crypto_core)
          _forge_add_component(exceptions)
@@ -587,6 +593,8 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "net_transport")
          _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "net_tlsnotary")
+         _forge_add_component(crypto_exchange)
+         _forge_add_component(raw)
          _forge_add_component(crypto_core)
          _forge_add_component(crypto_digest)
          _forge_add_component(net_transport)

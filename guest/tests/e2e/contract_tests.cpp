@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1105,6 +1106,206 @@ BOOST_AUTO_TEST_CASE(contract_testing_host_bounds_direct_and_nested_execution) {
       BOOST_TEST(host.snapshot() == before, boost::test_tools::per_element());
       BOOST_TEST(host.find_primary(account, account, table, 1U).has_value());
    }
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_commits_actual_wasm_rows_indexes_effects_and_exit)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto oracle = read_contract(FORGE_CONTRACT_TEST_ORACLE_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   auto host = forge::tooling::testing::host{};
+   host.transact([&]
+   {
+      invoke_database(host, database, "dbhost", 0);
+      BOOST_REQUIRE(host.find_primary(account, database_scope, 2, 30).has_value());
+      BOOST_TEST(!host.find_primary(account, database_scope, 2, 10).has_value());
+      invoke_database(host, database, "dbhost", 1);
+      BOOST_REQUIRE(host.find_index64(account, database_scope, 3, 30).has_value());
+      BOOST_REQUIRE(host.find_index128(account, database_scope, 4, 30).has_value());
+      BOOST_REQUIRE(host.find_index256(account, database_scope, 5, 30).has_value());
+      BOOST_TEST(invoke_oracle(host, oracle, 4) == 5U);
+      auto context = host.state();
+      context.sender = protocol::make_name("alice").value;
+      host.configure(std::move(context));
+      const auto exited = invoke_database(host, database, "dbhost", 3);
+      BOOST_REQUIRE(exited.exit_code.has_value());
+      BOOST_TEST(*exited.exit_code == 0);
+      BOOST_REQUIRE(host.find_primary(account, database_scope, 9, 77).has_value());
+      invoke_database(host, database, "dbhost", 21);
+   });
+   BOOST_REQUIRE(host.find_primary(account, database_scope, 2, 30).has_value());
+   BOOST_REQUIRE(host.find_primary(account, database_scope, 9, 77).has_value());
+   BOOST_REQUIRE(host.find_index64(account, database_scope, 3, 30).has_value());
+   BOOST_TEST(host.state().inline_actions.size() == 1U);
+   BOOST_TEST(host.state().context_free_inline_actions.size() == 1U);
+   BOOST_TEST(host.state().sender == protocol::make_name("alice").value);
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_rolls_back_all_successful_wasm_children_and_oracle_effects)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto oracle = read_contract(FORGE_CONTRACT_TEST_ORACLE_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   auto host = forge::tooling::testing::host{};
+   const auto before = host.state();
+   BOOST_CHECK_THROW(host.transact([&]
+   {
+      invoke_database(host, database, "dbhost", 0);
+      invoke_database(host, database, "dbhost", 1);
+      BOOST_TEST(invoke_oracle(host, oracle, 4) == 5U);
+      invoke_database(host, database, "dbhost", 3);
+      invoke_database(host, database, "dbhost", 2);
+   }), forge::tooling::testing::exceptions::assertion_failure);
+   for (const auto table : {2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U})
+   {
+      BOOST_TEST(!host.find_table(account, database_scope, table).has_value());
+   }
+   BOOST_CHECK(host.state() == before);
+   // Protocol rows/effects are exact. ObjectDB's monotonic internal allocation
+   // seals are not reinterpreted as chain state or a byte-identical heap image.
+   BOOST_CHECK_NO_THROW(invoke_database(host, database, "dbhost", 3));
+   BOOST_REQUIRE(host.find_primary(account, database_scope, 9, 77).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_cannot_commit_or_continue_after_caught_child_failure)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   auto host = forge::tooling::testing::host{};
+   auto child_failed = false;
+   auto continuation_failed = false;
+   const auto before = host.state();
+   BOOST_CHECK_THROW(host.transact([&]
+   {
+      invoke_database(host, database, "dbhost", 3);
+      try
+      {
+         invoke_database(host, database, "dbhost", 2);
+      }
+      catch (const forge::tooling::testing::exceptions::assertion_failure&)
+      {
+         child_failed = true;
+      }
+      try
+      {
+         invoke_database(host, database, "dbhost", 0);
+      }
+      catch (const forge::tooling::testing::exceptions::database_error&)
+      {
+         continuation_failed = true;
+      }
+   }), forge::tooling::testing::exceptions::database_error);
+   BOOST_TEST(child_failed);
+   BOOST_TEST(continuation_failed);
+   BOOST_TEST(!host.find_table(account, database_scope, 2).has_value());
+   BOOST_TEST(!host.find_table(account, database_scope, 8).has_value());
+   BOOST_TEST(!host.find_table(account, database_scope, 9).has_value());
+   BOOST_CHECK(host.state() == before);
+   BOOST_CHECK_NO_THROW(invoke_database(host, database, "dbhost", 3));
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_rolls_back_callback_snapshot_and_nested_group_failures)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   for (const auto scenario : {0U, 1U, 2U})
+   {
+      auto host = forge::tooling::testing::host{};
+      const auto before = host.state();
+      if (scenario == 0)
+      {
+         BOOST_CHECK_EXCEPTION(host.transact([&]
+         {
+            invoke_database(host, database, "dbhost", 3);
+            throw std::runtime_error{"intentional application callback failure"};
+         }), std::runtime_error, [](const auto& error)
+         {
+            return std::string_view{error.what()} == "intentional application callback failure";
+         });
+      }
+      else
+      {
+         BOOST_CHECK_THROW(host.transact([&]
+         {
+            invoke_database(host, database, "dbhost", 3);
+            if (scenario == 1)
+            {
+               static_cast<void>(host.snapshot());
+            }
+            else
+            {
+               try
+               {
+                  host.transact([] {});
+               }
+               catch (const forge::tooling::testing::exceptions::database_error&)
+               {
+               }
+            }
+         }), forge::tooling::testing::exceptions::database_error);
+      }
+      BOOST_TEST(!host.find_table(account, database_scope, 9).has_value());
+      BOOST_CHECK(host.state() == before);
+      BOOST_CHECK_NO_THROW(invoke_database(host, database, "dbhost", 3));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_preflight_cancel_and_deadline_poison_prior_writes)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   for (const auto cancelled : {false, true})
+   {
+      auto host = forge::tooling::testing::host{};
+      auto stop = std::stop_source{};
+      stop.request_stop();
+      const auto options = cancelled
+          ? forge::tooling::testing::invocation_options{.cancel = stop.get_token()}
+          : forge::tooling::testing::invocation_options{.deadline = std::chrono::steady_clock::now()};
+      auto failed = false;
+      try
+      {
+         host.transact([&]
+         {
+            invoke_database(host, database, "dbhost", 3);
+            host.invoke({database.data(), database.size()}, account, account, protocol::make_name("run").value,
+                        forge::raw::pack(std::uint32_t{21}), options);
+         });
+      }
+      catch (const forge::tooling::testing::exceptions::execution_cancelled&)
+      {
+         BOOST_TEST(cancelled);
+         failed = true;
+      }
+      catch (const forge::tooling::testing::exceptions::execution_timeout&)
+      {
+         BOOST_TEST(!cancelled);
+         failed = true;
+      }
+      BOOST_TEST(failed);
+      BOOST_TEST(!host.find_table(account, database_scope, 9).has_value());
+      BOOST_CHECK_NO_THROW(invoke_database(host, database, "dbhost", 3));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(transaction_group_watchdog_rolls_back_prior_successful_guest)
+{
+   const auto database = read_contract(FORGE_CONTRACT_TEST_DB_HOST_WASM);
+   const auto looping = read_contract(FORGE_CONTRACT_TEST_LOOPING_WASM);
+   const auto account = protocol::make_name("dbhost").value;
+   const auto loop_account = protocol::make_name("looping").value;
+   auto host = forge::tooling::testing::host{
+       forge::tooling::testing::execution_limits{.timeout = std::chrono::milliseconds{50}}};
+   host.invoke({looping.data(), looping.size()}, loop_account, loop_account, protocol::make_name("warmup").value);
+   const auto before = host.state();
+   BOOST_CHECK_THROW(host.transact([&]
+   {
+      invoke_database(host, database, "dbhost", 3);
+      host.invoke({looping.data(), looping.size()}, loop_account, loop_account, protocol::make_name("direct").value);
+   }), forge::tooling::testing::exceptions::execution_timeout);
+   BOOST_TEST(!host.find_table(account, database_scope, 9).has_value());
+   BOOST_CHECK(host.state() == before);
+   BOOST_CHECK_NO_THROW(invoke_database(host, database, "dbhost", 3));
 }
 
 #if FORGE_VM_WASM_INTERPRET_HAS_JIT

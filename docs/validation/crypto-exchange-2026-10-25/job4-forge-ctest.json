@@ -1,0 +1,22 @@
+{
+  "name": "job4-forge-ctest",
+  "command": [
+    "ctest",
+    "--test-dir",
+    "artifacts/jobs45-20261025/build/native",
+    "-R",
+    "^test_forge_(crypto_exchange|net_tlsnotary_exchange)$",
+    "-j",
+    "1",
+    "--output-on-failure",
+    "--output-junit",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/job4-forge-tests.xml"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 3.302,
+  "started_unix": 1792937361.2323,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

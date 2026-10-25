@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="6"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="6"
+	timestamp="2026-10-25T20:08:24"
+	>
+	<testcase name="turbine_billing_contract_tests" classname="turbine_billing_contract_tests" time="5.93223" status="run">
+		<properties>
+			<property name="cmake_labels" value="billing;native;tar1;tar2;tar3;tar4;wasm"/>
+		</properties>
+		<system-out>PASS owner, duplicate service, schema/description/variable limits and canonical declarations
+PASS immutable v1/v2, owner-only metadata/head, failed publication rollback and Raw parity
+PASS forged program recheck, artifact limits, recipient/asset/payout validation
+PASS exact inputs, zero/boundary/overflow, branches/rounding, fresh-worker reload and read-only quote
+PASS size_and_resolution_pricing: 1024/1025/2048 boundaries, rectangles and invalid dimensions
+PASS independent literal reference/schema/terms goldens and financial hash coverage
+PASS schema2 marker/legacy20 fail-closed, real SDK service IDs1/2/highest+1/max-2 and rollback
+PASS TESTHOST_TRANSITIONS admission: sender/permission/key/cap/asset/recipient/token, zero completed
+PASS TESTHOST_TRANSITIONS direct: persisted product decision, queued funding/finish, phases and replay
+PASS TESTHOST_TRANSITIONS notifications: exact token/sender/to/asset/amount/memo, direct-call guard
+PASS TESTHOST_TRANSITIONS terminal replay: complete hash, expired/disabled/new-h...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="turbine_billing_transaction_tests" classname="turbine_billing_transaction_tests" time="0.0180257" status="run">
+		<properties>
+			<property name="cmake_labels" value="billing;native;signer;tar4"/>
+		</properties>
+		<system-out>PUBLIC test_signer_key=PUB_SECP256K1_6mmGychTtRmykmo2c1TTbAN8NTcAVCgWYcRVH9Li8BZhccLgKx
+PASS native configured signer action=publish transaction_id=4e5ae55f3460338492de831e67caa80c81d543e42f322dfb3ef1a851fb88abf4 signing_digest=cb4e576c9a15cdf52b3517a8cd76218096c251c1f96822b4906b9d9502bc072e
+PASS native configured signer action=publishver transaction_id=6a7c8635ba916f2fb357fb4a0069c4a38d2fd3aae6640960e2800647ba478524 signing_digest=cf7d3aa732066d38837d02144d0c3eafda1d13a73ce210a3a379ea716fb1b76b
+PASS native configured signer action=setcurrent transaction_id=8bd0668140d62aab9c469b2790210a43db47c27c902281a3830547f381fe5ad4 signing_digest=877d5d48a10557df5a23065f69540d5333de4a25af8c4a8a83878833e49e5756
+PASS native configured signer action=charge transaction_id=dcfe7b957203c3d785efc0ed4175e2aed6231e3d52aad7c7be10819e7a67d5cb signing_digest=0fd5e2d7b1762afcd2bac02db1617efd9ec7c5fc4a694710a9142d578e51403c
+PASS native configured signer action=claim transaction_id=f1437a03d939ddd9f52ad908f5e0b6d522757baf3cc2efba32b1e...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="turbine_billing_abi" classname="turbine_billing_abi" time="0.0181486" status="run">
+		<properties/>
+		<system-out>PASS actual billing ABI: unchanged named actions/calls, schema-only settings and exact table field layouts
+PASS actual consumer/product ABI: exact action sets and direct charge/claim/fundbill named payloads
+</system-out>
+	</testcase>
+	<testcase name="turbine_billing_provenance" classname="turbine_billing_provenance" time="0.0387181" status="run">
+		<properties/>
+		<system-out>PASS physical turbine.compute.chain.bill external client / spine.bill guest ownership; no tables in client or client import in guest
+PASS explicitly selected Forge SDK base 6a34cb8eac3b4545e3fa0ef745f0381e54889daa + recorded CMake extension SHA256=1126b881d0c0e3e957408a97af6581656d8283e75ee58173407de6392c7f8170
+</system-out>
+	</testcase>
+	<testcase name="turbine_billing_provenance_negative" classname="turbine_billing_provenance_negative" time="0.090741" status="run">
+		<properties/>
+		<system-out>PASS physical turbine.compute.chain.bill external client / spine.bill guest ownership; no tables in client or client import in guest
+PASS nine negative ownership fixtures including all fixture-only mutation hooks
+PASS explicitly selected Forge SDK base 6a34cb8eac3b4545e3fa0ef745f0381e54889daa + recorded CMake extension SHA256=1126b881d0c0e3e957408a97af6581656d8283e75ee58173407de6392c7f8170
+PASS explicitly selected Forge SDK base 6a34cb8eac3b4545e3fa0ef745f0381e54889daa + recorded CMake extension SHA256=1126b881d0c0e3e957408a97af6581656d8283e75ee58173407de6392c7f8170
+PASS negative installed CMake-extension SHA256 and mismatched source-commit fixtures
+</system-out>
+	</testcase>
+	<testcase name="turbine_billing_golden_oracle" classname="turbine_billing_golden_oracle" time="0.0193594" status="run">
+		<properties/>
+		<system-out>PASS literal v1 Raw/hash fixtures against independent Python integer/struct/hashlib oracle
+</system-out>
+	</testcase>
+</testsuite>

@@ -1,0 +1,17 @@
+{
+  "name": "job5-forge-consumer-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/forge-consumer",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 1,
+  "elapsed_seconds": 14.293,
+  "started_unix": 1792938510.506012,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

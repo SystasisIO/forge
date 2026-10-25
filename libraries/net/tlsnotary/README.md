@@ -230,3 +230,24 @@ no TLS transcript; actual native-session tests remain the cryptographic evidence
 
 A local technical pass does not approve this upstream research version for
 production, establish Linux compatibility or prove a commercial cost threshold.
+
+
+### Bounded exchange binding
+
+`forge.net.tlsnotary.exchange::bind_exchange` (function in the owning namespace)
+compares a complete direct-response body, ordered received-only MPC commitments
+and a fully downloaded encrypted block list against an exchange manifest. It
+requires verifier output, an independently expected context/origin, complete
+visible header coverage, exact sizes/ranges/digests and the full retained-record
+hash. It rejects omitted, reordered or foreign blocks before buyer authorization.
+The caller must authenticate the entire verifier result (visible sent/received
+bytes and all retained metadata), bind it to the independently expected operation
+context and freshness, and validate visible request and HTTP header semantics; the helper does not turn arbitrary JSON/URLs/headers into
+a verified artifact. The initial consumer is an engineering fixed-framing local
+HTTPS profile, not a generic Labs/OpenAI adapter. Credentials never enter openings.
+
+A signature over retained evidence alone does not authenticate visible transcript
+bytes or bind an old session to a new operation. Use the live verifier result
+from that operation, or trusted storage/a signature over the whole result plus
+context. The caller validates an operation-specific request nonce before arm;
+a deserialized `result` is data, not an unforgeable verification capability.

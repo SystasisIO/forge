@@ -102,6 +102,7 @@ struct host::impl : compiler_builtins {
    std::optional<Row> find_secondary(std::uint64_t code, std::uint64_t scope, std::uint64_t table_name,
                                      std::uint64_t primary);
 
+   void transact(const std::function<void()>& body);
    void configure(oracle_state state);
    [[nodiscard]] oracle_state state() const;
    void register_contract(std::uint64_t account, std::vector<std::uint8_t> code);
@@ -352,6 +353,9 @@ struct host::impl : compiler_builtins {
    std::shared_ptr<memory_driver> driver_;
    std::optional<forge::db::object::store> store_;
    std::optional<forge::db::object::transaction> transaction_;
+   bool group_active_ = false;
+   bool invocation_active_ = false;
+   bool group_failed_ = false;
    oracle_state state_;
    std::optional<oracle_state> state_before_invocation_;
    std::optional<std::chrono::steady_clock::time_point> invocation_deadline_;

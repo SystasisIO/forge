@@ -31,6 +31,15 @@ host.configure(forge::tooling::testing::oracle_state{});
   entries from the canonical intrinsic registry without a
   second hand-written registration list.
 - Execute a contract invocation with one `forge::db::object::transaction`.
+  `host::transact(body)` can group explicitly driven invocations into the same
+  database/oracle transaction: every child must succeed before commit. Any
+  failed child, including a preflight timeout/cancellation, poisons the group
+  even when the callback catches its exception. Nested groups and reentrant
+  invocations are rejected.
+- Between grouped invocations, `configure` may update deterministic caller
+  context; start from `state()` to preserve already recorded effects. Read
+  helpers use the active transaction; raw `snapshot()` is rejected until the
+  group has committed or rolled back. Contract registration is setup-only.
 - Commit successful `apply` and `eosio_exit`; roll back assertions, DB errors
   and VM traps.
 - Implement Spring iterator and table behavior for the primary table and all
@@ -117,3 +126,8 @@ artifact transfer across worker restart, exact Raw response bytes, malformed
 requests, untrusted artifacts, pointer bounds, typed failures and DB rollback.
 Stopped real worker cases exercise shared deadlines and cancellation inside a
 host import. The independent compute profile retains its five allowed imports.
+
+Grouped invocations do not automatically deliver notifications or inline actions.
+A fixture must explicitly drive the known real-WASM action sequence and check
+recorded effects. This qualifies transaction rollback, not chain authority
+resolution, consensus, or production token custody.

@@ -2,6 +2,7 @@ module;
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -52,6 +53,10 @@ class host final {
                             std::uint64_t action, std::vector<std::uint8_t> data = {});
    invocation_result invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
                             std::uint64_t action, std::vector<std::uint8_t> data, invocation_options options);
+
+   // One database/oracle transaction across explicitly driven real-WASM invocations.
+   // This does not route inline actions, model authorities, or emulate a chain.
+   void transact(const std::function<void()>& body);
 
    void configure(oracle_state state);
    [[nodiscard]] oracle_state state() const;

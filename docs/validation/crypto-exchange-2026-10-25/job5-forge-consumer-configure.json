@@ -1,0 +1,26 @@
+{
+  "name": "job5-forge-consumer-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/forge-tlsnotary-jobs3-v1/guest/tests/consumer",
+    "-B",
+    "artifacts/jobs45-20261025/build/forge-consumer",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DForgeContract_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix/lib/cmake/ForgeContract",
+    "-DCMAKE_TOOLCHAIN_FILE=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix/lib/cmake/ForgeContract/ForgeContractToolchain.cmake",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 0.662,
+  "started_unix": 1792938503.4876559,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

@@ -11,11 +11,11 @@ add_custom_command(
    VERBATIM
 )
 add_custom_target(forge_net_tlsnotary_native DEPENDS "${_forge_tlsnotary_worker}")
-add_library(forge_net_tlsnotary STATIC engine.cpp engine_impl.cpp native_exchange.cpp wire.cpp)
+add_library(forge_net_tlsnotary STATIC engine.cpp engine_impl.cpp native_exchange.cpp wire.cpp exchange.cpp)
 forge_target_modules_at(forge_net_tlsnotary net/tlsnotary)
 target_include_directories(forge_net_tlsnotary PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS}
    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
-target_link_libraries(forge_net_tlsnotary PUBLIC forge_asio forge_net_transport forge_exceptions forge_crypto_digest forge_crypto_core Boost::asio PRIVATE Boost::process forge_log)
+target_link_libraries(forge_net_tlsnotary PUBLIC forge_crypto_exchange forge_raw forge_asio forge_net_transport forge_exceptions forge_crypto_digest forge_crypto_core Boost::asio PRIVATE Boost::process forge_log)
 add_dependencies(forge_net_tlsnotary forge_net_tlsnotary_native)
 set(FORGE_TLSNOTARY_WORKER "${_forge_tlsnotary_worker}" CACHE INTERNAL "TLSNotary build worker")
 install(PROGRAMS "${_forge_tlsnotary_worker}" DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/forge" COMPONENT dev EXCLUDE_FROM_ALL)

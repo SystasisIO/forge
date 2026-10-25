@@ -1,3 +1,4 @@
+include("${CMAKE_CURRENT_LIST_DIR}/crypto_exchange.cmake")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 include("${CMAKE_CURRENT_LIST_DIR}/expression.cmake")
 
@@ -5197,6 +5198,14 @@ if(TARGET forge_net_tlsnotary)
    add_dependencies(test_forge_net_tlsnotary forge_tlsnotary_fault_worker)
    add_test(NAME test_forge_net_tlsnotary COMMAND test_forge_net_tlsnotary)
    set_tests_properties(test_forge_net_tlsnotary PROPERTIES TIMEOUT 450)
+   add_executable(test_forge_net_tlsnotary_exchange tlsnotary/exchange_tests.cpp)
+   target_link_libraries(test_forge_net_tlsnotary_exchange PRIVATE
+      forge_net_tlsnotary forge_net_tcp forge_crypto_pki forge_crypto_asymmetric
+      forge_crypto_exchange forge_raw OpenSSL::SSL)
+   target_compile_definitions(test_forge_net_tlsnotary_exchange PRIVATE
+      FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}")
+   add_test(NAME test_forge_net_tlsnotary_exchange COMMAND test_forge_net_tlsnotary_exchange)
+   set_tests_properties(test_forge_net_tlsnotary_exchange PROPERTIES TIMEOUT 180)
    add_executable(test_forge_net_tlsnotary_evidence tlsnotary/evidence_tests.cpp)
    target_link_libraries(test_forge_net_tlsnotary_evidence PRIVATE
       forge_net_tlsnotary forge_net_tcp forge_crypto_pki forge_crypto_asymmetric forge_raw OpenSSL::SSL)

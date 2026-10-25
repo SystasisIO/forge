@@ -1,0 +1,59 @@
+{
+  "schema": "forge.tests.crypto.exchange.fixed.v1",
+  "oracle": "PyCryptodome 3.23.0 Crypto.Hash.keccak / hashlib.sha256",
+  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "opening_bytes": 2064,
+  "opening_sha256": "a2d2271da7d97e2846bd4e2a8ac8ac6c54d5966b4b63b9d2c410f4a001a99e88",
+  "plaintext": "byte[i] = i % 251 for 0 <= i < 2048",
+  "blinder_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "word_preimage": "BE256(65 * block_index + word_index) || key32",
+  "words": [
+    {
+      "counter": 0,
+      "preimage_hex": "0000000000000000000000000000000000000000000000000000000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "keccak256_hex": "abcac667cb9182d8e9c5e8e3451e710ebf8892d02958e7a121931ba5a7bea6d9",
+      "nist_sha3_256_hex": "f867e5df08b2d43cc1e3d6a3deb454545e574698b9a1dd41ea56308a21dba601"
+    },
+    {
+      "counter": 64,
+      "preimage_hex": "0000000000000000000000000000000000000000000000000000000000000040000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "keccak256_hex": "267b03702a543be422dfb99f40b8e79d0994344fe0f2c014166833fe057b6051",
+      "nist_sha3_256_hex": "8deeffc95a30ecd3f55344592fe5773b6238c51c930df24e25e6372d22c49cc3"
+    },
+    {
+      "counter": 65,
+      "preimage_hex": "0000000000000000000000000000000000000000000000000000000000000041000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "keccak256_hex": "6d1da0390021edc2f60fd9a75f67f77d53ab122d0c35e6f13e6424139b507be9",
+      "nist_sha3_256_hex": "e84805be3ca5821f8701cb11627d6c4d43339703dc8e5ed09097f0eafbc21444"
+    },
+    {
+      "counter": 1039,
+      "preimage_hex": "000000000000000000000000000000000000000000000000000000000000040f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "keccak256_hex": "a83d772e22b976857a2f6e3e56dedb6c8e4ddf742ca1fbf10659b8d1a058d31c",
+      "nist_sha3_256_hex": "424b27bddaeb7e578900145c67302b3a43ea2ebccda428308ce3e06f8012376b"
+    }
+  ],
+  "blocks": [
+    {
+      "index": 0,
+      "ciphertext_bytes": 2080,
+      "ciphertext_sha256": "9a9961cbe1cd6674ce81670b54f78e139ed6c75e18f876b319c68c62e4cd5bfe",
+      "first_word_hex": "abcbc464cf9484dfe1cce2e849137f01af9980c33d4df1b6398a01bebba3b8c6",
+      "last_word_hex": "86daa1d38ef19d438a761334ec1549320994344fe0f2c014166833fe057b6051"
+    },
+    {
+      "index": 1,
+      "ciphertext_bytes": 2080,
+      "ciphertext_sha256": "3df4c83249476594bdedb30dab9ff67b6b8a3d17e07a896ee07d324bebba40f8",
+      "first_word_hex": "6d1ca23a0424ebc5fe06d3ac536af97243ba003e1820f0e6267d3e08874d65f6",
+      "last_word_hex": "c4958212b9f3fe82567aebe0204e24853e5c7634889945f11b81f9993a57fd03"
+    },
+    {
+      "index": 15,
+      "ciphertext_bytes": 2080,
+      "ciphertext_sha256": "15f6b1d7b7041c4383cafa5ef198281c370c2cd2b3ae851b792f408473dbc19b",
+      "first_word_hex": "52c1b1fb451e40c06b0b0df6f2b02fd3ce30d998e41a1f3e0c164860349c3434",
+      "last_word_hex": "089cd58d861cd022d286c495fa7375c38e4ddf742ca1fbf10659b8d1a058d31c"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="2"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="3"
+	timestamp="2026-10-25T19:09:21"
+	>
+	<testcase name="test_forge_crypto_exchange" classname="test_forge_crypto_exchange" time="0.00805788" status="run">
+		<properties/>
+		<system-out>PASS exchange independent Keccak BE256 counters 0/64/65/1039 and full ciphertext vectors
+PASS exchange all block boundaries, 16 hidden blocks, plaintext-only return and counter separation
+PASS exchange malformed witness/wrong key/wrong block cannot prove invalid delivery
+PASS exchange authenticated garbage/source/padding/length faults use exact invalid_delivery
+PASS exchange manifest version/count/ordered coverage/size/index bounds
+PASS exchange nested Raw count17/1048576 and byte2081/1048576 rejected before allocation
+Bounded crypto exchange local primitive tests PASS; TLS/source trust and key freshness external
+</system-out>
+	</testcase>
+	<testcase name="test_forge_net_tlsnotary_exchange" classname="test_forge_net_tlsnotary_exchange" time="3.23469" status="run">
+		<properties/>
+		<system-out>PASS real local MPC: visible exact request/header -&gt; hidden ordered body H -&gt; ciphertext -&gt; plaintext
+PASS production bind_exchange rejects H/coverage/order/origin/context/body/cipher mutations before authorization
+PASS consumer nonce policy rejects authentic old MPC result relabeled with a fresh operation context
+Restricted raw HTTPS body exchange fixture PASS; generic HTTP/Labs/commercial proof NOT_RUN
+</system-out>
+	</testcase>
+</testsuite>

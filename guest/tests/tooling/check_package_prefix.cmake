@@ -80,6 +80,7 @@ foreach(_archive IN ITEMS
    libforge_guest_codec_base58.a
    libforge_guest_codec_hex.a
    libforge_guest_chain_protocol.a
+   libforge_guest_crypto_exchange.a
    libforge_guest_contract.a
    libm.a
 )
@@ -131,6 +132,7 @@ foreach(_archive IN ITEMS
    libforge_guest_codec_base58.a
    libforge_guest_codec_hex.a
    libforge_guest_chain_protocol.a
+   libforge_guest_crypto_exchange.a
    libforge_guest_contract.a
    libm.a
 )
@@ -236,7 +238,7 @@ if(NOT _source_helper_result EQUAL 0)
    message(FATAL_ERROR "source helper failed to resolve the nested-libdir SDK prefix")
 endif()
 
-foreach(_tampered_archive IN ITEMS libforge_guest_raw.a libforge_guest_net_http_values.a libforge_guest_api_wasm.a)
+foreach(_tampered_archive IN ITEMS libforge_guest_raw.a libforge_guest_net_http_values.a libforge_guest_api_wasm.a libforge_guest_crypto_exchange.a)
    file(APPEND "${_prefix}/sysroot/lib/${_tampered_archive}" "tampered")
    execute_process(
       COMMAND

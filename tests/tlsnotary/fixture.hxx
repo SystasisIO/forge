@@ -145,8 +145,10 @@ struct https_fixture {
       return "HTTP/1.1 200 OK\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"value\":7318921}";
    }
 
-   explicit https_fixture(forge::asio::runtime& runtime, const identity& identity)
-       : context{asio::ssl::context::tls_server}, acceptor{runtime.context(), {tcp::v4(), 0}} {
+   explicit https_fixture(forge::asio::runtime& runtime, const identity& identity,
+                          std::string response_bytes = response())
+       : payload{std::move(response_bytes)}, context{asio::ssl::context::tls_server},
+         acceptor{runtime.context(), {tcp::v4(), 0}} {
       context.use_certificate_chain(asio::buffer(identity.certificate));
       context.use_private_key(asio::buffer(identity.private_key), asio::ssl::context::pem);
       check(SSL_CTX_set_min_proto_version(context.native_handle(), TLS1_2_VERSION) == 1 &&
@@ -162,8 +164,7 @@ struct https_fixture {
       auto input = std::string{};
       co_await asio::async_read_until(tls, asio::dynamic_buffer(input, 65536), "\r\n\r\n", asio::use_awaitable);
       check(input.find("X-Private: secret-sentinel") != std::string::npos, "test private header missing");
-      const auto bytes = response();
-      co_await asio::async_write(tls, asio::buffer(bytes), asio::use_awaitable);
+      co_await asio::async_write(tls, asio::buffer(payload), asio::use_awaitable);
       auto error = boost::system::error_code{};
       co_await tls.async_shutdown(asio::redirect_error(asio::use_awaitable, error));
    }
@@ -174,6 +175,7 @@ struct https_fixture {
       return transport(std::move(socket));
    }
 
+   std::string payload;
    asio::ssl::context context;
    tcp::acceptor acceptor;
 };

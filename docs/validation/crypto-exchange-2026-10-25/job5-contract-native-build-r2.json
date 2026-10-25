@@ -1,0 +1,17 @@
+{
+  "name": "job5-contract-native-build-r2",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/contract-native",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 9.901,
+  "started_unix": 1792940693.217946,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

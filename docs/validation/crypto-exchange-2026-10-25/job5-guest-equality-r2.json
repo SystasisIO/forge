@@ -1,0 +1,32 @@
+{
+  "turbine.jobs.wasm": {
+    "sha256": "77f25fc019c0436ba6eeb58cb4cb500ba2c36f5c60cc5d79b22a365828f06012",
+    "bytes": 293552,
+    "equal": true
+  },
+  "turbine.jobs.abi": {
+    "sha256": "5c99abb636f1d720869b5e9ab85d8060c4dcd03bc659bce541225cbd3f1c581f",
+    "bytes": 32545,
+    "equal": true
+  },
+  "turbine.jobs.contract.json": {
+    "sha256": "53507d41bc05dec790d713e5c615eb983b7b9724e2a90299626c153b809618d5",
+    "bytes": 3867,
+    "equal": true
+  },
+  "spine.bill.wasm": {
+    "sha256": "c17e6ecf7e3b7d21a98ace6436ee21e2a92e4957d172108a2434730fc77f3b60",
+    "bytes": 179233,
+    "equal": true
+  },
+  "spine.bill.abi": {
+    "sha256": "452cc8f5c94ee54b1761270de8961995ddcc8ef18b4d33ba630785f708f8e3ec",
+    "bytes": 19512,
+    "equal": true
+  },
+  "spine.bill.contract.json": {
+    "sha256": "e1595f93992f577dd502488b75a6c9bbde0b436fee6a6681cdc8e5c23c733e53",
+    "bytes": 3903,
+    "equal": true
+  }
+}

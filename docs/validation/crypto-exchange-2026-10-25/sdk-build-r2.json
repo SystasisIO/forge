@@ -1,0 +1,17 @@
+{
+  "name": "sdk-build-r2",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/sdk",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 13.684,
+  "started_unix": 1792937135.3578088,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

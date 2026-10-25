@@ -1,0 +1,12 @@
+{
+  "source_commit": "6a34cb8eac3b4545e3fa0ef745f0381e54889daa",
+  "source_state": "base plus verified JOB4/JOB5 pending sources; not a clean release snapshot",
+  "pending_tracked_patch_sha256": "5da740022174f4a1b4f57c70fd6220f67b4dbfc7f5a6f807eeae1ba10fe831f2",
+  "pending_sources_manifest_sha256": "6ab29d0bfb42f35ef0ec29873a7d6c943a15761b43b5ac3f2f063514b8b07f66",
+  "cmake_extension": {
+    "file": "guest/cmake/ForgeContractBuild.cmake",
+    "sha256": "1126b881d0c0e3e957408a97af6581656d8283e75ee58173407de6392c7f8170"
+  },
+  "foundation_sha256": "3197ab97502dc46fea1841a07f29436146c339a9cc704ac570f30b001d2caeca",
+  "profile": "developer: fresh installed guest SDK; borrowed input sysroot read-only; no LLVM rebuild"
+}

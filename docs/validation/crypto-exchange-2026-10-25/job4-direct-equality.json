@@ -1,0 +1,14 @@
+{
+  "turbine.jobs.wasm": {
+    "sha256": "81ca547a032e00825292ec13bdb073074cf247c56956dfee257213d351e0d360",
+    "equal": true
+  },
+  "turbine.jobs.abi": {
+    "sha256": "075d7d913150a8386800363372a2929f969c6cfdd364e34debddc41074678805",
+    "equal": true
+  },
+  "turbine.jobs.contract.json": {
+    "sha256": "a75d3e5f3b36a573f7f737cf3efe41259d73b770c1d4b4ed95a0f5978f4c8218",
+    "equal": true
+  }
+}

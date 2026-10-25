@@ -1,0 +1,76 @@
+{
+  "version": "1",
+  "pip_version": "25.1.1",
+  "install": [
+    {
+      "download_info": {
+        "url": "https://files.pythonhosted.org/packages/db/6c/a1f71542c969912bb0e106f64f60a56cc1f0fabecf9396f45accbe63fa68/pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+        "archive_info": {
+          "hash": "sha256=187058ab80b3281b1de11c2e6842a357a1f71b42cb1e15bce373f3d238135c27",
+          "hashes": {
+            "sha256": "187058ab80b3281b1de11c2e6842a357a1f71b42cb1e15bce373f3d238135c27"
+          }
+        }
+      },
+      "is_direct": false,
+      "is_yanked": false,
+      "requested": true,
+      "metadata": {
+        "metadata_version": "2.1",
+        "name": "pycryptodome",
+        "version": "3.23.0",
+        "platform": [
+          "Posix; MacOS X; Windows"
+        ],
+        "summary": "Cryptographic library for Python",
+        "description": "\nPyCryptodome\n============\n\nPyCryptodome is a self-contained Python package of low-level\ncryptographic primitives.\n\nIt supports Python 2.7, Python 3.7 and newer, and PyPy.\n\nYou can install it with::\n\n    pip install pycryptodome\n\nAll modules are installed under the ``Crypto`` package.\n\nCheck the pycryptodomex_ project for the equivalent library that\nworks under the ``Cryptodome`` package.\n\nPyCryptodome is a fork of PyCrypto. It brings several enhancements\nwith respect to the last official version of PyCrypto (2.6.1),\nfor instance:\n\n* Authenticated encryption modes (GCM, CCM, EAX, SIV, OCB, KW, KWP)\n* Hybrid Public Key Encryption (HPKE)\n* Accelerated AES on Intel platforms via AES-NI\n* First class support for PyPy\n* Elliptic curves cryptography (NIST P-curves; Ed25519, Ed448, Curve25519)\n* Better and more compact API (`nonce` and `iv` attributes for ciphers,\n  automatic generation of random nonces and IVs, simplified CTR cipher mode,\n  and more)\n* SHA-3 (including SHAKE XOFs) and BLAKE2 hash algorithms\n* Salsa20 and ChaCha20 stream ciphers\n* scrypt and HKDF\n* Deterministic (EC)DSA and EdDSA\n* Password-protected PKCS#8 key containers\n* Shamir's Secret Sharing scheme\n* Random numbers get sourced directly from the OS (and not from a CSPRNG in userspace)\n* Simplified install process, including better support for Windows\n* Cleaner RSA and DSA key generation (largely based on FIPS 186-4)\n* Major clean ups and simplification of the code base\n\nPyCryptodome is not a wrapper to a separate C library like *OpenSSL*.\nTo the largest possible extent, algorithms are implemented in pure Python.\nOnly the pieces that are extremely critical to performance (e.g. block ciphers)\nare implemented as C extensions.\n\nFor more information, see the `homepage`_.\n\nAll the code can be downloaded from `GitHub`_.\n\n.. _pycryptodomex: https://pypi.python.org/pypi/pycryptodomex\n.. _`homepage`: http://www.pycryptodome.org\n.. _GitHub: https://github.com/Legrandin/pycryptodome\n",
+        "home_page": "https://www.pycryptodome.org",
+        "author": "Helder Eijs",
+        "author_email": "helderijs@gmail.com",
+        "license": "BSD, Public Domain",
+        "license_file": [
+          "LICENSE.rst",
+          "AUTHORS.rst"
+        ],
+        "classifier": [
+          "Development Status :: 5 - Production/Stable",
+          "License :: OSI Approved :: BSD License",
+          "License :: Public Domain",
+          "Intended Audience :: Developers",
+          "Operating System :: Unix",
+          "Operating System :: Microsoft :: Windows",
+          "Operating System :: MacOS :: MacOS X",
+          "Topic :: Security :: Cryptography",
+          "Programming Language :: Python :: 2",
+          "Programming Language :: Python :: 2.7",
+          "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: 3.7",
+          "Programming Language :: Python :: 3.8",
+          "Programming Language :: Python :: 3.9",
+          "Programming Language :: Python :: 3.10",
+          "Programming Language :: Python :: 3.11",
+          "Programming Language :: Python :: 3.12",
+          "Programming Language :: Python :: 3.13"
+        ],
+        "requires_python": ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*, !=3.6.*",
+        "project_url": [
+          "Source, https://github.com/Legrandin/pycryptodome/",
+          "Changelog, https://www.pycryptodome.org/src/changelog"
+        ]
+      }
+    }
+  ],
+  "environment": {
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.11",
+    "os_name": "posix",
+    "platform_machine": "arm64",
+    "platform_release": "25.1.0",
+    "platform_system": "Darwin",
+    "platform_version": "Darwin Kernel Version 25.1.0: Mon Oct 20 19:34:05 PDT 2025; root:xnu-12377.41.6~2/RELEASE_ARM64_T6041",
+    "python_full_version": "3.12.11",
+    "platform_python_implementation": "CPython",
+    "python_version": "3.12",
+    "sys_platform": "darwin"
+  }
+}

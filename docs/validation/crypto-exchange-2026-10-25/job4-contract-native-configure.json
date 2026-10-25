@@ -1,0 +1,35 @@
+{
+  "name": "job4-contract-native-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/turbine-jobs45-v1/tests/integration/jobs/contract",
+    "-B",
+    "artifacts/jobs45-20261025/build/contract-native",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang",
+    "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++",
+    "-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "-DForge_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/native",
+    "-DForgeContract_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix/lib/cmake/ForgeContract",
+    "-DBoost_DIR=/opt/homebrew/opt/boost/lib/cmake/Boost-1.90.0",
+    "-DTURBINE_JOBS_CONTRACT_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/contract-guest/jobs/artifacts/turbine.jobs.wasm",
+    "-DTURBINE_JOBS_BILL_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/contract-guest/bill/artifacts/spine.bill.wasm",
+    "-DTURBINE_JOBS_READER_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/contract-guest/artifacts/jobsreader.wasm",
+    "-DTURBINE_JOBS_TOKEN_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/contract-guest/artifacts/jobstoken.wasm",
+    "-DTURBINE_JOBS_EXPRESSION_WORKER=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs2-20261025/deliverables/host-prefix/bin/forge-expression-worker",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 1.951,
+  "started_unix": 1792937460.563885,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

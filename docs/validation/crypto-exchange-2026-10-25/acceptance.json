@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-25",
+  "result": "PASS_RESTRICTED_LOCAL_ENGINEERING",
+  "production_commercial": "OFF",
+  "gates": [
+    {
+      "file": "job4-forge-tests.xml",
+      "sha256": "968c71a1717f42934f5f17e6432642862e36da8863f4f335a99851913ae56031",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "file": "job5-forge-sdk-tests.xml",
+      "sha256": "7261e6a3fba656d1cef27600703c150a6fd4681a2aff25e898653d4362e8fc82",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "file": "job5-forge-e2e-tests.xml",
+      "sha256": "b63854d8f311596258cfe812f0016d22712ba0d94ccc7225f81c2a1f922bc3db",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "file": "job5-wire-tests.xml",
+      "sha256": "0846ec3a445bb3aaaab93cbf22e718d1fd1dc5f33526fdd98e4c00b93dd6dbb8",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "file": "job5-contract-tests-r2.xml",
+      "sha256": "9b9aecf308a25f50841ba081670205b93a64e13f6c439fa8b28d9104676ae7ac",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "file": "job5-bill-tests-r2.xml",
+      "sha256": "5f3104289f062c6bb47201abceef182f79986f13c13622c6a78a02b0dddb965f",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "product_pass_groups": 27,
+  "forge_host_cases": 59,
+  "linux": "NOT_RUN",
+  "real_labs": "NOT_RUN",
+  "live_spine": "NOT_RUN",
+  "full_turbine_regression": "NOT_RUN",
+  "full_native_installed_consumer": "NOT_RUN",
+  "full_sdk_consumer": "FAILED_DONORCOMPAT_FREESTANDING_SYSROOT",
+  "source_base_forge": "6a34cb8eac3b4545e3fa0ef745f0381e54889daa",
+  "source_base_turbine": "baaa45a36df53f2366ac77c529d80cf1700fd80d",
+  "cleanup": "PENDING",
+  "publication": "PENDING"
+}

@@ -1,0 +1,58 @@
+{
+  "status": "PASS_ORACLE_ONLY_NO_PRODUCT_BUILDS",
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "venv",
+        "artifacts/jobs45-20261025/python"
+      ],
+      "exit_code": 1,
+      "failure": "ensurepip --upgrade --default-pip failed; incomplete environment retained"
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/python3.12",
+        "-m",
+        "venv",
+        "artifacts/jobs45-20261025/python312"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "artifacts/jobs45-20261025/python312/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--only-binary=:all:",
+        "--no-deps",
+        "pycryptodome==3.23.0",
+        "--report",
+        "artifacts/jobs45-20261025/python-oracle-install.json"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "artifacts/jobs45-20261025/python312/bin/python",
+        "worktrees/forge-tlsnotary-jobs3-v1/tests/crypto_exchange/generate_vectors.py"
+      ],
+      "stdout": "exchange-oracle.json",
+      "exit_code": 0
+    }
+  ],
+  "package": "pycryptodome",
+  "version": "3.23.0",
+  "download": {
+    "url": "https://files.pythonhosted.org/packages/db/6c/a1f71542c969912bb0e106f64f60a56cc1f0fabecf9396f45accbe63fa68/pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+    "archive_info": {
+      "hash": "sha256=187058ab80b3281b1de11c2e6842a357a1f71b42cb1e15bce373f3d238135c27",
+      "hashes": {
+        "sha256": "187058ab80b3281b1de11c2e6842a357a1f71b42cb1e15bce373f3d238135c27"
+      }
+    }
+  },
+  "scope": "task-owned binary wheel only; no production dependency, no compiler/build invocation"
+}

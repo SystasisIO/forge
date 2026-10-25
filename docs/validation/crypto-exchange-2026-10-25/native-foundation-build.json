@@ -1,0 +1,24 @@
+{
+  "name": "native-foundation-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/native",
+    "--target",
+    "forge_tooling_abi",
+    "forge_tooling_attributes",
+    "forge_tooling_validation",
+    "forge_tooling_manifest",
+    "forge_tooling_testing",
+    "forge_crypto_exchange",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 130.198,
+  "started_unix": 1792936621.737634,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

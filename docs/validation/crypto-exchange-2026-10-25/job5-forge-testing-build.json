@@ -1,0 +1,19 @@
+{
+  "name": "job5-forge-testing-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/native",
+    "--target",
+    "forge_tooling_testing",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 28.851,
+  "started_unix": 1792938459.3087091,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

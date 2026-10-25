@@ -12,6 +12,7 @@ module;
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <cstring>
 #include <exception>
 #include <iomanip>
@@ -344,6 +345,7 @@ host::impl::impl(execution_limits limits)
 host::impl::~impl() {
    if (transaction_) {
       try {
+         group_active_ = false;
          rollback_invocation();
       } catch (...) {
       }
@@ -364,8 +366,8 @@ void host::impl::register_intrinsics() {
 
 void host::impl::begin_invocation(std::uint64_t receiver, std::uint64_t first_receiver, std::vector<std::uint8_t> data,
                                   invocation_options options) {
-   if (transaction_) {
-      fail_database("contract database invocation is already active");
+   if (invocation_active_ || (transaction_ && !group_active_) || group_failed_) {
+      fail_database("contract database invocation is active or the transaction has failed");
    }
    if (options.cancel.stop_requested())
       FORGE_THROW_EXCEPTION(exceptions::execution_cancelled, "contract execution cancelled");
@@ -386,9 +388,12 @@ void host::impl::begin_invocation(std::uint64_t receiver, std::uint64_t first_re
    static_assert(std::is_nothrow_move_assignable_v<decltype(state_before_invocation_)>);
    static_assert(std::is_nothrow_move_assignable_v<decltype(action_data_)>);
    static_assert(std::is_nothrow_move_assignable_v<invocation_result>);
-   auto snapshot = std::optional<oracle_state>{std::in_place, state_};
-   transaction_.emplace(run(store_->begin_transaction()));
-   state_before_invocation_ = std::move(snapshot);
+   if (!group_active_) {
+      auto snapshot = std::optional<oracle_state>{std::in_place, state_};
+      transaction_.emplace(run(store_->begin_transaction()));
+      state_before_invocation_ = std::move(snapshot);
+   }
+   invocation_active_ = true;
    invocation_deadline_ = deadline;
    invocation_cancel_ = std::move(options.cancel);
    receiver_ = receiver;
@@ -404,14 +409,31 @@ void host::impl::begin_invocation(std::uint64_t receiver, std::uint64_t first_re
 }
 
 void host::impl::commit_invocation() {
+   if (group_active_) {
+      if (group_failed_) {
+         fail_database("contract test transaction has failed");
+      }
+      invocation_active_ = false;
+      invocation_deadline_.reset();
+      invocation_cancel_ = {};
+      return;
+   }
    run(transaction_->commit());
    transaction_.reset();
+   invocation_active_ = false;
    state_before_invocation_.reset();
    invocation_deadline_.reset();
    invocation_cancel_ = {};
 }
 
 void host::impl::rollback_invocation() {
+   invocation_active_ = false;
+   invocation_deadline_.reset();
+   invocation_cancel_ = {};
+   if (group_active_) {
+      group_failed_ = true;
+      return;
+   }
    run(transaction_->rollback());
    transaction_.reset();
    if (state_before_invocation_) {
@@ -438,7 +460,14 @@ std::chrono::steady_clock::duration host::impl::remaining_execution_time() const
 invocation_result host::impl::invoke(std::span<const std::uint8_t> code, std::uint64_t receiver,
                                      std::uint64_t first_receiver, std::uint64_t action, std::vector<std::uint8_t> data,
                                      invocation_options options) {
-   begin_invocation(receiver, first_receiver, std::move(data), std::move(options));
+   try {
+      begin_invocation(receiver, first_receiver, std::move(data), std::move(options));
+   } catch (...) {
+      if (group_active_) {
+         group_failed_ = true;
+      }
+      throw;
+   }
    try {
       auto bytes = forge::vm::wasm::interpret::wasm_code{code.begin(), code.end()};
       auto pointer = forge::vm::wasm::interpret::wasm_code_ptr{bytes.data(), bytes.size()};
@@ -546,8 +575,38 @@ std::uint32_t host::impl::expression_evaluate_v1(std::span<const char> request, 
    FORGE_THROW_EXCEPTION(exceptions::expression_unavailable, "expression capability is unavailable");
 }
 
+void host::impl::transact(const std::function<void()>& body) {
+   if (transaction_ || group_active_ || invocation_active_) {
+      if (group_active_) {
+         group_failed_ = true;
+      }
+      fail_database("contract test transaction is already active");
+   }
+   auto snapshot = std::optional<oracle_state>{std::in_place, state_};
+   transaction_.emplace(run(store_->begin_transaction()));
+   state_before_invocation_ = std::move(snapshot);
+   group_active_ = true;
+   group_failed_ = false;
+   try {
+      body();
+      if (invocation_active_ || group_failed_) {
+         fail_database("contract test transaction cannot commit after a failed invocation");
+      }
+      run(transaction_->commit());
+      transaction_.reset();
+      state_before_invocation_.reset();
+      group_active_ = false;
+   } catch (...) {
+      const auto failure = std::current_exception();
+      group_active_ = false;
+      group_failed_ = false;
+      rollback_invocation();
+      std::rethrow_exception(failure);
+   }
+}
+
 void host::impl::configure(oracle_state state) {
-   if (transaction_) {
+   if (invocation_active_ || group_failed_ || (transaction_ && !group_active_)) {
       fail_database("cannot configure contract test host during an invocation");
    }
    state_ = std::move(state);
@@ -565,6 +624,12 @@ void host::impl::register_contract(std::uint64_t account, std::vector<std::uint8
 }
 
 std::optional<table> host::impl::find_table(std::uint64_t code, std::uint64_t scope, std::uint64_t table_name) {
+   if (group_failed_) {
+      fail_database("cannot read a failed contract test transaction");
+   }
+   if (transaction_) {
+      return run(transaction_->index<table_index, by_code_scope_table>().find(code, scope, table_name));
+   }
    return run(store_->index<table_index, by_code_scope_table>().find(code, scope, table_name));
 }
 
@@ -573,6 +638,9 @@ std::optional<key_value> host::impl::find_primary(std::uint64_t code, std::uint6
    const auto owner = find_table(code, scope, table_name);
    if (!owner) {
       return std::nullopt;
+   }
+   if (transaction_) {
+      return run(transaction_->index<key_value_index, by_scope_primary>().find(owner->id, primary));
    }
    return run(store_->index<key_value_index, by_scope_primary>().find(owner->id, primary));
 }
@@ -583,6 +651,9 @@ std::optional<Row> host::impl::find_secondary(std::uint64_t code, std::uint64_t 
    const auto owner = find_table(code, scope, table_name);
    if (!owner) {
       return std::nullopt;
+   }
+   if (transaction_) {
+      return run(transaction_->index<Index, by_primary>().find(owner->id, primary));
    }
    return run(store_->index<Index, by_primary>().find(owner->id, primary));
 }
@@ -1358,6 +1429,9 @@ std::int32_t host::impl::get_context_free_data(std::uint32_t index, std::span<ch
 }
 
 std::vector<std::uint8_t> host::impl::snapshot() const {
+   if (transaction_) {
+      fail_database("cannot snapshot an uncommitted contract test transaction");
+   }
    return driver_->snapshot();
 }
 

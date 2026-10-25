@@ -1,0 +1,15 @@
+{
+  "name": "sdk-install",
+  "command": [
+    "cmake",
+    "--install",
+    "artifacts/jobs45-20261025/build/sdk"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 6.908,
+  "started_unix": 1792937247.766353,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

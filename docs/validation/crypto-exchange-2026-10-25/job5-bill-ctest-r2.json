@@ -1,0 +1,18 @@
+{
+  "name": "job5-bill-ctest-r2",
+  "command": [
+    "ctest",
+    "--test-dir",
+    "artifacts/jobs45-20261025/build/bill-native",
+    "--output-on-failure",
+    "--output-junit",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/job5-bill-tests-r2.xml"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 6.127,
+  "started_unix": 1792940904.403216,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

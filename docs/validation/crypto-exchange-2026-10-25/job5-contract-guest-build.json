@@ -1,0 +1,17 @@
+{
+  "name": "job5-contract-guest-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/contract-guest",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 13.573,
+  "started_unix": 1792939760.7619882,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}
