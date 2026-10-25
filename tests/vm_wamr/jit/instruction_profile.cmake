@@ -72,7 +72,7 @@ function(forge_add_wamr_instruction_profile_probe candidate_root)
       COMMAND test_forge_wamr_jit_instruction_profile runtime)
    set_tests_properties(test_forge_wamr_jit_instruction_profile PROPERTIES
       TIMEOUT 30 LABELS "vm_wasm_interpret;jit;instruction_profile" RUN_SERIAL TRUE)
-   foreach(_scenario IN ITEMS plain empty multi early_heap early_cancel late_cancel mapping metadata)
+   foreach(_scenario IN ITEMS plain empty multi early_heap early_cancel late_cancel mapping metadata final_cancel)
       add_test(NAME "test_forge_wamr_jit_instruction_profile_${_scenario}"
          COMMAND test_forge_wamr_jit_instruction_profile "${_scenario}")
       set_tests_properties("test_forge_wamr_jit_instruction_profile_${_scenario}" PROPERTIES

@@ -134,7 +134,7 @@ const AOTJitProfileInterval* rows(const WASMModule* module, std::uint32_t& count
 std::uint32_t translate(const WASMModule* module, std::uintptr_t pc) {
    return aot_jit_profile_translate(module ? module->comp_ctx : nullptr, pc);
 }
-enum class refusal { none, early_heap, early_cancel, late_cancel, mapping };
+enum class refusal { none, early_heap, early_cancel, late_cancel, mapping, final_cancel };
 
 // Test-only wrapper of the real owner callbacks. The first check with a profile
 // present runs after DIBuilder construction, before its first function record.
@@ -199,6 +199,15 @@ class observed_budget {
          published_during_compile = true;
       auto* context = module ? module->comp_ctx : nullptr;
       if (context && context->jit_instruction_profile) {
+         // Existing owner callback, after the loader commits native policy but
+         // before publish's final check can expose the immutable map.
+         if (!triggered && point == refusal::final_cancel &&
+             (module->native_code_policy == WASM_NATIVE_CODE_RX ||
+              module->native_code_policy == WASM_NATIVE_CODE_MAP_JIT)) {
+            triggered = true;
+            owner->fail(vm::engine_load_budget::failure::cancelled);
+            return false;
+         }
          if (!inspected_noinline) {
             const auto kind = LLVMGetEnumAttributeKindForName("noinline", 8);
             for (std::uint32_t i = 0; i < context->func_ctx_count; ++i) {
@@ -458,6 +467,11 @@ void failure(refusal point) {
       if (point == refusal::early_heap || point == refusal::early_cancel)
          require(!observed.mapping_attempts, "Early metadata refusal reached native mapping/finalization");
       require(!observed.published_during_compile, "Failed preparation exposed a partial map");
+      if (point == refusal::final_cancel) {
+         require(observed.mapping_attempts != 0, "Final cancellation did not reach committed native mappings");
+         require(module->native_code_policy == WASM_NATIVE_CODE_UNCOMMITTED,
+                 "Final cancellation retained a committed module policy");
+      }
       require(!module->comp_ctx && !module->comp_data && !module->func_ptrs && !module->func_ptrs_compiled,
               "Failed compilation retained executable state");
       no_map(module);
@@ -659,6 +673,8 @@ int main(int argc, char** argv) {
          failure(refusal::late_cancel);
       else if (scenario == "mapping")
          failure(refusal::mapping);
+      else if (scenario == "final_cancel")
+         failure(refusal::final_cancel);
       else if (scenario == "metadata")
          metadata_validation();
       else
