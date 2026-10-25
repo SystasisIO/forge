@@ -33,6 +33,7 @@ function(forge_add_wamr_instruction_profile_probe candidate_root)
    foreach(_file IN ITEMS
          compilation/aot_compiler.c compilation/aot_llvm.c compilation/aot_llvm.h
          compilation/aot_jit_profile.cpp compilation/aot_jit_profile.h
+         compilation/aot_jit_profile_metadata.h
          compilation/iwasm_compl.cmake interpreter/wasm_loader.c interpreter/wasm_loader.h
          interpreter/wasm.h interpreter/wasm_runtime.h common/wasm_runtime_common.h
          include/wasm_export.h include/wasm_c_api.h)
@@ -71,7 +72,7 @@ function(forge_add_wamr_instruction_profile_probe candidate_root)
       COMMAND test_forge_wamr_jit_instruction_profile runtime)
    set_tests_properties(test_forge_wamr_jit_instruction_profile PROPERTIES
       TIMEOUT 30 LABELS "vm_wasm_interpret;jit;instruction_profile" RUN_SERIAL TRUE)
-   foreach(_scenario IN ITEMS plain empty multi early_heap early_cancel late_cancel mapping)
+   foreach(_scenario IN ITEMS plain empty multi early_heap early_cancel late_cancel mapping metadata)
       add_test(NAME "test_forge_wamr_jit_instruction_profile_${_scenario}"
          COMMAND test_forge_wamr_jit_instruction_profile "${_scenario}")
       set_tests_properties("test_forge_wamr_jit_instruction_profile_${_scenario}" PROPERTIES
