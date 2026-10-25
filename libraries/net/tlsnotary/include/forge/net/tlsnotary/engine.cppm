@@ -23,6 +23,9 @@ class engine {
    // coroutine cancellation cannot detach an accepted resource owner.
    boost::asio::awaitable<result> prove(prover_request request);
    boost::asio::awaitable<result> verify(verifier_request request);
+   // Checks an opening against a caller-authenticated retained commitment.
+   // Does not authenticate imported evidence or repeat the TLS exchange.
+   boost::asio::awaitable<void> check(check_request request);
    bool cancel(std::uint64_t id) noexcept;
    void request_stop() noexcept;
    // Caller keeps runtime and compute alive until this barrier completes.

@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(FORGE_TLSNOTARY_TEST_PLUGIN "Exercise the installed session plugin in addition to the native leaf" ON)
-set(_forge_tlsnotary_components asio net_tlsnotary)
+set(_forge_tlsnotary_components asio net_tlsnotary net_tcp crypto_pki crypto_asymmetric raw)
 if(FORGE_TLSNOTARY_TEST_PLUGIN)
-   list(APPEND _forge_tlsnotary_components plugins_net_tlsnotary_session)
+   list(APPEND _forge_tlsnotary_components app plugins_net_tlsnotary_session)
 endif()
 find_package(Forge CONFIG REQUIRED COMPONENTS ${_forge_tlsnotary_components})
 if(NOT FORGE_TLSNOTARY_TEST_PLUGIN)
@@ -19,13 +19,24 @@ if(NOT FORGE_TLSNOTARY_TEST_PLUGIN)
 endif()
 
 add_executable(forge_package_net_tlsnotary_component main.cpp)
+# Copy test sources only. All Forge imports and linked archives must resolve
+# through the installed package, including the worker supplied at runtime.
+configure_file(../tlsnotary/fixture.hxx fixture.hxx COPYONLY)
+configure_file(../tlsnotary/evidence.hxx evidence.hxx COPYONLY)
+target_include_directories(forge_package_net_tlsnotary_component PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(
    forge_package_net_tlsnotary_component PRIVATE
       Forge::forge_asio
       Forge::forge_net_tlsnotary
+      Forge::forge_net_tcp
+      Forge::forge_crypto_pki
+      Forge::forge_crypto_asymmetric
+      Forge::forge_raw
+      OpenSSL::SSL
 )
 target_compile_definitions(forge_package_net_tlsnotary_component PRIVATE
    FORGE_TLSNOTARY_TEST_PLUGIN=$<BOOL:${FORGE_TLSNOTARY_TEST_PLUGIN}>)
 if(FORGE_TLSNOTARY_TEST_PLUGIN)
-   target_link_libraries(forge_package_net_tlsnotary_component PRIVATE Forge::forge_plugins_net_tlsnotary_session)
+   target_link_libraries(forge_package_net_tlsnotary_component PRIVATE
+      Forge::forge_app Forge::forge_plugins_net_tlsnotary_session)
 endif()

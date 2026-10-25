@@ -27,9 +27,10 @@ class api : public forge::api::core::contract<api> {
    prove(forge::net::tlsnotary::prover_request request) = 0;
    virtual boost::asio::awaitable<forge::net::tlsnotary::result>
    verify(forge::net::tlsnotary::verifier_request request) = 0;
+   virtual boost::asio::awaitable<void> check(forge::net::tlsnotary::check_request request) = 0;
    virtual bool cancel(std::uint64_t id) noexcept = 0;
    [[nodiscard]] virtual forge::net::tlsnotary::metrics snapshot() const = 0;
 };
 } // namespace forge::plugins::net::tlsnotary::session
 FORGE_EXPORT_API(::forge::plugins::net::tlsnotary::session::api,
-                 FORGE_API_CONTRACT("forge.plugins.net.tlsnotary.session", 1, 0))
+                 FORGE_API_CONTRACT("forge.plugins.net.tlsnotary.session", 1, 1))

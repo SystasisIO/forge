@@ -84,3 +84,20 @@ not a cryptographic production certification. Resource limits cover admission,
 protocol bytes/records, worker threads and deadlines; they are not an OS memory
 sandbox. Portable proofs, monetary cost qualification and platform/upstream
 service acceptance are separate gates.
+
+## Retained commitments and opening verification
+
+Additive experimental source API: session options can explicitly request up to
+16 SHA-256 transcript commitments. Results optionally return versioned retained
+evidence; secret openings are returned to the prover only. The local session API
+is 1.1 and adds `check(check_request)` using the existing managed worker and
+lifecycle. The original default FTN1 protocol is unchanged; opt-in FTN2 requires
+matching installed host/worker binaries. No previous persisted evidence format
+existed. New records use canonical Raw, exact bounded decoding and format 1.
+
+The upstream TLSNotary/MPZ pins do not change. No upstream fork, new crypto
+implementation, notarization service or financial/contract mechanism is added.
+Offline checks bind openings to caller-authenticated commitments; they do not
+independently authenticate a TLS source. Applications sign or trust the complete
+record with their own context before allowing disclosure. Local macOS evidence
+must be assessed separately from Linux or commercial production acceptance.

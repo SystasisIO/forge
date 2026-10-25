@@ -1,0 +1,8 @@
+{
+  "reason": "Four concurrent unchanged Chain API compiler processes under full-package build caused memory/swap and disk pressure; interrupt owned build, resume heavy install-only graph -j1; native TLSNotary target builds remain -j4.",
+  "ninja_pid": 14268,
+  "cwd_lsof": "p14268\nfcwd\nn/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build/native\n",
+  "disk": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s5   460Gi   402Gi   9.8Gi    98%    6.0M  102M    6%   /System/Volumes/Data\n",
+  "swap": "vm.swapusage: total = 26624.00M  used = 26118.69M  free = 505.31M  (encrypted)\n",
+  "unix": 1792932012.9344482
+}

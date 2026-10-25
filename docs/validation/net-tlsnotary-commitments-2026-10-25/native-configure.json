@@ -1,0 +1,43 @@
+{
+  "name": "native-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/forge-tlsnotary-jobs3-v1",
+    "-B",
+    "artifacts/jobs3-20261025/build/native",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang",
+    "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++",
+    "-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "-DFORGE_ENABLE_TLSNOTARY=ON",
+    "-DFORGE_ENABLE_VM_WASM_OPTIMIZING=OFF",
+    "-DFORGE_ENABLE_VM_WASM_LLVM_JIT=OFF",
+    "-DFORGE_ENABLE_WASM_COMPILER=OFF",
+    "-DFORGE_ENABLE_TOOLING=OFF",
+    "-DFORGE_ENABLE_EXPRESSION=OFF",
+    "-DFORGE_ENABLE_ROCKSDB=OFF",
+    "-DFORGE_ENABLE_MDBX=OFF",
+    "-DFORGE_ENABLE_TUI=OFF",
+    "-DFORGE_ENABLE_OIDC_AGENT=OFF",
+    "-DFORGE_ENABLE_LIBOAUTH2=OFF",
+    "-DFORGE_ENABLE_JOSE=OFF",
+    "-DFORGE_ENABLE_S3=OFF",
+    "-DBUILD_TESTING=ON",
+    "-DCMAKE_INSTALL_PREFIX=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/prefix",
+    "-DBoost_DIR=/opt/homebrew/opt/boost/lib/cmake/Boost-1.90.0",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 1,
+  "elapsed_seconds": 21.325,
+  "started_unix": 1792931081.8647401,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

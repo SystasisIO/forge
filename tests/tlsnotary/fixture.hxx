@@ -141,6 +141,10 @@ inline std::pair<forge::net::transport::stream, forge::net::transport::stream> p
 }
 
 struct https_fixture {
+   static std::string response() {
+      return "HTTP/1.1 200 OK\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"value\":7318921}";
+   }
+
    explicit https_fixture(forge::asio::runtime& runtime, const identity& identity)
        : context{asio::ssl::context::tls_server}, acceptor{runtime.context(), {tcp::v4(), 0}} {
       context.use_certificate_chain(asio::buffer(identity.certificate));
@@ -158,9 +162,8 @@ struct https_fixture {
       auto input = std::string{};
       co_await asio::async_read_until(tls, asio::dynamic_buffer(input, 65536), "\r\n\r\n", asio::use_awaitable);
       check(input.find("X-Private: secret-sentinel") != std::string::npos, "test private header missing");
-      auto response =
-          std::string{"HTTP/1.1 200 OK\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"value\":7318921}"};
-      co_await asio::async_write(tls, asio::buffer(response), asio::use_awaitable);
+      const auto bytes = response();
+      co_await asio::async_write(tls, asio::buffer(bytes), asio::use_awaitable);
       auto error = boost::system::error_code{};
       co_await tls.async_shutdown(asio::redirect_error(asio::use_awaitable, error));
    }

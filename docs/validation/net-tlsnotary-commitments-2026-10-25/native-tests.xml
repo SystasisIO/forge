@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="3"
+	failures="1"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="14"
+	timestamp="2026-10-25T17:40:57"
+	>
+	<testcase name="test_forge_net_tlsnotary" classname="test_forge_net_tlsnotary" time="11.6706" status="run">
+		<properties/>
+		<system-out>stage producer-window
+[2026-10-25T12:40:58.331823] warn forge.net.tlsnotary TLSNotary raw channel operation failed event=tlsnotary.channel_failure session=201 role=verifier channel=peer operation=read cause_kind=forge cause_category=forge.net.transport cause_code=2 cause_file=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/tests/tlsnotary/runtime_tests.cpp cause_line=424
+[2026-10-25T12:41:03.334120] warn forge.net.tlsnotary TLSNotary raw channel operation failed event=tlsnotary.channel_failure session=202 role=verifier channel=peer operation=read cause_kind=forge cause_category=forge.net.transport cause_code=2 cause_file=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/tests/tlsnotary/runtime_tests.cpp cause_line=424
+[2026-10-25T12:41:03.362313] warn forge.net.tlsnotary TLSNotary raw channel operation failed event=tlsnotary.channel_failure session=203 role=verifier channel=peer operation=read cause_kind=forge caus...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="test_forge_net_tlsnotary_evidence" classname="test_forge_net_tlsnotary_evidence" time="1.36903" status="fail">
+		<failure message="Failed"/>
+		<properties/>
+		<system-out>TLSNotary evidence test failed: commitment direction wire width or value changed
+</system-out>
+	</testcase>
+	<testcase name="test_forge_plugins_net_tlsnotary_session" classname="test_forge_plugins_net_tlsnotary_session" time="1.2648" status="run">
+		<properties/>
+		<system-out>[2026-10-25T12:41:10.737613] info forge.app.plugin plugin.operation.complete: startup event=plugin.operation.complete operation=startup phase=5 generation=1 epoch=10 id=forge.plugins.net.tlsnotary.session
+[2026-10-25T12:41:10.737639] info forge.app.application app.ready: startup event=app.ready operation=startup phase=5 generation=1 epoch=10 id=
+[2026-10-25T12:41:10.783574] warn forge.net.tlsnotary TLSNotary raw channel operation failed event=tlsnotary.channel_failure session=17 role=verifier channel=peer operation=read cause_kind=forge cause_category=forge.net.tcp cause_code=7 cause_file=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/libraries/net/tcp/socket_stream.cpp cause_line=47
+[2026-10-25T12:41:11.659076] info forge.app.plugin plugin.stop.requested: request_stop event=plugin.stop.requested operation=request_stop phase=6 generation=2 epoch=12 id=forge.plugins.net.tlsnotary.session
+[2026-10-25T12:41:11.659096] info forge.app.application app.stop.requested...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+</testsuite>

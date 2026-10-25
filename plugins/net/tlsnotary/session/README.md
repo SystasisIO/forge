@@ -49,3 +49,12 @@ admission, overload, explicit cancellation, shutdown and retained API refusal.
 `test_forge_net_tlsnotary` covers cryptographic/source/disclosure and fault paths.
 The independently installed consumer verifies module imports and leaf linkage.
 macOS local checks are separate from Linux and production qualification.
+
+## Retained commitments
+
+Local API 1.1 adds `check(check_request)` alongside `prove` and `verify`.
+Commitment selection and returned evidence/openings are the existing native
+library values, without a second DTO or storage/runtime. The plugin delegates
+the operation to the same owned engine. Read the [native library contract](../../../../libraries/net/tlsnotary/README.md#retained-commitments-and-later-openings)
+before storing or transferring evidence: a retained record is not an offline TLS
+proof, and imported metadata requires independent application authentication.

@@ -1,0 +1,17 @@
+{
+  "status": "PASS",
+  "owned_paths_removed": [
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build"
+  ],
+  "allocated_file_bytes_removed": 13758091264,
+  "gib_removed": 12.81,
+  "lsof_returncode": 1,
+  "lsof_stdout": "",
+  "lsof_stderr": "",
+  "retained_files_rechecked": 24,
+  "df_before": "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n/dev/disk3s5   482797652 418036752  21691376    96% 5952581 216913760    3%   /System/Volumes/Data\n",
+  "df_after": "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n/dev/disk3s5   482797652 404629472  35098656    93% 5935677 350986560    2%   /System/Volumes/Data\n",
+  "unix": 1792933624.843402,
+  "foreign_builds_touched": false,
+  "sources_and_shared_cargo_cache_preserved": true
+}

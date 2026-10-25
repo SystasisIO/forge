@@ -1,0 +1,132 @@
+{
+  "schema": "jobs3.independent_review.v1",
+  "phase": "upstream_research_gate",
+  "created_at": "2026-10-25T12:22:50.186200+00:00",
+  "reviewer": {
+    "role": "independent JOB3 reviewer",
+    "model_requested": "Sol6.1 xHigh",
+    "source_edits": false
+  },
+  "identity": {
+    "forge_base": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+    "forge_observed_head": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+    "forge_observed_origin_dev": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+    "upstream_tlsn": "5f67389de3f8962227fddffd71d78a852acc9b01",
+    "upstream_mpz": "8f897838f4e24aff9da8e8b012e8ba35ae770141",
+    "upstream_worktree_observed_clean": true
+  },
+  "verdict": "FEASIBLE_WITH_EXISTING_UPSTREAM_CRYPTO; implementation and runtime acceptance pending",
+  "conclusions": [
+    "Pinned tlsn exposes TranscriptCommitConfig, ProveConfig::transcript_commit, ProverOutput commitments plus secrets, and VerifierOutput commitments. The existing Forge worker currently drops those outputs.",
+    "Verifier commitments come from authenticated TLS plaintext references and MPC evaluation, not a prover-supplied digest. Export only the finalized VerifierOutput commitments after upstream acceptance and exact application policy checks.",
+    "For SHA256, the exact pinned construction is SHA256(concat plaintext in canonical range order || 16-byte random blinder). Direction, ranges and algorithm are fields of PlaintextHash, not included in that digest preimage. They must remain bound by the signed/persisted record.",
+    "Hidden transcript lengths need no trusted peer length declaration: upstream compares partial transcript lengths with collected TLS application ciphertext lengths and verifies plaintext proofs. Preserve the explicit empty reveal so lengths remain available without hidden plaintext disclosure.",
+    "No new MPC/TLS/notary/TEE or FairSwap implementation is needed to expose this bounded mechanism. Persisted direct-verifier observations are not a portable independently verifiable TLS attestation."
+  ],
+  "minimum_acceptance_properties": [
+    {
+      "id": "MPC_PROVENANCE",
+      "requirement": "MPC only; both roles enforce independently configured server identity and roots; export verifier-side finalized upstream commitments, reject proxy/plain HTTPS substitution."
+    },
+    {
+      "id": "EXACT_POLICY",
+      "requirement": "Before expensive upstream accept, enforce algorithm, commitment count, exact canonical direction/ranges and disclosure mask. Resolve end sentinel against upstream-authenticated total lengths, not a peer length. Reject missing/extra/reordered/duplicate/unknown commitments."
+    },
+    {
+      "id": "PRIVATE_OPENINGS",
+      "requirement": "Only prover result contains secret openings. Verifier result, public persisted evidence and diagnostics contain no blinder or hidden response/request. Opening only intended response ranges must never export the request API key."
+    },
+    {
+      "id": "OPENING_VALIDATION",
+      "requirement": "Use the existing Forge digest primitive with exact upstream construction. Match direction/algorithm/canonical ranges/digest, exact concatenated data length, transcript bounds and full opening coverage; reject altered bytes, blinder, digest, length, direction and unknown algorithm."
+    },
+    {
+      "id": "SIGN_BEFORE_DISCLOSURE",
+      "requirement": "Actual local integration must show buyer obtains and persists hidden-response commitments, signs a canonical domain-separated context/evidence record with existing Forge signature support, seller validates that exact signature and only then releases opening/hidden bytes. A library record alone does not enforce this external flow."
+    },
+    {
+      "id": "PERSISTENCE",
+      "requirement": "Bounded, exact, versioned roundtrip of verifier evidence and separate sensitive prover openings; reject tail/truncation/unknown version. Bind origin, authenticated lengths, upstream pin/protocol, complete commitment metadata and caller replay context in signed data. Persisted arbitrary user input must never be upgraded to freshly MPC-verified provenance."
+    },
+    {
+      "id": "WIRE_PACKAGE",
+      "requirement": "Explicit private worker protocol version/magic agreement; old/new mismatched workers fail closed. C++ and Rust caps/enum/length validation agree; install and exercise a fresh external consumer using installed modules and installed worker only."
+    },
+    {
+      "id": "LIFETIME_BOUNDS",
+      "requirement": "Keep existing absolute deadline/cancel/backpressure/drain/reap ownership. Bound nested commitment/opening allocations and retained capacities before copies; no payload diagnostics or implicit source retry."
+    }
+  ],
+  "required_negative_evidence": [
+    "wrong independent origin or trust root",
+    "wrong commitment algorithm/direction/range/count or omitted commitment",
+    "different hidden length, incomplete open, mutated opening bytes/blinder/hash",
+    "buyer signature over changed evidence or context, no valid signature means no hidden release",
+    "public verifier/persisted evidence and logs do not contain API-key/hidden body/blinder sentinels",
+    "unknown/truncated/trailing worker and persisted formats",
+    "installed consumer with actual localhost HTTPS MPC and opening after restart/roundtrip"
+  ],
+  "scope_exclusions": [
+    "JOB4 TLSNotary-to-FairSwap composition and bounded dispute predicate",
+    "financial or chain verification/settlement",
+    "production/security-audit acceptance",
+    "Linux qualification",
+    "real Labs provider",
+    "separate notary service or TEE",
+    "portable offline TLS proof provenance"
+  ],
+  "executed_validation": {
+    "source_review": "completed at listed fixed baseline and upstream pin",
+    "runtime": "NOT_RUN in this research phase",
+    "installed_consumer": "NOT_RUN in this research phase"
+  },
+  "source_evidence": [
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/libraries/net/tlsnotary/native/src/session.rs",
+      "sha256": "40c13f787f828abb2c73abff9f9a710c2351ed7d2f021165043888f0e315d65d"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/libraries/net/tlsnotary/include/forge/net/tlsnotary/types.cppm",
+      "sha256": "b6052a66279e7e56b17210da992de4dc762efd02b607c591fa408dfd578dbd0f"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/libraries/net/tlsnotary/native/src/protocol.rs",
+      "sha256": "f70325ffb815696bdc5e51b64ae41f7bae56f3a5c9719fc2c1910c1792baff22"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/turbine/docs/architecture/turbine-jobs-evidence.md",
+      "sha256": "281509b0eae7784516eafc746d66c7b022809907fe6a473dab86952e9b2cea98"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/turbine/docs/plans/2026-10-24-turbine-jobs.md",
+      "sha256": "cb1d84a1e3f0209699082e18a167c0f48347af0c8911916e04124d2726e21366"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/donors/tlsnotary/crates/tlsn/src/verifier/verify.rs",
+      "sha256": "c40357d09886a21e7547510c00ca91e80bd9b95e92f28ab1de6644af3f01986a"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/donors/tlsnotary/crates/tlsn/src/transcript_internal/commit/hash.rs",
+      "sha256": "efc67754ca6bf7ca1feb9573f26baf07c7d4e2a3d948c62d721af59457e15769"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/donors/tlsnotary/crates/core/src/transcript/hash.rs",
+      "sha256": "8cc6e0d5cdbd8d5e24643a3f34d4f0548aafcd78b67e14edc5dfb9303a59af4b"
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/donors/tlsnotary/crates/core/src/transcript/proof.rs",
+      "sha256": "59a960442fb4783660a2f6918f865c1063f612ec8a63409c4684c92b1d43dab7"
+    }
+  ],
+  "upstream_references": [
+    "https://github.com/tlsnotary/tlsn/blob/5f67389de3f8962227fddffd71d78a852acc9b01/crates/core/src/transcript/hash.rs",
+    "https://github.com/tlsnotary/tlsn/blob/5f67389de3f8962227fddffd71d78a852acc9b01/crates/tlsn/src/transcript_internal/commit/hash.rs",
+    "https://github.com/tlsnotary/tlsn/blob/5f67389de3f8962227fddffd71d78a852acc9b01/crates/tlsn/src/verifier/verify.rs",
+    "https://github.com/tlsnotary/tlsn/blob/5f67389de3f8962227fddffd71d78a852acc9b01/crates/core/src/transcript/proof.rs"
+  ],
+  "memory_used": {
+    "path": "MEMORY.md",
+    "lines": "483-508",
+    "purpose": "Prior repository skill-loading convention only; all TLSNotary conclusions verified live."
+  }
+}

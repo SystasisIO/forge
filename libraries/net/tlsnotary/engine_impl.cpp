@@ -48,13 +48,17 @@ engine::impl::impl(forge::asio::runtime& runtime_value, forge::asio::compute::ex
                             "TLSNotary requires explicit worker, compute executor and bounded admission");
 }
 
+boost::asio::awaitable<void> engine::impl::check(boost::asio::awaitable<result> operation) {
+   static_cast<void>(co_await std::move(operation));
+}
+
 boost::asio::awaitable<result>
 engine::impl::execute(std::shared_ptr<impl> self,
                       boost::compat::move_only_function<std::shared_ptr<detail::native_exchange>()> make_exchange,
-                      session_options options, std::chrono::steady_clock::time_point deadline) {
+                      std::uint64_t id, std::stop_token stop, std::chrono::steady_clock::time_point deadline) {
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
    auto record = std::make_shared<entry>();
-   record->id = options.id;
+   record->id = id;
    auto active = false;
    {
       const auto lock = std::scoped_lock{self->mutex};
@@ -110,7 +114,7 @@ engine::impl::execute(std::shared_ptr<impl> self,
          record->exchange = std::move(exchange);
       }
 
-      const auto cancel = std::stop_callback{options.stop, [record, self] {
+      const auto cancel = std::stop_callback{stop, [record, self] {
                                                 record->stop.request_stop();
                                                 record->exchange->request_stop();
                                                 self->changed.notify();

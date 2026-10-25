@@ -1,0 +1,101 @@
+{
+  "schema": "jobs3.independent_review.v1",
+  "phase": "preliminary_static",
+  "created_at": "2026-10-25T12:30:38.542228+00:00",
+  "base": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+  "source_state": "mutable uncommitted worktree; implementation/tests concurrently edited by owners; not exact-final acceptance",
+  "source_edits_by_reviewer": false,
+  "verdict": "NO_UNRESOLVED_MATERIAL_CODE_BLOCKER_OBSERVED; final static/runtime/installed gates remain open",
+  "findings": [
+    {
+      "id": "DUPLICATE_RETAINED_HOST_ADMISSION",
+      "priority": "P2",
+      "status": "FIXED_DURING_REVIEW",
+      "before": "Host validate_check did not reject duplicate retained direction/ranges before managed worker admission; native resolve rejected later.",
+      "observed_fix": "engine.cpp validate_check now rejects duplicate retained commitments before spawning/serialization; native resolve continues to reject duplicates after END resolution."
+    }
+  ],
+  "reviewed_properties": [
+    "Existing session_options and result fields preserved; new fields appended. Default no-commitment bootstrap still uses FTN1, unchanged terminal layout. Extended sessions use FTN2 and strict appended records.",
+    "Both native roles request fixed SHA256. Verifier resolves selections from upstream application ciphertext transcript lengths, checks identity/reveal/commitment algorithm-order-direction-ranges before upstream acceptance, and exports actual finalized VerifierOutput values.",
+    "Native prover validates its returned secret metadata against commitments and upstream hash_plaintext. C++ decoder checks finite actual ranges, exact policy count/order, fixed hash width and prover-only opening ownership.",
+    "Host validates vector retained capacities and counts before copying/capture; per-direction aggregate selected bytes include overlaps. Native count/range/blob limits precede payload copies; total bootstrap/result remains under existing 2 MiB record bound.",
+    "Offline check uses retained caller-authenticated data, verifies only one selected opening with pinned upstream hash_plaintext, and requests no peer/server bridge. Host rejects any transport message from a checker process.",
+    "Checker shares existing bounded managed-process admission, deadline, explicit cancellation, child reaping and async shutdown. Successful check skips peer close; discard attempts close on an empty peer and catches it, with no live stream/resource involved.",
+    "Metadata provenance is external trust: the digest excludes origin/direction/ranges/total lengths/context. Test application signature packs the complete evidence plus domain/context and rejects changed signed metadata before opening. Imported hashes do not become fresh TLS proofs.",
+    "Native README distinguishes FTN1/FTN2 and exact upstream digest construction; API comments state offline check does not authenticate imported evidence. Root README/release docs were still being edited and are not accepted yet.",
+    "Plugin forwards check through the same engine and increments plugin API contract minor to 1.1; no extra service, worker pool or chain/product policy added."
+  ],
+  "validation": {
+    "git_diff_check": "PASS",
+    "compile": "NOT_RUN_BY_REVIEWER; implementation owner compiling",
+    "native_runtime": "NOT_RUN",
+    "cpp_runtime": "NOT_RUN",
+    "fresh_installed_consumer": "NOT_RUN"
+  },
+  "remaining_review_gates": [
+    "Frozen exact-final source identity, complete README/release/migration/security wording, refreshed diff.",
+    "Native strict parser and upstream commitment tests, real localhost HTTPS/MPC integration and negative exact selection policy scenarios.",
+    "Explicit checker cancellation/deadline/stopped/lazy shutdown and rogue checker transport tests, if added; old runtime regression suite must remain passing.",
+    "Fresh install, external public-module consumer plus installed worker, signed metadata persistence/restart and selective hidden-response opening; API-key sentinel absent from verifier/public records/diagnostics.",
+    "Qualification must remain local macOS/research-only, no FairSwap/commercial/financial/chain/Labs/Linux proof claims."
+  ],
+  "source_files": [
+    {
+      "path": "libraries/net/tlsnotary/engine.cpp",
+      "sha256": "ebe2e4139fa50839c6a9c52a326b15487dd1d1f6baccff3f1cc59f7956c8d22f"
+    },
+    {
+      "path": "libraries/net/tlsnotary/engine_impl.cpp",
+      "sha256": "7378f6556264a2c7fcc406407cef2ce097affe3a5da8f8174fe52f281f11b438"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native_exchange.cpp",
+      "sha256": "1c717fea779ddae2bf6433105f3d47f5d0bb2a8a210be4c5faa060bb95d8ea2d"
+    },
+    {
+      "path": "libraries/net/tlsnotary/include/forge/net/tlsnotary/types.cppm",
+      "sha256": "9da9c8c50ee5cc27116845479f603b4276d0a28a747b7bbde351bce84b14dea1"
+    },
+    {
+      "path": "libraries/net/tlsnotary/include/forge/net/tlsnotary/engine.cppm",
+      "sha256": "4cb670fd22830197c0524b7bfb71bbf8beed7bb2117755d843e32a302dfd2a03"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native/src/main.rs",
+      "sha256": "e4d883daf438e5132bde7b9a874b784faf2373d2f4f8d1ee6f758371e71a3c84"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native/src/protocol.rs",
+      "sha256": "2b70b4019115d78975580a9ffe960d078b2fed9c7b465b599ba686bc65056c5a"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native/src/commitment.rs",
+      "sha256": "ca211d449986148495f8dcbbfd3a9ff440bb9a80c20c75a758d0c3afee640862"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native/src/session.rs",
+      "sha256": "9cc3ebfc825cd529ef5e1d2b1e8e4661076e8cb56b147f0e60664a1081ee3459"
+    },
+    {
+      "path": "libraries/net/tlsnotary/native/README.md",
+      "sha256": "eade35c576894007165348ab998ef58e1d744d19d19960a896c208f5537e3440"
+    },
+    {
+      "path": "plugins/net/tlsnotary/session/include/forge/plugins/net/tlsnotary/session/api.cppm",
+      "sha256": "f2066ef90b3e1f899a3d767d6cf2d8cdbaa340dd0f83f602867633e33043aa3e"
+    },
+    {
+      "path": "tests/tlsnotary/evidence.hxx",
+      "sha256": "ddaa272a73fe5a2d0044a64c9ab3473baf00c2115d1f8ff663f464a8173fc82e"
+    },
+    {
+      "path": "tests/tlsnotary/evidence_tests.cpp",
+      "sha256": "efffda5e29f734aa5f33a17e627a729b278ff43dc6d38d54a0026e15fa35cbe2"
+    },
+    {
+      "path": "tests/package_net_tlsnotary_component/main.cpp",
+      "sha256": "500f131436495f603190227cf2056a8cb4cf55869b9bb93ac5ba27fd9dd9a684"
+    }
+  ]
+}

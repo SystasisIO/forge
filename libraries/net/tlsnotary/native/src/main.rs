@@ -4,6 +4,7 @@
 compile_error!("Forge TLSNotary forbids tlsn_insecure");
 
 mod bridge;
+mod commitment;
 mod protocol;
 mod session;
 
@@ -63,6 +64,24 @@ async fn worker(io: UnixStream) -> Result<()> {
     .map_err(|_| Failure::Timeout)??;
     if frame.kind != 0 {
         return Err(Failure::Protocol);
+    }
+    // Offline opening checks reuse the same managed worker and bounded IPC.
+    // No peer/server bridge or MPC thread pool is needed for an upstream hash.
+    if frame.data.get(..4) == Some(&protocol::MAGIC_RETAINED.to_be_bytes())
+        && frame.data.get(4) == Some(&3)
+    {
+        let status = commitment::check(&frame.data)
+            .err()
+            .map_or(0, |error| error as u32);
+        protocol::write_frame(
+            &mut writer,
+            &protocol::Frame {
+                kind: 128,
+                data: status.to_be_bytes().to_vec(),
+            },
+        )
+        .await?;
+        return Ok(());
     }
     let config = match Config::parse(&frame.data) {
         Ok(config) => config,

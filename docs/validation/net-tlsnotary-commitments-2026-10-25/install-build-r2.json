@@ -1,0 +1,18 @@
+{
+  "name": "install-build-r2",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs3-20261025/build/native",
+    "-j1",
+    "--target",
+    "forge"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 130,
+  "elapsed_seconds": 441.554,
+  "started_unix": 1792932103.442976,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

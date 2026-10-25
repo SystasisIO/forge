@@ -1,7 +1,9 @@
+use crate::commitment::Selection;
 use std::ops::Range;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const MAGIC: u32 = 0x46544e31;
+pub const MAGIC_RETAINED: u32 = 0x46544e32;
 pub const MAX_FRAME: usize = 65536;
 pub const MAX_RECORD: usize = 2 * 1024 * 1024;
 pub const CHUNK: usize = 16384;
@@ -108,7 +110,7 @@ impl<'a> Cursor<'a> {
         }
         Ok(self.bytes(count)?.to_vec())
     }
-    fn ranges(&mut self) -> Result<Vec<(u32, u32)>> {
+    pub fn ranges(&mut self) -> Result<Vec<(u32, u32)>> {
         let count = self.u32()? as usize;
         if count > 1024 {
             return Err(Failure::Limit);
@@ -127,6 +129,9 @@ impl<'a> Cursor<'a> {
         }
         Ok(ranges)
     }
+    pub fn finished(&self) -> bool {
+        self.position == self.data.len()
+    }
 }
 
 pub struct Config {
@@ -144,13 +149,17 @@ pub struct Config {
     pub request: Vec<u8>,
     pub reveal_sent: Vec<(u32, u32)>,
     pub reveal_recv: Vec<(u32, u32)>,
+    pub retained: bool,
+    pub commitments: Vec<Selection>,
 }
 impl Config {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        if c.u32()? != MAGIC {
-            return Err(Failure::Protocol);
-        }
+        let retained = match c.u32()? {
+            MAGIC => false,
+            MAGIC_RETAINED => true,
+            _ => return Err(Failure::Protocol),
+        };
         let prover = match c.u8()? {
             1 => true,
             2 => false,
@@ -202,7 +211,12 @@ impl Config {
         }
         let reveal_sent = c.ranges()?;
         let reveal_recv = c.ranges()?;
-        if c.position != data.len() {
+        let commitments = if retained {
+            Selection::parse_vector(&mut c)?
+        } else {
+            Vec::new()
+        };
+        if !c.finished() {
             return Err(Failure::Protocol);
         }
         Ok(Self {
@@ -220,6 +234,8 @@ impl Config {
             request,
             reveal_sent,
             reveal_recv,
+            retained,
+            commitments,
         })
     }
 }

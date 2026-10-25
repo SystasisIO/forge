@@ -46,6 +46,7 @@ module;
 module forge.net.tlsnotary.engine;
 
 import forge.exceptions;
+import forge.crypto.digest.sha256;
 import forge.log.logger;
 import forge.net.transport.stream;
 import forge.net.transport.buffer;
@@ -171,6 +172,15 @@ native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::com
       _compute{std::move(compute)}, _worker{std::move(worker)}, _peer{std::move(request.peer)},
       _source{std::move(request.source)}, _options{std::move(request.options)},
       _peer_window{std::make_shared<peer_window>()} {
+   _timer.expires_at(deadline);
+}
+
+native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::compute::executor compute,
+                                 std::filesystem::path worker, check_request request,
+                                 std::chrono::steady_clock::time_point deadline)
+    : _strand{boost::asio::make_strand(runtime.context())}, _socket{_strand}, _timer{_strand},
+      _compute{std::move(compute)}, _worker{std::move(worker)}, _options{std::move(request.options)},
+      _check{std::move(request)}, _peer_window{std::make_shared<peer_window>()} {
    _timer.expires_at(deadline);
 }
 
@@ -412,7 +422,31 @@ void native_exchange::stop_on_strand() noexcept {
 
 std::vector<std::uint8_t> native_exchange::bootstrap() const {
    auto bytes = std::vector<std::uint8_t>{};
-   wire::put(bytes, 0x46544e31, 4);
+   if (_check) {
+      wire::put(bytes, 0x46544e32, 4);
+      wire::put(bytes, 3, 1);
+      wire::put(bytes, 0, 3);
+      wire::put(bytes, _check->authenticated.sent_size, 4);
+      wire::put(bytes, _check->authenticated.received_size, 4);
+      wire::put(bytes, _check->authenticated.commitments.size(), 4);
+      for (const auto& item : _check->authenticated.commitments) {
+         wire::put(bytes, static_cast<std::uint8_t>(item.direction), 1);
+         wire::put(bytes, 1, 1); // SHA-256 only in retained format v1.
+         wire::put(bytes, 0, 2);
+         wire::put(bytes, item.ranges.size(), 4);
+         for (const auto& range : item.ranges) {
+            wire::put(bytes, range.begin, 4);
+            wire::put(bytes, range.end, 4);
+         }
+         wire::blob(bytes, item.digest.to_uint8_span());
+      }
+      wire::put(bytes, 1, 4);
+      wire::put(bytes, _check->opening.commitment, 4);
+      wire::blob(bytes, _check->opening.plaintext);
+      wire::blob(bytes, _check->opening.blinder);
+      return bytes;
+   }
+   wire::put(bytes, _options.commitments.empty() ? 0x46544e31 : 0x46544e32, 4);
    wire::put(bytes, _prover ? 1 : 2, 1);
    wire::put(bytes, _options.deferred_decryption ? 1 : 0, 1);
    wire::put(bytes, 0, 2);
@@ -437,6 +471,19 @@ std::vector<std::uint8_t> native_exchange::bootstrap() const {
       }
    }
 
+   if (!_options.commitments.empty()) {
+      wire::put(bytes, _options.commitments.size(), 4);
+      for (const auto& item : _options.commitments) {
+         wire::put(bytes, static_cast<std::uint8_t>(item.direction), 1);
+         wire::put(bytes, 1, 1);
+         wire::put(bytes, 0, 2);
+         wire::put(bytes, item.ranges.size(), 4);
+         for (const auto& range : item.ranges) {
+            wire::put(bytes, range.begin, 4);
+            wire::put(bytes, range.end, 4);
+         }
+      }
+   }
    return bytes;
 }
 
@@ -559,6 +606,10 @@ result native_exchange::decode(std::span<const std::uint8_t> payload) const {
    const auto native_code = input.take(4);
    if (native_code != 0)
       FORGE_THROW_CODE(status(native_code), "native TLSNotary session failed");
+   if (_check) {
+      input.finish();
+      return {};
+   }
    if (input.take(1) != (_prover ? 0 : 1))
       FORGE_THROW_EXCEPTION(exceptions::protocol_error, "native authentication role mismatch");
    auto value = result{};
@@ -586,6 +637,63 @@ result native_exchange::decode(std::span<const std::uint8_t> payload) const {
       }
    }
 
+   if (!_options.commitments.empty()) {
+      value.retained.emplace();
+      auto& retained = *value.retained;
+      retained.server_name = value.server_name;
+      retained.sent_size = value.sent_size;
+      retained.received_size = value.received_size;
+      const auto count = input.take(4);
+      if (count != _options.commitments.size())
+         FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native commitment policy mismatch");
+      retained.commitments.reserve(count);
+      for (std::size_t n = 0; n < count; ++n) {
+         const auto& expected = _options.commitments[n];
+         auto item = commitment{};
+         item.direction = static_cast<direction>(input.take(1));
+         if (item.direction != expected.direction || input.take(1) != 1 || input.take(2) != 0)
+            FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native commitment type mismatch");
+         const auto ranges = input.take(4);
+         if (ranges != expected.ranges.size())
+            FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native commitment ranges mismatch");
+         const auto total = item.direction == direction::sent ? value.sent_size : value.received_size;
+         item.ranges.reserve(ranges);
+         for (std::size_t r = 0; r < ranges; ++r) {
+            const auto begin = input.take(4);
+            const auto end = input.take(4);
+            const auto expected_end = expected.ranges[r].end == 0xffffffff ? total : expected.ranges[r].end;
+            if (begin != expected.ranges[r].begin || end != expected_end || begin >= end || end > total)
+               FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native commitment range differs");
+            item.ranges.push_back({static_cast<std::uint32_t>(begin), static_cast<std::uint32_t>(end)});
+         }
+         const auto digest = input.blob(32);
+         if (digest.size() != 32)
+            FORGE_THROW_EXCEPTION(exceptions::protocol_error, "invalid native commitment digest");
+         item.digest = forge::crypto::digest::sha256{digest};
+         retained.commitments.push_back(std::move(item));
+      }
+      const auto openings = input.take(4);
+      if (openings != (_prover ? count : 0))
+         FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native opening ownership mismatch");
+      value.openings.reserve(openings);
+      for (std::size_t n = 0; n < openings; ++n) {
+         auto item = opening{};
+         const auto index = input.take(4);
+         if (index != n)
+            FORGE_THROW_EXCEPTION(exceptions::protocol_error, "native opening order mismatch");
+         item.commitment = index;
+         auto size = std::size_t{};
+         for (const auto& range : retained.commitments[n].ranges)
+            size += range.end - range.begin;
+         const auto plaintext = input.blob(65536);
+         const auto blinder = input.blob(16);
+         if (plaintext.size() != size || blinder.size() != 16)
+            FORGE_THROW_EXCEPTION(exceptions::verification_failed, "native opening size mismatch");
+         item.plaintext.assign(plaintext.begin(), plaintext.end());
+         std::copy(blinder.begin(), blinder.end(), item.blinder.begin());
+         value.openings.push_back(std::move(item));
+      }
+   }
    input.finish();
    return value;
 }
@@ -730,6 +838,8 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
                break;
             }
 
+            if (state->_check)
+               FORGE_THROW_EXCEPTION(exceptions::protocol_error, "opening checker requested a transport stream");
             const auto server = kind == 2 || kind == 4 || kind == 18;
             const auto index = server ? 1 : 0;
             if (server && !state->_prover)
@@ -793,7 +903,8 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
 
       // Both stream cleanup barriers run before a session leaves admission accounting.
       try {
-         co_await state->_peer.async_close();
+         if (!state->_check)
+            co_await state->_peer.async_close();
       } catch (...) {
          if (!failure)
             failure = std::make_exception_ptr(exceptions::transport_failed{"TLSNotary peer cleanup failed"});

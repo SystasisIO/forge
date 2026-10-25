@@ -10,6 +10,7 @@ module;
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -38,18 +39,19 @@ namespace forge::net::tlsnotary {
 
 namespace {
 
-void validate(const source_constraints& source, const session_options& options) {
-   if (source.server_name.empty() || source.server_name.size() > 253 || source.server_name.capacity() > 253 ||
-       source.server_name.find('\0') != std::string::npos || source.trust_roots_der.empty() ||
-       source.trust_roots_der.size() > 64 || source.trust_roots_der.capacity() > 64)
-      FORGE_THROW_EXCEPTION(exceptions::invalid_request, "explicit server identity and trusted roots are required");
-   auto total = std::size_t{};
-   for (const auto& root : source.trust_roots_der) {
-      if (root.empty() || root.capacity() > 65536 || total > 1048576 - root.capacity())
-         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "certificate roots exceed session limit");
-      total += root.capacity();
+void validate_ranges(const std::vector<byte_range>& ranges, std::uint32_t total, bool allow_end) {
+   if (ranges.capacity() > 1024)
+      FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "too many commitment ranges");
+   auto end = std::uint32_t{};
+   for (const auto& range : ranges) {
+      if (range.begin >= range.end || (end != 0 && range.begin <= end) || range.begin > total ||
+          (range.end > total && !(allow_end && range.end == 0xffffffff)))
+         FORGE_THROW_EXCEPTION(exceptions::invalid_request, "commitment ranges must be ordered and disjoint");
+      end = range.end;
    }
+}
 
+void validate_options(const session_options& options) {
    if (options.id == 0 || options.timeout.count() <= 0 || options.timeout.count() > 600000 || options.max_sent == 0 ||
        options.max_sent > 65536 || options.max_received == 0 || options.max_received > 65536 ||
        options.max_sent_records == 0 || options.max_sent_records > 256 || options.max_received_records_online == 0 ||
@@ -67,6 +69,78 @@ void validate(const source_constraints& source, const session_options& options) 
          end = range.end;
       }
    }
+
+   if (options.commitments.capacity() > 16)
+      FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "too many transcript commitments");
+   auto selected = std::array<std::size_t, 2>{};
+   for (std::size_t n = 0; n < options.commitments.size(); ++n) {
+      const auto& item = options.commitments[n];
+      for (std::size_t previous = 0; previous < n; ++previous)
+         if (options.commitments[previous].direction == item.direction &&
+             options.commitments[previous].ranges == item.ranges)
+            FORGE_THROW_EXCEPTION(exceptions::invalid_request, "duplicate transcript commitment");
+      if (item.direction != direction::sent && item.direction != direction::received)
+         FORGE_THROW_EXCEPTION(exceptions::invalid_request, "invalid commitment direction");
+      if (item.ranges.empty())
+         FORGE_THROW_EXCEPTION(exceptions::invalid_request, "empty transcript commitment");
+      const auto total = item.direction == direction::sent ? options.max_sent : options.max_received;
+      validate_ranges(item.ranges, total, true);
+      auto& bytes = selected[item.direction == direction::sent ? 0 : 1];
+      for (const auto& range : item.ranges) {
+         bytes += (range.end == 0xffffffff ? total : range.end) - range.begin;
+         if (bytes > 65536)
+            FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "selected transcript bytes exceed limit");
+      }
+   }
+}
+
+void validate_check(const check_request& request) {
+   validate_options(request.options);
+   const auto& value = request.authenticated;
+   if (value.format != 1 || value.implementation != "tlsn/5f67389de3f8962227fddffd71d78a852acc9b01" ||
+       value.implementation.capacity() > 128 || value.server_name.empty() || value.server_name.capacity() > 253 ||
+       value.server_name.find('\0') != std::string::npos || value.sent_size > 65536 || value.received_size > 65536)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_request, "unsupported retained evidence metadata");
+   if (value.commitments.empty() || value.commitments.capacity() > 16 ||
+       request.opening.commitment >= value.commitments.size() || request.opening.plaintext.capacity() > 65536)
+      FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "retained evidence exceeds limit");
+   auto selected = std::array<std::size_t, 2>{};
+   for (std::size_t i = 0; i < value.commitments.size(); ++i) {
+      const auto& item = value.commitments[i];
+      for (std::size_t previous = 0; previous < i; ++previous)
+         if (value.commitments[previous].direction == item.direction &&
+             value.commitments[previous].ranges == item.ranges)
+            FORGE_THROW_EXCEPTION(exceptions::invalid_request, "duplicate retained commitment");
+      if (item.direction != direction::sent && item.direction != direction::received)
+         FORGE_THROW_EXCEPTION(exceptions::invalid_request, "invalid retained commitment direction");
+      if (item.ranges.empty())
+         FORGE_THROW_EXCEPTION(exceptions::invalid_request, "empty retained commitment");
+      validate_ranges(item.ranges, item.direction == direction::sent ? value.sent_size : value.received_size, false);
+      auto bytes = std::size_t{};
+      for (const auto& range : item.ranges)
+         bytes += range.end - range.begin;
+      auto& total = selected[item.direction == direction::sent ? 0 : 1];
+      total += bytes;
+      if (total > 65536)
+         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "retained transcript bytes exceed limit");
+      if (i == request.opening.commitment && bytes != request.opening.plaintext.size())
+         FORGE_THROW_EXCEPTION(exceptions::verification_failed, "opening size differs from retained commitment");
+   }
+}
+
+void validate(const source_constraints& source, const session_options& options) {
+   if (source.server_name.empty() || source.server_name.size() > 253 || source.server_name.capacity() > 253 ||
+       source.server_name.find('\0') != std::string::npos || source.trust_roots_der.empty() ||
+       source.trust_roots_der.size() > 64 || source.trust_roots_der.capacity() > 64)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_request, "explicit server identity and trusted roots are required");
+   auto total = std::size_t{};
+   for (const auto& root : source.trust_roots_der) {
+      if (root.empty() || root.capacity() > 65536 || total > 1048576 - root.capacity())
+         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "certificate roots exceed session limit");
+      total += root.capacity();
+   }
+
+   validate_options(options);
 }
 } // namespace
 engine::engine(forge::asio::runtime& runtime, forge::asio::compute::executor compute, engine_options options)
@@ -82,13 +156,14 @@ boost::asio::awaitable<result> engine::prove(prover_request request) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_request, "prover requires valid raw streams and bounded request bytes");
    if (_impl->snapshot().stopped)
       FORGE_THROW_EXCEPTION(exceptions::stopped, "TLSNotary admission is stopped");
-   auto options = request.options;
-   const auto deadline = std::chrono::steady_clock::now() + options.timeout;
+   const auto id = request.options.id;
+   const auto stop = request.options.stop;
+   const auto deadline = std::chrono::steady_clock::now() + request.options.timeout;
    auto make_exchange = [self = _impl, request = std::move(request), deadline]() mutable {
       return std::make_shared<detail::native_exchange>(self->runtime, self->compute, self->options.worker_path,
                                                        std::move(request), deadline);
    };
-   return impl::execute(_impl, std::move(make_exchange), std::move(options), deadline);
+   return impl::execute(_impl, std::move(make_exchange), id, stop, deadline);
 }
 
 boost::asio::awaitable<result> engine::verify(verifier_request request) {
@@ -97,13 +172,28 @@ boost::asio::awaitable<result> engine::verify(verifier_request request) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_request, "verifier requires a peer stream");
    if (_impl->snapshot().stopped)
       FORGE_THROW_EXCEPTION(exceptions::stopped, "TLSNotary admission is stopped");
-   auto options = request.options;
-   const auto deadline = std::chrono::steady_clock::now() + options.timeout;
+   const auto id = request.options.id;
+   const auto stop = request.options.stop;
+   const auto deadline = std::chrono::steady_clock::now() + request.options.timeout;
    auto make_exchange = [self = _impl, request = std::move(request), deadline]() mutable {
       return std::make_shared<detail::native_exchange>(self->runtime, self->compute, self->options.worker_path,
                                                        std::move(request), deadline);
    };
-   return impl::execute(_impl, std::move(make_exchange), std::move(options), deadline);
+   return impl::execute(_impl, std::move(make_exchange), id, stop, deadline);
+}
+
+boost::asio::awaitable<void> engine::check(check_request request) {
+   validate_check(request);
+   if (_impl->snapshot().stopped)
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "TLSNotary admission is stopped");
+   const auto id = request.options.id;
+   const auto stop = request.options.stop;
+   const auto deadline = std::chrono::steady_clock::now() + request.options.timeout;
+   auto make_exchange = [self = _impl, request = std::move(request), deadline]() mutable {
+      return std::make_shared<detail::native_exchange>(self->runtime, self->compute, self->options.worker_path,
+                                                       std::move(request), deadline);
+   };
+   return impl::check(impl::execute(_impl, std::move(make_exchange), id, stop, deadline));
 }
 
 bool engine::cancel(std::uint64_t id) noexcept {

@@ -1,5 +1,6 @@
 // Upstream API composition follows tlsn's basic MPC example at the pinned
 // revision (MIT OR Apache-2.0). Cryptographic operations remain upstream-owned.
+use crate::commitment::{self, ResolvedSelection};
 use crate::protocol::{Config, Failure, Result, put_blob, put_u32, ranges};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use rangeset::set::RangeSet;
@@ -11,6 +12,7 @@ use tlsn::{
         tls_commit::mpc::MpcTlsConfig, verifier::VerifierConfig,
     },
     connection::ServerName,
+    transcript::{ContentType, Record},
     verifier::VerifierCommitStart,
     webpki::{CertificateDer, RootCertStore},
 };
@@ -36,6 +38,7 @@ fn prove_config(
     transcript: &tlsn::transcript::Transcript,
     sent: &[Range<usize>],
     received: &[Range<usize>],
+    selections: &[ResolvedSelection],
 ) -> Result<ProveConfig> {
     let mut builder = ProveConfig::builder(transcript);
     builder.server_identity();
@@ -55,7 +58,28 @@ fn prove_config(
             .reveal_recv(range)
             .map_err(|_| Failure::Configuration)?;
     }
+    if !selections.is_empty() {
+        builder.transcript_commit(commitment::config(transcript, selections)?);
+    }
     builder.build().map_err(|_| Failure::Configuration)
+}
+
+// The pinned verifier authenticates application records' ciphertext, with the
+// nonce/tag stored separately. Its transcript lengths use these same bytes.
+fn application_length(records: &[Record], maximum: usize) -> Result<usize> {
+    let mut length = 0usize;
+    for record in records
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+    {
+        length = length
+            .checked_add(record.ciphertext.len())
+            .ok_or(Failure::Limit)?;
+        if length > maximum {
+            return Err(Failure::Limit);
+        }
+    }
+    Ok(length)
 }
 
 pub async fn run(
@@ -139,17 +163,27 @@ pub async fn run(
         let (sent, recv) = prover.transcript().len();
         let sent_ranges = ranges(&config.reveal_sent, sent)?;
         let recv_ranges = ranges(&config.reveal_recv, recv)?;
-        prover
+        let selections = commitment::resolve(&config.commitments, sent, recv)?;
+        let committed = prover
             .prove(&prove_config(
                 prover.transcript(),
                 &sent_ranges,
                 &recv_ranges,
+                &selections,
             )?)
             .await?;
-        prover.close().await?;
         let mut output = response(&config.server_name, false, sent, recv);
         put_u32(&mut output, 0);
         put_u32(&mut output, 0);
+        if config.retained {
+            commitment::append(
+                &mut output,
+                &committed.transcript_commitments,
+                Some((&committed.transcript_secrets, prover.transcript())),
+                &selections,
+            )?;
+        }
+        prover.close().await?;
         output
     } else {
         let verifier = handle.new_verifier(
@@ -182,10 +216,21 @@ pub async fn run(
                 return Err(Failure::Rejected);
             }
         };
+        let sent = application_length(verifier.tls_transcript().sent(), config.max_sent)?;
+        let recv = application_length(verifier.tls_transcript().recv(), config.max_recv)?;
+        let sent_ranges = ranges(&config.reveal_sent, sent)?;
+        let recv_ranges = ranges(&config.reveal_recv, recv)?;
+        let selections = commitment::resolve(&config.commitments, sent, recv)?;
         let verifier = verifier.verify().await?;
-        if !verifier.request().server_identity() || verifier.request().reveal().is_none() {
+        if !verifier.request().server_identity()
+            || !verifier.request().reveal().is_some_and(|(sent, recv)| {
+                sent == &RangeSet::new_from_slice(&sent_ranges)
+                    && recv == &RangeSet::new_from_slice(&recv_ranges)
+            })
+            || !commitment::matches_request(verifier.request().transcript_commit(), &selections)
+        {
             verifier
-                .reject(Some("identity and transcript required"))
+                .reject(Some("identity, disclosure and commitments required"))
                 .await?;
             return Err(Failure::Verification);
         }
@@ -224,6 +269,14 @@ pub async fn run(
                 put_blob(&mut output, &bytes[range.clone()]);
             }
         }
+        if config.retained {
+            commitment::append(
+                &mut output,
+                &authenticated.transcript_commitments,
+                None,
+                &selections,
+            )?;
+        }
         verifier.close().await?;
         output
     };
@@ -246,7 +299,7 @@ mod tests {
             b"private request".to_vec(),
             b"private response".to_vec(),
         );
-        let config = prove_config(&transcript, &[], &[]).unwrap();
+        let config = prove_config(&transcript, &[], &[], &[]).unwrap();
         assert!(config.server_identity());
         let request = config.to_request();
         let (sent, received) = request.reveal().expect("explicit empty disclosure");

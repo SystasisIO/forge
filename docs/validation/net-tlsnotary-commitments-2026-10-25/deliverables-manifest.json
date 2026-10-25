@@ -1,0 +1,41 @@
+{
+  "files": {
+    "forge-tlsnotary-worker": {
+      "sha256": "b192956fd1aa0e7938d3d748b24bda5f5eade708004c70f2a52561f464113b6e",
+      "size": 17459312
+    },
+    "test_forge_net_tlsnotary": {
+      "sha256": "8d3d7a3cea51d3d3e0883c6bb3039d54a3bed790e0e6bb0fbd0279ade1e9f772",
+      "size": 4106088
+    },
+    "test_forge_net_tlsnotary_evidence": {
+      "sha256": "d258cba20b0b43bbb2a594ba1f6992088782219aded4e4f16a24653232fb0a51",
+      "size": 4231968
+    },
+    "test_forge_plugins_net_tlsnotary_session": {
+      "sha256": "8f69c559fadcc8d8bd4f3593a5328ca75a89e6c44a193176baaeee19cf31fcc2",
+      "size": 5513640
+    },
+    "forge_tlsnotary_fault_worker": {
+      "sha256": "49caf79813daa75e5f39c88a8a3f4ef7c3de1a796a2afd4cc607072164c4ef5a",
+      "size": 37440
+    },
+    "installed-plugin-consumer": {
+      "sha256": "1baa755ba3cbcd5f0d974cb6fcdbf60de0783eafa9436c5a6c6646e7363f020d",
+      "size": 5802552
+    },
+    "installed-leaf-consumer": {
+      "sha256": "4b88c2663681c44bb61c82e95e9f7fce791383a51be23a62fc3308b5a01263bd",
+      "size": 4197832
+    },
+    "libforge_net_tlsnotary.a": {
+      "sha256": "fb1bc77c8bdd1250e44ccf231bdaa40c2d995f2a4e2aaa26c6b98ca8388633ad",
+      "size": 1041960
+    },
+    "libforge_plugins_net_tlsnotary_session.a": {
+      "sha256": "c9b4226207801cf9db1611b933cdb897fb4504b521863af6f1230dda6e6d59fe",
+      "size": 914936
+    }
+  },
+  "installed_worker_matches": true
+}

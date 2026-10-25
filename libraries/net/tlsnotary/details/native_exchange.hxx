@@ -8,6 +8,8 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
                    prover_request request, std::chrono::steady_clock::time_point deadline);
    native_exchange(forge::asio::runtime& runtime, forge::asio::compute::executor compute, std::filesystem::path worker,
                    verifier_request request, std::chrono::steady_clock::time_point deadline);
+   native_exchange(forge::asio::runtime& runtime, forge::asio::compute::executor compute, std::filesystem::path worker,
+                   check_request request, std::chrono::steady_clock::time_point deadline);
    ~native_exchange();
    void request_stop() noexcept;
    bool quiescent() const noexcept;
@@ -42,6 +44,7 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
    session_options _options;
    std::vector<std::uint8_t> _request;
    bool _prover = false;
+   std::optional<check_request> _check;
    std::shared_ptr<peer_window> _peer_window;
    std::atomic<int> _launched_pid{-1};
    std::atomic<bool> _ownership_quiescent{true};

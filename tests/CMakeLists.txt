@@ -5197,6 +5197,16 @@ if(TARGET forge_net_tlsnotary)
    add_dependencies(test_forge_net_tlsnotary forge_tlsnotary_fault_worker)
    add_test(NAME test_forge_net_tlsnotary COMMAND test_forge_net_tlsnotary)
    set_tests_properties(test_forge_net_tlsnotary PROPERTIES TIMEOUT 450)
+   add_executable(test_forge_net_tlsnotary_evidence tlsnotary/evidence_tests.cpp)
+   target_link_libraries(test_forge_net_tlsnotary_evidence PRIVATE
+      forge_net_tlsnotary forge_net_tcp forge_crypto_pki forge_crypto_asymmetric forge_raw OpenSSL::SSL)
+   target_compile_definitions(test_forge_net_tlsnotary_evidence PRIVATE
+      FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}"
+      FORGE_TLSNOTARY_FAULT_WORKER="$<TARGET_FILE:forge_tlsnotary_fault_worker>"
+      FORGE_TLSNOTARY_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}")
+   add_dependencies(test_forge_net_tlsnotary_evidence forge_tlsnotary_fault_worker)
+   add_test(NAME test_forge_net_tlsnotary_evidence COMMAND test_forge_net_tlsnotary_evidence)
+   set_tests_properties(test_forge_net_tlsnotary_evidence PROPERTIES TIMEOUT 180)
    add_executable(test_forge_plugins_net_tlsnotary_session tlsnotary/plugin_tests.cpp)
    target_link_libraries(test_forge_plugins_net_tlsnotary_session PRIVATE forge_plugins_net_tlsnotary_session forge_net_tcp forge_crypto_pki OpenSSL::SSL)
    target_compile_definitions(test_forge_plugins_net_tlsnotary_session PRIVATE FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}")
