@@ -1,0 +1,20 @@
+{
+  "name": "native-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs3-20261025/build/native",
+    "-j4",
+    "--target",
+    "test_forge_net_tlsnotary",
+    "test_forge_plugins_net_tlsnotary_session",
+    "test_forge_net_tlsnotary_evidence"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 1,
+  "elapsed_seconds": 79.223,
+  "started_unix": 1792931326.3811011,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

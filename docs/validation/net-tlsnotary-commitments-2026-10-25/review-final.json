@@ -1,0 +1,309 @@
+{
+  "schema": "jobs3.independent_review.v1",
+  "phase": "final_source_runtime_installed_review",
+  "created_at": "2026-10-25T13:05:15.756115+00:00",
+  "independence": {
+    "source_edits": false,
+    "builds_started_by_reviewer": false,
+    "basis": "Independent static source/upstream review plus direct inspection of owner-executed raw logs, JUnit, install caches/rules/archives, worker hashes and public/private artifact separation. Review writes only review*.json artifacts."
+  },
+  "identity": {
+    "base": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+    "owner_frozen_fingerprint": "c45b90aa7e4ee1c6e02a6811deb684ea4e41e0f60554e5439612a61bed62ce46",
+    "source_files": 29,
+    "all_frozen_file_hashes_match_current": true,
+    "source_manifest_file_sha256": "970d83e56f7d10728875f7f49abf3f3a9f2d0528199cf0e39a86d4c6c28608cb",
+    "state": "uncommitted frozen source; later report documentation outside these 29 files excluded",
+    "deltas_since_static_final": [
+      "tests/tlsnotary/evidence.hxx: primary-source int64 described-enum golden plus exact typed rejection assertions",
+      "tests/package_net_tlsnotary_component/CMakeLists.txt: explicit App component/target for the test consumer direct App imports only"
+    ]
+  },
+  "verdict": "PASS_SCOPED_JOB3_LOCAL_MACOS_TECHNICAL_QUALIFICATION",
+  "findings": [],
+  "unresolved_blockers": [],
+  "runtime_results": {
+    "rust": {
+      "passed": 18,
+      "failed": 0,
+      "artifact": "rust-tests-r2.log",
+      "exit_code": 0
+    },
+    "ctest": {
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "elapsed_seconds": 146.02,
+      "tests": [
+        {
+          "name": "test_forge_package_install",
+          "seconds": 0.845772,
+          "status": "run",
+          "failures": 0
+        },
+        {
+          "name": "test_forge_net_tlsnotary",
+          "seconds": 10.2858,
+          "status": "run",
+          "failures": 0
+        },
+        {
+          "name": "test_forge_net_tlsnotary_evidence",
+          "seconds": 1.55444,
+          "status": "run",
+          "failures": 0
+        },
+        {
+          "name": "test_forge_plugins_net_tlsnotary_session",
+          "seconds": 0.920315,
+          "status": "run",
+          "failures": 0
+        },
+        {
+          "name": "test_forge_package_net_tlsnotary_component",
+          "seconds": 100.675,
+          "status": "run",
+          "failures": 0
+        },
+        {
+          "name": "test_forge_package_net_tlsnotary_leaf_component",
+          "seconds": 31.6948,
+          "status": "run",
+          "failures": 0
+        }
+      ],
+      "artifact": "final-tests-r2.xml"
+    },
+    "test_execution_parallelism": "CTest -j1; consumer builds CMAKE_BUILD_PARALLEL_LEVEL=4. Native TLSNotary builds -j4. Heavy unchanged Chain API install-only target reduced to -j1 after recorded memory/swap pressure; no test threshold/timer weakening."
+  },
+  "verified_properties": [
+    "Pinned real MPC-TLS runs against the localhost HTTPS fixture via the native worker, with independently configured verifier origin/root/disclosure/commitment policy. This is not ordinary prefetched HTTPS plus a local hash.",
+    "The exact upstream SHA256 commitment construction and random blinder remain upstream-owned. Finite ranges, algorithm, ordering, selected-byte budgets and authenticated TLS lengths are preserved across Rust/C++ FTN2; FTN1 default path continues passing the existing regression suite.",
+    "Verifier receives commitments and the selected public transcript ranges, with no openings. Prover receives only explicitly selected openings. Actual commitment/opening equality and hidden-response opening checks pass.",
+    "The application fixture signs the entire evidence with its domain/context before invoking the guarded opening path; changed domain/context/signer/origin/length/direction/translated ranges refuse that path. This is an application gate demonstration in one local test harness, not a separate buyer delivery protocol or FairSwap guarantee.",
+    "Exact typed failures are asserted for changed bytes/blinder/hash, short or invalid-index opening, unsupported format/pin, invalid/empty/out-of-bounds ranges, enum, duplicates and retained capacities. Rust checks exact policies and private input truncation/suffix/tampering; bounded Raw rejects unknown and narrowing enum representations.",
+    "New checker lifetime tests pass active and pre-start cancellation, duplicate/overload, live deadline, lazy operation after shutdown, stopped admission, rogue transport request and no residual child process. The existing lifecycle/backpressure/reaping suite passes.",
+    "Canonical evidence and private openings persist separately and are revalidated in a fresh host process. This proves process-restart recovery for the fixture, not filesystem power-loss durability or independent TLS provenance from an untrusted file.",
+    "Both fresh installed leaf and plugin consumers use installed modules/archives and the installed worker; copied files are only test-owned fixture/evidence helpers."
+  ],
+  "installed_provenance": {
+    "prefix": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build/native/forge-package-install",
+    "worker_sha256": "b192956fd1aa0e7938d3d748b24bda5f5eade708004c70f2a52561f464113b6e",
+    "build_worker": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build/cargo-tests/release/forge-tlsnotary-worker",
+    "installed_worker": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build/native/forge-package-install/libexec/forge/forge-tlsnotary-worker",
+    "worker_bytes_equal": true,
+    "consumer_checks": [
+      {
+        "name": "forge-package-net-tlsnotary-component",
+        "plugin": true,
+        "status": "PASS",
+        "cache_sha256": "1db8749a3099a429d37f6c38250e7786a73b2167d41fafac88dd7f7d88f3cfd5",
+        "build_ninja_sha256": "a428c17bcfac2b1aa58dc288977b9ceaec5f89cae816960e6e52344b2b6ad846",
+        "module_sources": "installed include/forge/net/tlsnotary; no product source-tree module references",
+        "archives": "installed libforge_net_tlsnotary and dependencies; plugin uses installed App/plugin targets",
+        "worker": "installed libexec/forge/forge-tlsnotary-worker",
+        "copied_helpers_only": {
+          "fixture.hxx": "cc6d8898e519980a942669e4e587c6de41342586e5f061bded303aa7ff9e401b",
+          "evidence.hxx": "7b1255c7648b1dd8872794c5ad031fb585e064353a10a2a9baf5df555217b961"
+        },
+        "test_main": "source test consumer only; no Forge implementation compiled from source tree"
+      },
+      {
+        "name": "forge-package-net-tlsnotary-leaf-component",
+        "plugin": false,
+        "status": "PASS",
+        "cache_sha256": "dbfa5343c30476472fb7d207e1bba0c04858d23e4e958f5f86e91a11e6f4f884",
+        "build_ninja_sha256": "220603de5a2de3ca11f59fc357975ac78081a389c52540358db9a1d9f7f47a6c",
+        "module_sources": "installed include/forge/net/tlsnotary; no product source-tree module references",
+        "archives": "installed libforge_net_tlsnotary and dependencies; plugin uses installed App/plugin targets",
+        "worker": "installed libexec/forge/forge-tlsnotary-worker",
+        "copied_helpers_only": {
+          "fixture.hxx": "cc6d8898e519980a942669e4e587c6de41342586e5f061bded303aa7ff9e401b",
+          "evidence.hxx": "7b1255c7648b1dd8872794c5ad031fb585e064353a10a2a9baf5df555217b961"
+        },
+        "test_main": "source test consumer only; no Forge implementation compiled from source tree"
+      }
+    ],
+    "installation": "Standard cmake install test passed after building configured archive graph; no manual replacement/staging accepted."
+  },
+  "privacy_inspection": {
+    "scope": "Fixture credential and hidden-response markers plus the actual retained blinder bytes were searched without exporting their values; this is observed test evidence, not a general production data-loss proof.",
+    "logs_scanned": 18,
+    "private_opening_files_parsed_without_disclosure": 5,
+    "public_artifacts": [
+      {
+        "path": "build/native/tests/evidence-TLA1fV/evidence.raw",
+        "sha256": "d13d95d79c0e5a5c5135b196bb5e4f42f23f4c1ff74bd20f83875aa841085f46",
+        "bytes": 290,
+        "mode": "0o600",
+        "credential_marker_absent": true,
+        "hidden_response_marker_absent": true,
+        "retained_blinders_absent": true
+      },
+      {
+        "path": "build/native/tests/evidence-k1pNY0/evidence.raw",
+        "sha256": "7625d9169d01b9367dbca2801f7c381fa1a3cc807100ba929c43c5e66c6706b4",
+        "bytes": 290,
+        "mode": "0o600",
+        "credential_marker_absent": true,
+        "hidden_response_marker_absent": true,
+        "retained_blinders_absent": true
+      },
+      {
+        "path": "build/native/forge-package-net-tlsnotary-component/evidence-installed-H6DMyK/evidence.raw",
+        "sha256": "bb295f52bf25354e84f6f2354a0c14678b27dafbf38eec9b264105622a089ffe",
+        "bytes": 290,
+        "mode": "0o600",
+        "credential_marker_absent": true,
+        "hidden_response_marker_absent": true,
+        "retained_blinders_absent": true
+      },
+      {
+        "path": "build/native/forge-package-net-tlsnotary-leaf-component/evidence-installed-Is3CRr/evidence.raw",
+        "sha256": "d468b6617d6c29a152093ab681797f5bf833a8c1a962be52e1f98a8876b096b7",
+        "bytes": 290,
+        "mode": "0o600",
+        "credential_marker_absent": true,
+        "hidden_response_marker_absent": true,
+        "retained_blinders_absent": true
+      },
+      {
+        "path": "build/native/forge-package-net-tlsnotary-leaf-component/evidence-installed-jb0fAy/evidence.raw",
+        "sha256": "4d1a4c0c208a6d8aea15b3da80211a9289aca8c303c8842a5642c4cbc35cc05a",
+        "bytes": 290,
+        "mode": "0o600",
+        "credential_marker_absent": true,
+        "hidden_response_marker_absent": true,
+        "retained_blinders_absent": true
+      }
+    ],
+    "violations": [],
+    "private_file_modes": [
+      {
+        "path": "build/native/forge-package-net-tlsnotary-component/evidence-installed-H6DMyK/openings.private.raw",
+        "mode": "0o600"
+      },
+      {
+        "path": "build/native/forge-package-net-tlsnotary-leaf-component/evidence-installed-Is3CRr/openings.private.raw",
+        "mode": "0o600"
+      },
+      {
+        "path": "build/native/forge-package-net-tlsnotary-leaf-component/evidence-installed-jb0fAy/openings.private.raw",
+        "mode": "0o600"
+      },
+      {
+        "path": "build/native/tests/evidence-TLA1fV/openings.private.raw",
+        "mode": "0o600"
+      },
+      {
+        "path": "build/native/tests/evidence-k1pNY0/openings.private.raw",
+        "mode": "0o600"
+      }
+    ],
+    "review_contains_private_material": false
+  },
+  "raw_failures_and_resolution": [
+    {
+      "artifact": "rust-tests.log",
+      "observed": "15/18 passed, 3 failed; upstream Blinder newtype serde expected one fixed array rather than a flat stream of bytes.",
+      "resolution": "Production check reconstruction and matching test fixture now deserialize the existing one-field newtype shape using one byte-array sequence; no unsafe layout/hash replacement. rust-tests-r2 18/18 passes."
+    },
+    {
+      "artifact": "native-build.log",
+      "observed": "C++ required direct sha256 module import at native digest construction.",
+      "resolution": "Owning implementation imports the existing module explicitly; build rerun passes."
+    },
+    {
+      "artifact": "native-build-r2.log",
+      "observed": "Test Raw variadic pack call ambiguous; checker fault-worker compile definition absent.",
+      "resolution": "Test uses canonical tuple packing and declares existing fault worker dependency; no product dispatch/serialization change."
+    },
+    {
+      "artifact": "native-ctest.log",
+      "observed": "2/3 passed; new test expected direction enum as one byte.",
+      "resolution": "Verified primary Raw enum_wire_type default int64 and described codec. Golden corrected to the existing eight-byte representation; static assertions and unknown/narrowing negatives added. Existing implementation and wire were not changed to satisfy the test."
+    },
+    {
+      "artifact": "final-ctest.log",
+      "observed": "5/6 passed; installed plugin test consumer directly imported App modules but omitted its App component/target.",
+      "resolution": "Only test consumer CMake now requests/links installed App explicitly. Both installed variants rebuilt and final-ctest-r2 6/6 passes."
+    },
+    {
+      "artifact": "resource-interruption.json",
+      "observed": "Task-owned full install graph interrupted under recorded disk/swap pressure.",
+      "resolution": "Isolated unchanged heavy Chain API target built -j1, then ordinary graph resumed -j4; owned logs preserved, no source/test/timeout relaxation."
+    }
+  ],
+  "acceptance_limits": [
+    "No JOB4 TLSNotary-to-FairSwap composition, encrypted file exchange or bounded dispute predicate.",
+    "No financial/chain settlement, real Spine/Turbine integration or live production proof.",
+    "No actual Labs, Linux qualification, separate notary service or TEE.",
+    "No $0.012 cost/commercial threshold or production cryptographic certification.",
+    "Retained signer assertion is not a portable offline TLS attestation; imported metadata requires independently trusted full-record/context authentication.",
+    "No merge/publication/deploy was reviewed or performed."
+  ],
+  "primary_raw_enum_sources": [
+    {
+      "path": "libraries/raw/include/forge/raw/enum_wire_type.cppm",
+      "sha256": "0b0eba8ce82081dd31b4981ed2dd38e403e4655d52658827af0da56c030dc6b9"
+    },
+    {
+      "path": "libraries/raw/include/forge/raw/raw.cppm",
+      "sha256": "279a8350e8f0548f396ca55997d3c26f90f7f4c8ee843380087bbe2591e7edc6"
+    }
+  ],
+  "raw_artifact_hashes": {
+    "source-manifest.json": "970d83e56f7d10728875f7f49abf3f3a9f2d0528199cf0e39a86d4c6c28608cb",
+    "rust-tests.json": "7ef2a9eb32796ffccd28e1b9728fff6c2b1cd4226450d8e71d35cb95bca10f32",
+    "rust-tests.log": "77e7806178f4c45d333eeed8b55c6ceec0db02f0421c5845965e6bfd3a70ae7d",
+    "rust-tests-r2.json": "95da661b72ecdba4b01bd9313007cad0f71243b6da8f3cc0a24de35634fb99c9",
+    "rust-tests-r2.log": "f99e628e953cb3bfe7f145c38c57efc92c3e63076adb2146c831617de42ccec9",
+    "native-build.log": "d39dffb71d654e13f8e5d187cd053ead5057b95afeb3ccb0cb33625a4df30ebf",
+    "native-build-r2.log": "d9ee07f707b4a618634a1313f4775b6fae0ad571933289ad06b09621888dd5cb",
+    "native-build-r3.log": "0e6b929a67df6ebbe3f5b67c137faeeee31decf7b32160c5f3e9ed9f384f17ef",
+    "native-build-final.json": "d80ed59d4408cc0e58e228ede5f39479e6d7b7f28d3054ee2f3ac3ca1549cba7",
+    "native-ctest.json": "042c76d5a6e885d1fecc6873fade8bde2db7e3d03192521798711423bac7e652",
+    "native-ctest.log": "13f436d4174788248212ef0d47ba782979bdeddcea044875eeb1db203c7fd1fe",
+    "native-tests.xml": "6d38e8fdd7adf42cf5b4fb9ae2966edd9a1487e2077c88bebf09329cc3bcd44e",
+    "final-ctest.json": "1b0b763ce24a039aeb5a736abe590f4b28a224a73f8c80b78dd4a11eb1db415f",
+    "final-ctest.log": "d6b8df7082b9cfbc0720be81452a60ad8b77f4294eea2149b3e229a97903573a",
+    "final-tests.xml": "0a7b64d35bebbffb7630d5c9a1a08ea74587ef365d13f9439fedfb78db9c3dc6",
+    "final-ctest-r2.json": "13df7536416482615107654650481fc1d0ffcb938fed74640fd42ffcedd320f2",
+    "final-ctest-r2.log": "a25841b0db49681dbfaeff6631b29540443c71c817a86c71ea1a03be3b50a076",
+    "final-tests-r2.xml": "204f267aad28ebe5d97c5464e8a96cdb8028179502040e1110cab94342889bab",
+    "install-build-r3.json": "ee4995049a3119aff1f8277737b968690c101340d1125c2564bc7594922976d8",
+    "resource-interruption.json": "61943d3a11bed8281c4497ec19c09a0ecd5c091def43c518c516d8062746995d"
+  },
+  "source_files": {
+    "cmake/ForgeConfig.cmake.in": "3c1ff7acd9023429c5fecc899419ba88d544492d40af25e625ecc927fd4b5732",
+    "docs/releases/unreleased-net-tlsnotary.md": "a72654359e668ba0de65bbb506b9d1859f2c6287ac323637af23c215023ba36c",
+    "libraries/net/tlsnotary/CMakeLists.txt": "83aae22325b5538617daadefadf8f168dca95dd62e1b00e4d0d63b7461b32454",
+    "libraries/net/tlsnotary/README.md": "125defaaf6c178a2ff9057172b5be4d24ced6dd2cd6de666c7248cbb8a80b7ed",
+    "libraries/net/tlsnotary/details/engine_impl.hxx": "40dad0c1dce6b63aaba7cdab7d6a980c67ff71f641e54af22508278b14ad918a",
+    "libraries/net/tlsnotary/details/native_exchange.hxx": "f9e15ca01de1974f43da8f849e2d323929617b5118a9d43fca65b4b415838e44",
+    "libraries/net/tlsnotary/engine.cpp": "fc12e919b2deea618898b68eff625938a8b33df04a586ffd23d32b66fbf32d60",
+    "libraries/net/tlsnotary/engine_impl.cpp": "020c73e37aaa7ebd266ece09c6a8e4917af3e2f898bae315bcede847cd618cd1",
+    "libraries/net/tlsnotary/include/forge/net/tlsnotary/engine.cppm": "4cb670fd22830197c0524b7bfb71bbf8beed7bb2117755d843e32a302dfd2a03",
+    "libraries/net/tlsnotary/include/forge/net/tlsnotary/types.cppm": "9da9c8c50ee5cc27116845479f603b4276d0a28a747b7bbde351bce84b14dea1",
+    "libraries/net/tlsnotary/native/Cargo.lock": "8552b592aeab8bc392ed753f0044e2de6dfee10ec43f6e67d86b1f3e99c846a0",
+    "libraries/net/tlsnotary/native/Cargo.toml": "4a61bba3a005bf488bd2a3240930c57e38fe4ea0d146a7159e688fd4372b71f4",
+    "libraries/net/tlsnotary/native/README.md": "eade35c576894007165348ab998ef58e1d744d19d19960a896c208f5537e3440",
+    "libraries/net/tlsnotary/native/src/commitment.rs": "ca211d449986148495f8dcbbfd3a9ff440bb9a80c20c75a758d0c3afee640862",
+    "libraries/net/tlsnotary/native/src/main.rs": "e4d883daf438e5132bde7b9a874b784faf2373d2f4f8d1ee6f758371e71a3c84",
+    "libraries/net/tlsnotary/native/src/protocol.rs": "2b70b4019115d78975580a9ffe960d078b2fed9c7b465b599ba686bc65056c5a",
+    "libraries/net/tlsnotary/native/src/session.rs": "9cc3ebfc825cd529ef5e1d2b1e8e4661076e8cb56b147f0e60664a1081ee3459",
+    "libraries/net/tlsnotary/native_exchange.cpp": "1c717fea779ddae2bf6433105f3d47f5d0bb2a8a210be4c5faa060bb95d8ea2d",
+    "plugins/net/tlsnotary/session/README.md": "dee24751222e2e2aa800a1e7de2f0ca628240ea8d8666aadfe181485f2a1471c",
+    "plugins/net/tlsnotary/session/api_impl.cpp": "08954ceb796c471af291ab307d4259cea4be1d300f2b9a2400010ad44969236a",
+    "plugins/net/tlsnotary/session/details/api_impl.hxx": "2aea72a1b5923e7647abbc4d2f6f794060b4310776c0d67aafcc0696bb1ced55",
+    "plugins/net/tlsnotary/session/include/forge/plugins/net/tlsnotary/session/api.cppm": "f2066ef90b3e1f899a3d767d6cf2d8cdbaa340dd0f83f602867633e33043aa3e",
+    "tests/CMakeLists.txt": "fc3431c5d8614378af69d478aef2de862c93698dfa1d2575619e9af8ef877dce",
+    "tests/package_net_tlsnotary_component/CMakeLists.txt": "f7c571512ecb8bd477ce88a89ed74c6714061a548229f56c712ae370ebc458cd",
+    "tests/package_net_tlsnotary_component/main.cpp": "500f131436495f603190227cf2056a8cb4cf55869b9bb93ac5ba27fd9dd9a684",
+    "tests/tlsnotary/evidence.hxx": "7b1255c7648b1dd8872794c5ad031fb585e064353a10a2a9baf5df555217b961",
+    "tests/tlsnotary/evidence_tests.cpp": "034a69afb3efc35eb31b66a6c0acf713a36e1deec51e1117ec3e6682fe6fb861",
+    "tests/tlsnotary/fixture.hxx": "cc6d8898e519980a942669e4e587c6de41342586e5f061bded303aa7ff9e401b",
+    "tests/tlsnotary/plugin_tests.cpp": "9054829d072f59c7fb6e702593ff0a9a098545f0d3f9acb797dde52af17d8685"
+  },
+  "git_diff_check": "PASS"
+}

@@ -1,0 +1,228 @@
+{
+  "schema": "jobs3.independent_review.v1",
+  "phase": "publication_report_review",
+  "created_at": "2026-10-25T13:10:36.513619+00:00",
+  "scope": "Only new docs/validation/net-tlsnotary-commitments-2026-10-25 report, evidence copies/links, cleanup/retention claims and unchanged 29-file source identity. No source edits or builds.",
+  "verdict": "PASS_PUBLICATION_REPORT_SCOPE_AND_EVIDENCE_CHECK",
+  "findings": [],
+  "source_identity": {
+    "base": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+    "fingerprint": "c45b90aa7e4ee1c6e02a6811deb684ea4e41e0f60554e5439612a61bed62ce46",
+    "source_files": 29,
+    "current_hash_mismatches": [],
+    "new_report_excluded_from_frozen_implementation_identity": true
+  },
+  "report_claims": {
+    "local_gate_not_fairswap": "README explicitly limits signature-before-release to a local application fixture, not deployed buyer transport or FairSwap, and separates full metadata/context authentication from an opening hash.",
+    "build_not_broad_test": "Full configured archive build is described as preparation for ordinary installation. Runtime acceptance is the enumerated scoped six-test matrix; full TurbineOS regression is explicitly excluded.",
+    "crypto_and_platform": "Fixed TLSNotary/MPZ pins and unchanged locked dependency versions agree with Cargo diff; one direct serde edge reuses a locked package. macOS technical qualification is separate from production certification.",
+    "privacy_and_recovery": "Separate private openings, public evidence privacy inspection and fresh-process restart claims match reviewed source/results. No power-loss durability, offline attestation, financial/live chain, Linux/provider or economics claims."
+  },
+  "evidence_verification": {
+    "relative_markdown_links_checked": 17,
+    "missing_links": [],
+    "copied_metadata_files_byte_identical": 33,
+    "metadata_files": [
+      "acceptance.json",
+      "chain-install-build.json",
+      "cleanup.json",
+      "deliverables-manifest.json",
+      "final-ctest-r2.json",
+      "final-ctest.json",
+      "final-tests-r2.xml",
+      "install-build-r2.json",
+      "install-build-r3.json",
+      "install-library-build.json",
+      "install-library-targets.json",
+      "install-scheduling.json",
+      "native-build-final.json",
+      "native-build-r2.json",
+      "native-build-r3.json",
+      "native-build.json",
+      "native-configure-r2.json",
+      "native-configure-r3.json",
+      "native-configure.json",
+      "native-ctest.json",
+      "native-tests.xml",
+      "resource-interruption.json",
+      "retained-artifacts.json",
+      "review-final.json",
+      "review-native-on-host.json",
+      "review-static-final.json",
+      "review-static-preliminary.json",
+      "review-upstream-gate.json",
+      "run.py",
+      "rust-environment.json",
+      "rust-tests-r2.json",
+      "rust-tests.json",
+      "source-manifest.json"
+    ],
+    "gzip_artifacts_checked": 18,
+    "all_gzip_payloads_unmodified_after_decompression": true,
+    "gzip_hashes": [
+      {
+        "path": "logs/chain-install-build.log.gz",
+        "uncompressed_sha256": "19871c3a929481e2e0f4df86d17964662748c29193f6e03155eba7e2e0a3b746"
+      },
+      {
+        "path": "logs/final-LastTest.log.gz",
+        "uncompressed_sha256": "400d6665ae938fc0a5089c2c0757badda66d3e83d60255872c969982bff46904"
+      },
+      {
+        "path": "logs/final-ctest-r2.log.gz",
+        "uncompressed_sha256": "a25841b0db49681dbfaeff6631b29540443c71c817a86c71ea1a03be3b50a076"
+      },
+      {
+        "path": "logs/final-ctest.log.gz",
+        "uncompressed_sha256": "d6b8df7082b9cfbc0720be81452a60ad8b77f4294eea2149b3e229a97903573a"
+      },
+      {
+        "path": "logs/final-tests.xml.gz",
+        "uncompressed_sha256": "0a7b64d35bebbffb7630d5c9a1a08ea74587ef365d13f9439fedfb78db9c3dc6"
+      },
+      {
+        "path": "logs/install-build-r2.log.gz",
+        "uncompressed_sha256": "429c6aeb7525ea8a3f6f929741559d10f44166415401984bdf74f51ace22db6f"
+      },
+      {
+        "path": "logs/install-build-r3.log.gz",
+        "uncompressed_sha256": "a31d6f8744e8bb9f50569d420d8466e9efdcd7e912832cf702043cdd3416dc77"
+      },
+      {
+        "path": "logs/install-library-build.log.gz",
+        "uncompressed_sha256": "4d1d77fb6bfb47671199aa24019a24eca55b5d00072dfdc46743b036608af300"
+      },
+      {
+        "path": "logs/native-build-final.log.gz",
+        "uncompressed_sha256": "d84d6de7f37e0ef4fab51faceabf0ebb25cf11bc0438c0238a0c115e7672dbc4"
+      },
+      {
+        "path": "logs/native-build-r2.log.gz",
+        "uncompressed_sha256": "d9ee07f707b4a618634a1313f4775b6fae0ad571933289ad06b09621888dd5cb"
+      },
+      {
+        "path": "logs/native-build-r3.log.gz",
+        "uncompressed_sha256": "0e6b929a67df6ebbe3f5b67c137faeeee31decf7b32160c5f3e9ed9f384f17ef"
+      },
+      {
+        "path": "logs/native-build.log.gz",
+        "uncompressed_sha256": "d39dffb71d654e13f8e5d187cd053ead5057b95afeb3ccb0cb33625a4df30ebf"
+      },
+      {
+        "path": "logs/native-configure-r2.log.gz",
+        "uncompressed_sha256": "2d12ab38c605f88023c38d529dad0c11e5ef70920d656ff89ab85f550af3aacc"
+      },
+      {
+        "path": "logs/native-configure-r3.log.gz",
+        "uncompressed_sha256": "cae108d04de8b5097d0b8837b1a8496dd6f3aae73690f73dde721f71f1a3ef79"
+      },
+      {
+        "path": "logs/native-configure.log.gz",
+        "uncompressed_sha256": "365bbd418c6fdf899671066d2068a284c56568697af82fd785413a7336fb2e17"
+      },
+      {
+        "path": "logs/native-ctest.log.gz",
+        "uncompressed_sha256": "13f436d4174788248212ef0d47ba782979bdeddcea044875eeb1db203c7fd1fe"
+      },
+      {
+        "path": "logs/rust-tests-r2.log.gz",
+        "uncompressed_sha256": "f99e628e953cb3bfe7f145c38c57efc92c3e63076adb2146c831617de42ccec9"
+      },
+      {
+        "path": "logs/rust-tests.log.gz",
+        "uncompressed_sha256": "77e7806178f4c45d333eeed8b55c6ceec0db02f0421c5845965e6bfd3a70ae7d"
+      }
+    ],
+    "junit_summaries": {
+      "native-tests.xml": {
+        "tests": 3,
+        "failures": 1,
+        "skipped": 0
+      },
+      "final-tests.xml": {
+        "tests": 6,
+        "failures": 1,
+        "skipped": 0
+      },
+      "final-tests-r2.xml": {
+        "tests": 6,
+        "failures": 0,
+        "skipped": 0
+      }
+    },
+    "successful_result": "final-tests-r2 6/6 no skips; Rust18/18",
+    "initial_failures_preserved": "Initial Rust/C++/golden/package failures and interrupted build outputs remain. Original failed final-tests.xml is gzip-preserved byte-for-byte because its raw compiler line contains trailing whitespace; neither XML nor logs were normalized."
+  },
+  "cleanup_retention_verification": {
+    "owned_build_directory_absent": true,
+    "retained_files_count": 24,
+    "all_retained_hashes_match": true,
+    "retention_split": "9 local binary/archive deliverables plus five sets of evidence/trust/private-opening files; local only",
+    "report_binary_or_private_payload_files": [],
+    "report_symlinks": [],
+    "source_worktree_preserved": true
+  },
+  "report_snapshot": {
+    "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/docs/validation/net-tlsnotary-commitments-2026-10-25",
+    "readme_sha256": "4ccc560f19d75cd88114237ffe51bb70f65353843f65599bd09e7c115b538bc3",
+    "files": {
+      "README.md": "4ccc560f19d75cd88114237ffe51bb70f65353843f65599bd09e7c115b538bc3",
+      "acceptance.json": "99cf9bb739473071dd4d3ed49823bc65128cbf003cdac2a08f1dfffaed590497",
+      "chain-install-build.json": "c3854a647e25bf477a999466ca26e0b338f703cac3c3dc0d1dc7261eaf96da6f",
+      "cleanup.json": "48456b95cbc5cb741b469becda58795377adad57e6d42d9605cdd50c153050b3",
+      "deliverables-manifest.json": "fc923808de47694163b0c42c7c659c404dcba57c30c0dad6ec95962db6304364",
+      "final-ctest-r2.json": "13df7536416482615107654650481fc1d0ffcb938fed74640fd42ffcedd320f2",
+      "final-ctest.json": "1b0b763ce24a039aeb5a736abe590f4b28a224a73f8c80b78dd4a11eb1db415f",
+      "final-tests-r2.xml": "204f267aad28ebe5d97c5464e8a96cdb8028179502040e1110cab94342889bab",
+      "install-build-r2.json": "f46ee06d46123afb677198f347eead5968076531c599993571183bc34e7dda2d",
+      "install-build-r3.json": "ee4995049a3119aff1f8277737b968690c101340d1125c2564bc7594922976d8",
+      "install-library-build.json": "66ac203f53ec3bd0e8411c5a7c8933ac2aba727ea36698b530dc75a34377b687",
+      "install-library-targets.json": "8c278e0b2dc477a9c91d58f06d87c552fbbdfe4adfad6b13b8d00fdfd149e738",
+      "install-scheduling.json": "d02aff20385e5ed482ded7132190d9ab0237a7e29f4fcb1a77dba3d229d3de59",
+      "logs/chain-install-build.log.gz": "03a99b893ccf310aa9574da4a1f4455133b36b27a5856391ad9bbcd81101a4ef",
+      "logs/final-LastTest.log.gz": "38b23966aadc463ef55cbf5f799e86ef9e43eec0fc84126c003535c39f8fd4da",
+      "logs/final-ctest-r2.log.gz": "19da350fb05d5fc423de315b22c89d1e0cf97e0402927ada092ecfb6e8cb578c",
+      "logs/final-ctest.log.gz": "ce3b2137568cdffe3e314e93db0e90c29a5d8411075ce7781626c1b81c27134d",
+      "logs/final-tests.xml.gz": "cb253970b753624df855815a2e06299862177fb3e5ea8d1cc828e0e780e6ec58",
+      "logs/install-build-r2.log.gz": "e2506d41a022a4ba73cec46f9ad8f1bec995c2b51f51e8c35eef9d014e064e74",
+      "logs/install-build-r3.log.gz": "574577eb3d5a509cf16c2b07ad0ae7796f4dd787d95e113cdad19ead41c2ffe1",
+      "logs/install-library-build.log.gz": "a6e7b0f756b046e9fbfd56253e5e145c6dac070f2e982c45d2816917812bb503",
+      "logs/native-build-final.log.gz": "55a77691df8b89b21b7de17fb21fd0a9d7bb5aca1676284274594fa0ea9ea372",
+      "logs/native-build-r2.log.gz": "538a779e655ab9e3373432ad602e8b4b474fae6afc42eaa4b035380c35b2e2dd",
+      "logs/native-build-r3.log.gz": "4ae473e895e4e8c66d5489b3c405c0c125767f42e3847cd6c3d0964a82409282",
+      "logs/native-build.log.gz": "87e2203aaf34be7a24facfb114fca7cf327fb39867b23814581f99314e70aef1",
+      "logs/native-configure-r2.log.gz": "90990e74ddbe91f1f380187a7fef9241b5550c1cbd697c35fa9acf73883b8664",
+      "logs/native-configure-r3.log.gz": "afbf67a1cc2ef81970daa492b91491090238b27f5708f4dde4538ecec9beca0a",
+      "logs/native-configure.log.gz": "16ff32a5c98b8d2647e4989b3fa7b63cbd4fef3d4ba81a0e8501059601458270",
+      "logs/native-ctest.log.gz": "7c72c12ae1058686635b1d363c9b1e68530832a2663030d4efaad8ab5ff6fdef",
+      "logs/rust-tests-r2.log.gz": "41a7bc67b994bf23995da6d8f87462f1873b8d6ed56b31287ad07f9a0de1b79e",
+      "logs/rust-tests.log.gz": "6c182b87c847c385ada5f552518b364255cbcd9e566332b5b1d731773ee33f3d",
+      "native-build-final.json": "d80ed59d4408cc0e58e228ede5f39479e6d7b7f28d3054ee2f3ac3ca1549cba7",
+      "native-build-r2.json": "87e6ebf5e9f1941cd3559d0a076c7246474a6f9a83b140c3f8795e1deba78b67",
+      "native-build-r3.json": "71a880dd8cb9fbfa04d4b51bcd3c14bb6c845c13b69a1320155e44163469929f",
+      "native-build.json": "ef7f69eb6f94c072c4410d13f2162468152849646e775421aa397a98570cf40f",
+      "native-configure-r2.json": "e0557775523bbb959ef49ddd5988ad33636da6e60f708d44b19d1e7d8585c9fc",
+      "native-configure-r3.json": "302cf443d7f268e7ef877d9b6ae6ceecbb657eabc7f7093757c606798acb50bf",
+      "native-configure.json": "bf2f205858b786a73dd4ee65f34e1154d4332b9e08d14b85c7b7f4d385246b86",
+      "native-ctest.json": "042c76d5a6e885d1fecc6873fade8bde2db7e3d03192521798711423bac7e652",
+      "native-tests.xml": "6d38e8fdd7adf42cf5b4fb9ae2966edd9a1487e2077c88bebf09329cc3bcd44e",
+      "resource-interruption.json": "61943d3a11bed8281c4497ec19c09a0ecd5c091def43c518c516d8062746995d",
+      "retained-artifacts.json": "ff09b56d8a12ae52646ed1ccddc464433f59d82671cfbfa86885bedbbc844ea5",
+      "review-final.json": "b67aa90cff33be64ece709316331d94147abb0915facadebed528b7ca245e6f1",
+      "review-native-on-host.json": "0f89f9949226611fd0644595cf0d38f1be9bcfa4f67f84cf2ffad02c1b6a77e4",
+      "review-static-final.json": "e188d3ff93db48d6b2ae77d4d7518fb1446139427453e27f503bf6d32a720352",
+      "review-static-preliminary.json": "1f510f04bee91491df75c73574f9c07855a962a4bd3458500ae2888c8d5274df",
+      "review-upstream-gate.json": "b8866c51134721168b5ce66338fdb0ddbb4965f94c1a66007cdd416fafa0e264",
+      "run.py": "11ad9148437b1e4f28eeff802fa6c0c406e2f92f5adbd3c34e9d5fd67d20f1e3",
+      "rust-environment.json": "0b31df6b3b5f8c6743e2afece36a4e43f88099b2459c46ba8b85eed19f6373e2",
+      "rust-tests-r2.json": "95da661b72ecdba4b01bd9313007cad0f71243b6da8f3cc0a24de35634fb99c9",
+      "rust-tests.json": "7ef2a9eb32796ffccd28e1b9728fff6c2b1cd4226450d8e71d35cb95bca10f32",
+      "source-manifest.json": "970d83e56f7d10728875f7f49abf3f3a9f2d0528199cf0e39a86d4c6c28608cb"
+    }
+  },
+  "limitations": [
+    "Cleanup manifest/current absence/retention hashes verified; no independent proof that arbitrary foreign paths were untouched.",
+    "The forthcoming publication-review copy is outside this snapshot to avoid self-reference.",
+    "Review grants no merge/deploy/commercial-profile approval."
+  ]
+}

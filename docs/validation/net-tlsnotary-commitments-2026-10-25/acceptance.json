@@ -1,0 +1,25 @@
+{
+  "status": "PASS_SCOPED_JOB3_LOCAL_MACOS_TECHNICAL_QUALIFICATION",
+  "source_fingerprint": "c45b90aa7e4ee1c6e02a6811deb684ea4e41e0f60554e5439612a61bed62ce46",
+  "rust": {
+    "passed": 18,
+    "failed": 0
+  },
+  "ctest": {
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0
+  },
+  "platform": "macOS arm64 LLVM22.1.8 Release",
+  "upstream": "5f67389de3f8962227fddffd71d78a852acc9b01",
+  "base_forge": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+  "gates_not_run": [
+    "Linux",
+    "Labs",
+    "full TurbineOS regression",
+    "FairSwap composition",
+    "financial settlement",
+    "live Spine",
+    "commercial cost $0.012"
+  ]
+}

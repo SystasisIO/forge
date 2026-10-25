@@ -1,0 +1,5 @@
+{
+  "ninja_pid": 24963,
+  "reason": "Isolate measured high-memory Chain API -j1; resume remaining standard install graph -j4 after it links. No source/config/test changes.",
+  "unix": 1792932544.9775438
+}

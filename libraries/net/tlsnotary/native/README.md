@@ -124,3 +124,66 @@ attempts a bounded terminal write and exits; host shutdown must close/cancel
 streams and always reap. The host may terminate a stuck worker without relying
 on cooperative Rust task cancellation. A valid prover completion is not an
 independent verifier acceptance.
+
+## Opt-in retained commitments (private IPC version 2)
+
+Sessions with commitment selections use magic `0x46544e32`; the version 1
+configuration and terminal layout stay unchanged for ordinary sessions. Version
+2 appends the following to the configuration after the disclosure masks:
+
+```
+u32 commitments_count (0..16)
+per commitment: u8 direction (1 sent, 2 received), u8 algorithm = 1 (SHA-256),
+                u16 reserved = 0, range_vector
+```
+
+A selection is nonempty, with ordered nonadjacent ranges. Duplicate selections
+are rejected, including duplicates after resolving `END` to the actual transcript
+length. The sum of selected bytes, counting overlaps between different
+commitments, is at most 65536 per direction. The verifier resolves these exact
+selections against its TLS ciphertext transcript and checks the incoming upstream
+commitment request before acceptance. Algorithm, order, direction and ranges must
+match; arbitrary extra commitments are rejected before their MPC evaluation.
+
+The version 2 successful terminal result appends:
+
+```
+u32 commitments_count
+per commitment: u8 direction, u8 algorithm = 1, u16 reserved = 0,
+                range_vector (actual finite bounds), blob digest (32 bytes)
+u32 openings_count (prover = commitments_count, verifier = 0)
+per opening: u32 commitment_index, blob plaintext, blob blinder (16 bytes)
+```
+
+`plaintext` concatenates only the selected ranges in their canonical order.
+Neither unselected credentials nor a full transcript are retained in these
+openings. The worker projects the actual upstream `ProverOutput`/`VerifierOutput`;
+it checks output metadata against the requested selections and verifies each
+prover opening with upstream `hash_plaintext` before returning it. Openings use
+the private prover IPC only and are never sent to the verifier automatically.
+They are sensitive capabilities and belong in access-controlled storage.
+
+The same managed worker supports a bounded offline check without network streams
+or MPC pools. Its complete configuration is:
+
+```
+u32 magic = 0x46544e32, u8 role = 3, u8 flags = 0, u16 reserved = 0
+u32 total_sent, u32 total_received (0..65536)
+commitments_vector (1..16 records in the terminal format above)
+u32 openings_count = 1
+u32 commitment_index, blob plaintext, blob blinder (16 bytes)
+```
+
+Only `u32 status` is returned. The check validates lengths, canonical ranges,
+selected-byte budgets and the chosen opening, then calls pinned upstream
+`hash_plaintext` using its SHA-256 provider. Direct `serde` use only reconstructs
+upstream's private fixed-size `Blinder` value; it creates no portable Rust proof
+serialization format and adds no new cryptographic dependency.
+
+The upstream digest is `SHA256(concatenated_plaintext || blinder)`; direction,
+ranges and algorithm are typed commitment metadata. An offline hash check cannot
+authenticate caller-imported metadata, origin, session identity or context. The
+caller must preserve the exact MPC-confirmed result and bind its full canonical
+metadata into its own authenticated envelope before releasing any opening. This
+is retained direct-verification evidence, with no notarial signature, offline
+TLS attestation or separate notary service.

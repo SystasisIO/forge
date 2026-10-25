@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "reviewer": "JOB3 native worker author reviewing host code only",
+  "created_utc": "2026-10-25T12:35:47.181394+00:00",
+  "repository": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1",
+  "base_commit": "ace821ee46eb1ae410473415a8f26dd76aa61b8d",
+  "branch": "net-tlsnotary-commitments-v1",
+  "verdict": "PASS_SOURCE_REVIEW",
+  "findings": [],
+  "scope": "Independent source-only cross-review of C++ host/plugin and package dependency changes; no review approval for author-owned Rust changes.",
+  "exclusions": [
+    "libraries/net/tlsnotary/native/** (author-owned)",
+    "Runtime/MPC/lifecycle test execution",
+    "Installed-package qualification",
+    "Linux/Labs/commercial acceptance"
+  ],
+  "validation": {
+    "source_review": true,
+    "tests_run": false,
+    "builds_run": false,
+    "runtime_claim": false
+  },
+  "reviewed_patch_sha256": "0f4e91a710316c94e1f35b16342114f21bc84e41e6c3c19227210de1a54d70e5",
+  "file_hashes": {
+    "AGENTS.md": "e1acac5348f63dd2477e62abac5d1967905665fd537a70110faf1f362cd01123",
+    "skills/create-library/SKILL.md": "0b7325cc0482a910896ed2425f8278022a7ff514a9b9b9814181c8aa4be2a591",
+    "skills/create-plugin/SKILL.md": "8ee9e00c6a9c7f04526e7fe2908d4617ad0b98d565e26dfa289e37c7cfb0c7c8",
+    "libraries/net/tlsnotary/include/forge/net/tlsnotary/types.cppm": "9da9c8c50ee5cc27116845479f603b4276d0a28a747b7bbde351bce84b14dea1",
+    "libraries/net/tlsnotary/include/forge/net/tlsnotary/engine.cppm": "4cb670fd22830197c0524b7bfb71bbf8beed7bb2117755d843e32a302dfd2a03",
+    "libraries/net/tlsnotary/engine.cpp": "fc12e919b2deea618898b68eff625938a8b33df04a586ffd23d32b66fbf32d60",
+    "libraries/net/tlsnotary/engine_impl.cpp": "020c73e37aaa7ebd266ece09c6a8e4917af3e2f898bae315bcede847cd618cd1",
+    "libraries/net/tlsnotary/details/engine_impl.hxx": "40dad0c1dce6b63aaba7cdab7d6a980c67ff71f641e54af22508278b14ad918a",
+    "libraries/net/tlsnotary/details/engine_impl_entry.hxx": "35b0647442a3657f910b63d43daaa197cda56dc08741fc6c4dbc3c46d81103b7",
+    "libraries/net/tlsnotary/native_exchange.cpp": "1c717fea779ddae2bf6433105f3d47f5d0bb2a8a210be4c5faa060bb95d8ea2d",
+    "libraries/net/tlsnotary/details/native_exchange.hxx": "f9e15ca01de1974f43da8f849e2d323929617b5118a9d43fca65b4b415838e44",
+    "libraries/net/tlsnotary/wire.cpp": "c48bff30e95b35b9297efced24a2f53c424f5b93352172d3055c0f1caad993c8",
+    "libraries/net/tlsnotary/details/wire.hxx": "de4637a049af538bd0656da685ed315f89612c50b741cdc4b62c512d5132b006",
+    "libraries/net/tlsnotary/CMakeLists.txt": "83aae22325b5538617daadefadf8f168dca95dd62e1b00e4d0d63b7461b32454",
+    "cmake/ForgeConfig.cmake.in": "3c1ff7acd9023429c5fecc899419ba88d544492d40af25e625ecc927fd4b5732",
+    "plugins/net/tlsnotary/session/include/forge/plugins/net/tlsnotary/session/api.cppm": "f2066ef90b3e1f899a3d767d6cf2d8cdbaa340dd0f83f602867633e33043aa3e",
+    "plugins/net/tlsnotary/session/api_impl.cpp": "08954ceb796c471af291ab307d4259cea4be1d300f2b9a2400010ad44969236a",
+    "plugins/net/tlsnotary/session/details/api_impl.hxx": "2aea72a1b5923e7647abbc4d2f6f794060b4310776c0d67aafcc0696bb1ced55",
+    "plugins/net/tlsnotary/session/plugin.cpp": "4b42e82e144e2cba9627dffd997388fda0b038e3897d71396656f68826922568",
+    "plugins/net/tlsnotary/session/plugin_impl.cpp": "4c35ca6ee8e9c83ede5ed2b12128a115cbb725ffff2065dd397bb180f608563b",
+    "plugins/net/tlsnotary/session/CMakeLists.txt": "1b3c9de96dad2c0512d5ab58b670dffc2be0a34e1d18538a2c4b029109edcb8a",
+    "libraries/net/transport/stream.cpp": "0bfc6e2c9b0aa577d6529a60a7c2f744654f649c3bc234e118522c4680f0a8df",
+    "libraries/net/tlsnotary/README.md": "125defaaf6c178a2ff9057172b5be4d24ced6dd2cd6de666c7248cbb8a80b7ed",
+    "plugins/net/tlsnotary/session/README.md": "dee24751222e2e2aa800a1e7de2f0ca628240ea8d8666aadfe181485f2a1471c",
+    "docs/releases/unreleased-net-tlsnotary.md": "a72654359e668ba0de65bbb506b9d1859f2c6287ac323637af23c215023ba36c"
+  },
+  "checks": [
+    {
+      "topic": "lifecycle/ownership",
+      "result": "New check() forwards through existing impl::execute, native_exchange and spawn/reaper/discard paths; no independent runtime/process owner. Empty peer async_close is safe according to transport::stream implementation."
+    },
+    {
+      "topic": "queue/cancel/deadline",
+      "result": "check shares existing id uniqueness, max_active/max_queued, stop-token callback, cancellation, deadline and shutdown accounting. Lazy awaitable captures impl rather than raw engine lifetime."
+    },
+    {
+      "topic": "wire/limits",
+      "result": "FTN1 selected for ordinary empty policy; FTN2 fields match agreed layout. Terminal metadata/disclosure/commitment masks, directions, algorithm, reserved bytes, lengths, indices and opening ownership are checked before returned data is exposed."
+    },
+    {
+      "topic": "data transfer",
+      "result": "Plugin delegates moved requests with no duplicate DTO family or aliases. engine prove/verify/check extract only id, stop_token and deadline before moving request; execute owns those scalar/control values instead of copying nested session_options selections."
+    },
+    {
+      "topic": "package dependencies",
+      "result": "Public types import crypto_core/digest, CMake public links match, ForgeConfig recursively adds both components, and existing OpenSSL discovery includes those components."
+    },
+    {
+      "topic": "trust boundary",
+      "result": "engine/check comments and README correctly require caller-authenticated full evidence+context. Offline opening check does not claim imported origin/metadata authenticity or a notarized TLS proof."
+    },
+    {
+      "topic": "final copy elimination",
+      "result": "Re-read execute declaration/definition and all three caller sites after refactor. id and stop_token are captured before move; queue identity and cancellation semantics are preserved. No dangling reference or use of moved request was found."
+    }
+  ],
+  "nonblocking_observations": [
+    {
+      "file": "libraries/net/tlsnotary/engine.cpp",
+      "line": 90,
+      "detail": "END selection admission counts the configured transcript maximum while the worker uses actual length. This is conservative bounded admission and may reject multiple END selections whose actual total would fit; clarify this upper-bound behavior in API documentation if relevant.",
+      "resolution": "Documented in libraries/net/tlsnotary/README.md:74-76. No outstanding change requested."
+    }
+  ],
+  "revision": 2,
+  "supersedes_patch_sha256": "a97f287ac4591038963fb6cbe88aa0aa1b2e9568843416913a307e982a8c1f9c"
+}

@@ -30,6 +30,10 @@ plugin::api_impl::verify(forge::net::tlsnotary::verifier_request request) {
    return _impl->require_engine()->verify(std::move(request));
 }
 
+boost::asio::awaitable<void> plugin::api_impl::check(forge::net::tlsnotary::check_request request) {
+   return _impl->require_engine()->check(std::move(request));
+}
+
 bool plugin::api_impl::cancel(std::uint64_t id) noexcept {
    auto owner = std::shared_ptr<forge::net::tlsnotary::engine>{};
    {

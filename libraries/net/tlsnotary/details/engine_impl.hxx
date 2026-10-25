@@ -8,7 +8,8 @@ struct engine::impl : public std::enable_shared_from_this<engine::impl> {
    static boost::asio::awaitable<result>
    execute(std::shared_ptr<impl> self,
            boost::compat::move_only_function<std::shared_ptr<detail::native_exchange>()> make_exchange,
-           session_options options, std::chrono::steady_clock::time_point deadline);
+           std::uint64_t id, std::stop_token stop, std::chrono::steady_clock::time_point deadline);
+   static boost::asio::awaitable<void> check(boost::asio::awaitable<result> operation);
    static boost::asio::awaitable<void> drain(std::shared_ptr<impl> self);
    bool cancel(std::uint64_t id) noexcept;
    void request_stop() noexcept;

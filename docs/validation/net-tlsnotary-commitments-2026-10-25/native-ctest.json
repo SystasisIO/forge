@@ -1,0 +1,21 @@
+{
+  "name": "native-ctest",
+  "command": [
+    "ctest",
+    "--test-dir",
+    "artifacts/jobs3-20261025/build/native",
+    "-R",
+    "^test_forge_(net_tlsnotary(_evidence)?|plugins_net_tlsnotary_session)$",
+    "-j1",
+    "--output-on-failure",
+    "--output-junit",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/native-tests.xml"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 8,
+  "elapsed_seconds": 14.37,
+  "started_unix": 1792932057.291171,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

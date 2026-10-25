@@ -1,0 +1,23 @@
+{
+  "name": "final-ctest",
+  "command": [
+    "env",
+    "CMAKE_BUILD_PARALLEL_LEVEL=4",
+    "ctest",
+    "--test-dir",
+    "artifacts/jobs3-20261025/build/native",
+    "-R",
+    "^test_forge_(net_tlsnotary(_evidence)?|plugins_net_tlsnotary_session|package_install|package_net_tlsnotary(_leaf)?_component)$",
+    "-j1",
+    "--output-on-failure",
+    "--output-junit",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/final-tests.xml"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 8,
+  "elapsed_seconds": 126.401,
+  "started_unix": 1792932956.151621,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

@@ -80,6 +80,10 @@ int main(int argc, char** argv) {
              tlsn::verifier_request{.peer = std::move(peers.second),
                                     .source = {.server_name = "tlsn.local", .trust_roots_der = {identity.root}},
                                     .options = options(52)};
+         const auto hidden_value = static_cast<std::uint32_t>(https_fixture::response().find("7318921"));
+         proof.options.commitments = {
+             {.direction = tlsn::direction::received, .ranges = {{hidden_value, hidden_value + 7}}}};
+         verification.options.commitments = proof.options.commitments;
          auto verified = asio::co_spawn(shell->runtime().context(),
                                         plugin_prover ? direct.verify(std::move(verification))
                                                       : api->verify(std::move(verification)),
@@ -95,6 +99,13 @@ int main(int argc, char** argv) {
              std::string{authenticated.received.front().bytes.begin(), authenticated.received.front().bytes.end()};
          check(body.find("7318921") != std::string::npos && body.find("secret-sentinel") == std::string::npos,
                "plugin MPC authenticated response mismatch");
+         check(authenticated.retained.has_value() && metadata.retained.has_value() && authenticated.openings.empty() &&
+                   metadata.openings.size() == 1,
+               "plugin authenticated commitment or private opening ownership missing");
+         auto opening_check = tlsn::check_request{.authenticated = *authenticated.retained,
+                                                  .opening = metadata.openings.front()};
+         opening_check.options.id = 53;
+         forge::asio::blocking::run(shell->runtime(), api->check(std::move(opening_check)));
          static_cast<void>(service.get());
       }
 

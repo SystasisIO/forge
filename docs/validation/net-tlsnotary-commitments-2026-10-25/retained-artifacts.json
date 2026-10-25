@@ -1,0 +1,28 @@
+{
+  "files": {
+    "deliverables/forge_tlsnotary_fault_worker": "49caf79813daa75e5f39c88a8a3f4ef7c3de1a796a2afd4cc607072164c4ef5a",
+    "deliverables/test_forge_plugins_net_tlsnotary_session": "8f69c559fadcc8d8bd4f3593a5328ca75a89e6c44a193176baaeee19cf31fcc2",
+    "deliverables/libforge_plugins_net_tlsnotary_session.a": "c9b4226207801cf9db1611b933cdb897fb4504b521863af6f1230dda6e6d59fe",
+    "deliverables/installed-leaf-consumer": "4b88c2663681c44bb61c82e95e9f7fce791383a51be23a62fc3308b5a01263bd",
+    "deliverables/forge-tlsnotary-worker": "b192956fd1aa0e7938d3d748b24bda5f5eade708004c70f2a52561f464113b6e",
+    "deliverables/test_forge_net_tlsnotary_evidence": "d258cba20b0b43bbb2a594ba1f6992088782219aded4e4f16a24653232fb0a51",
+    "deliverables/installed-plugin-consumer": "1baa755ba3cbcd5f0d974cb6fcdbf60de0783eafa9436c5a6c6646e7363f020d",
+    "deliverables/libforge_net_tlsnotary.a": "fb1bc77c8bdd1250e44ccf231bdaa40c2d995f2a4e2aaa26c6b98ca8388633ad",
+    "deliverables/test_forge_net_tlsnotary": "8d3d7a3cea51d3d3e0883c6bb3039d54a3bed790e0e6bb0fbd0279ade1e9f772",
+    "retained-fixtures/0/openings.private.raw": "bf575fe25732a9f7147ca3a498bfd09c11ab93ebc4422ef956293d8a594009f3",
+    "retained-fixtures/0/trust.raw": "0b564e75f0d8894f2c89709cab9b8a8db79634df27e7757ddc633fdc0804090c",
+    "retained-fixtures/0/evidence.raw": "bb295f52bf25354e84f6f2354a0c14678b27dafbf38eec9b264105622a089ffe",
+    "retained-fixtures/1/openings.private.raw": "8791cc401616cb808fede9de660a6da19e3ec4e7e6c8db91f0ddd3efe6b4ed48",
+    "retained-fixtures/1/trust.raw": "62603618fb47e345ce03445f0b549e47f504bdce72b03d24dcf39fe36c4630b9",
+    "retained-fixtures/1/evidence.raw": "d468b6617d6c29a152093ab681797f5bf833a8c1a962be52e1f98a8876b096b7",
+    "retained-fixtures/4/openings.private.raw": "57e9d245b9bd81b3f604da4f1c09c780214e769af88a9782bc2780c47722f28f",
+    "retained-fixtures/4/trust.raw": "bd1070e0fe97ff47e2dbf5925e6863c5e652307cf9477f668d80767963f59bc5",
+    "retained-fixtures/4/evidence.raw": "7625d9169d01b9367dbca2801f7c381fa1a3cc807100ba929c43c5e66c6706b4",
+    "retained-fixtures/3/openings.private.raw": "9518bf90f53bfa27e6e5c8829a1e6f9758a834c4734dbc4cf344c9399f57462e",
+    "retained-fixtures/3/trust.raw": "2dd60653a002aa636156a9bf96b46475755e5e572a63d6d3ad85872b6423edce",
+    "retained-fixtures/3/evidence.raw": "d13d95d79c0e5a5c5135b196bb5e4f42f23f4c1ff74bd20f83875aa841085f46",
+    "retained-fixtures/2/openings.private.raw": "4b1bb8aaea70e2a18ec3cd033a3cd4c4afa0eddf96aaa85731b7bffe8fa8cc5d",
+    "retained-fixtures/2/trust.raw": "3df1c8c16a4c93c698b0a2156baea56596e6416055bd129ffbe92b30d6ad4e74",
+    "retained-fixtures/2/evidence.raw": "4d1a4c0c208a6d8aea15b3da80211a9289aca8c303c8842a5642c4cbc35cc05a"
+  }
+}

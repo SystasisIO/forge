@@ -62,8 +62,81 @@ semantic evidence for an application request or response: the application must
 require the disclosure ranges needed by its policy. A verifier result contains only authenticated bytes and their offsets, server
 identity and total direction lengths. Hidden bytes are absent. Prover completion
 returns source/length metadata and empty authenticated-range collections; only a
-verifier result is evidence for the peer. This API defines no portable persisted
-proof format, signed notarization service or offline attestation verifier.
+verifier result is evidence for the peer. The opt-in retained records below preserve authenticated commitments, but do not
+define a signed notarization service or an independently verifiable offline TLS proof.
+
+## Retained commitments and later openings
+
+Append `session_options::commitments` to opt into retained format 1. Each
+`commitment_selection` selects one direction and an ordered, nonempty set of
+nonadjacent half-open ranges. End `0xffffffff` resolves to the actual direction
+length. At most 16 selections are accepted, with at most 1,024 ranges per selection
+and at most 65,536 selected bytes per direction in total. Host admission uses the
+configured maximum direction length for an END range, so it can conservatively
+reject an overlapping selection whose eventual short transcript would fit.
+Duplicate selections
+and selections which become empty or duplicate after resolution are rejected.
+Both peers configure the exact same policy independently; the verifier checks
+its entirety before accepting the upstream proof request.
+
+```cpp
+// Include the existing mandatory reveal masks required by your application.
+request.options.commitments = {
+   {.direction = forge::net::tlsnotary::direction::received,
+    .ranges = {{body_begin, body_end}}}
+};
+auto facts = co_await sessions.verify(std::move(request));
+// facts.retained contains origin, lengths, implementation pin and commitments.
+// facts.openings is empty on the verifier side.
+```
+
+The exact upstream revision remains
+`5f67389de3f8962227fddffd71d78a852acc9b01`. SHA-256 is explicit: upstream's
+default commitment algorithm is not selected implicitly. The upstream construction
+hashes the concatenated selected plaintext followed by its random 16-byte blinder.
+Direction, ranges, origin and transcript lengths are metadata outside that hash.
+They must remain authenticated along with it; checking the digest alone cannot
+identify a different origin or translated range of the same length.
+
+`result::retained` is a narrow `evidence` record, suitable for canonical Forge Raw
+serialization. Its field order is `format`, `implementation`, `server_name`,
+`sent_size`, `received_size`, `commitments`. Format 1 fixes SHA-256 and that upstream
+pin. A commitment contains `direction`, `ranges`, `digest`; an opening contains
+`commitment` (index), `plaintext`, `blinder`. Metadata declarations explicitly
+freeze the field order. Decode files with existing Raw bounded exact decoding,
+then authenticate the record against trusted storage or an application signature
+over the **whole record and caller-owned context**. Never obtain the trusted
+signer/context from an untrusted record itself. The library owns no storage,
+signer, business authorization or product context.
+
+Only the prover receives `result::openings`, and only for explicitly selected
+ranges. Store openings separately with private permissions; do not serialize the
+whole prover result into a public receipt or log. Retained verifier evidence
+contains neither these openings nor arbitrary hidden transcript bytes. A selected
+request range may itself contain credentials, so applications must choose masks
+and disclosure policy deliberately. No secure-erasure guarantee is made.
+
+After application authorization and release of an opening:
+
+```cpp
+forge::net::tlsnotary::check_request check;
+check.authenticated = std::move(trusted_evidence);
+check.opening = std::move(released_opening);
+check.options.id = 43;
+check.options.timeout = std::chrono::seconds{10};
+co_await sessions.check(std::move(check));
+```
+
+`check` uses the same bounded admission, worker ownership, cancellation, deadline
+and shutdown barrier as sessions. Its worker calls the pinned upstream
+`hash_plaintext`; no peer/server stream, HTTP request, MPC rerun or own hashing
+implementation is introduced. A successful check establishes only an opening's
+relation to the supplied commitment. It cannot authenticate imported evidence,
+prove service semantics, encrypt/deliver a file, authorize a charge or replace an
+exchange/dispute protocol. An application's signature-before-release policy is
+external to this neutral API. Existing default sessions retain their FTN1 private
+IPC; opt-in sessions and offline checks use FTN2. Private workers and host binaries
+must come from the same installation.
 
 ## Limits and shutdown
 

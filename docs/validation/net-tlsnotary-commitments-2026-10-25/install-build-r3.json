@@ -1,0 +1,21 @@
+{
+  "name": "install-build-r3",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs3-20261025/build/native",
+    "-j4",
+    "--target",
+    "forge",
+    "test_forge_net_tlsnotary",
+    "test_forge_plugins_net_tlsnotary_session",
+    "test_forge_net_tlsnotary_evidence"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 210.901,
+  "started_unix": 1792932699.932193,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

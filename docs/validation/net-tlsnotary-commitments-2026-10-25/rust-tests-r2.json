@@ -1,0 +1,21 @@
+{
+  "name": "rust-tests-r2",
+  "command": [
+    "env",
+    "CARGO_TARGET_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs3-20261025/build/cargo-tests",
+    "cargo",
+    "test",
+    "--manifest-path",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/libraries/net/tlsnotary/native/Cargo.toml",
+    "--locked",
+    "--release",
+    "-j4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 4.355,
+  "started_unix": 1792931382.812618,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}
