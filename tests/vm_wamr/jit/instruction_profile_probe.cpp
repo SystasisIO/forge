@@ -5,6 +5,7 @@
 
 #include <wasm_loader.h>
 #include <aot_jit_profile.h>
+#include <aot_jit_profile_metadata.h>
 #include <wasm_exec_env.h>
 #include <wasm_runtime.h>
 #include <wasm_runtime_common.h>
@@ -133,7 +134,7 @@ const AOTJitProfileInterval* rows(const WASMModule* module, std::uint32_t& count
 std::uint32_t translate(const WASMModule* module, std::uintptr_t pc) {
    return aot_jit_profile_translate(module ? module->comp_ctx : nullptr, pc);
 }
-enum class refusal { none, early_heap, early_cancel, late_cancel, mapping };
+enum class refusal { none, early_heap, early_cancel, late_cancel, mapping, final_cancel };
 
 // Test-only wrapper of the real owner callbacks. The first check with a profile
 // present runs after DIBuilder construction, before its first function record.
@@ -198,6 +199,15 @@ class observed_budget {
          published_during_compile = true;
       auto* context = module ? module->comp_ctx : nullptr;
       if (context && context->jit_instruction_profile) {
+         // Existing owner callback, after the loader commits native policy but
+         // before publish's final check can expose the immutable map.
+         if (!triggered && point == refusal::final_cancel &&
+             (module->native_code_policy == WASM_NATIVE_CODE_RX ||
+              module->native_code_policy == WASM_NATIVE_CODE_MAP_JIT)) {
+            triggered = true;
+            owner->fail(vm::engine_load_budget::failure::cancelled);
+            return false;
+         }
          if (!inspected_noinline) {
             const auto kind = LLVMGetEnumAttributeKindForName("noinline", 8);
             for (std::uint32_t i = 0; i < context->func_ctx_count; ++i) {
@@ -457,6 +467,11 @@ void failure(refusal point) {
       if (point == refusal::early_heap || point == refusal::early_cancel)
          require(!observed.mapping_attempts, "Early metadata refusal reached native mapping/finalization");
       require(!observed.published_during_compile, "Failed preparation exposed a partial map");
+      if (point == refusal::final_cancel) {
+         require(observed.mapping_attempts != 0, "Final cancellation did not reach committed native mappings");
+         require(module->native_code_policy == WASM_NATIVE_CODE_UNCOMMITTED,
+                 "Final cancellation retained a committed module policy");
+      }
       require(!module->comp_ctx && !module->comp_data && !module->func_ptrs && !module->func_ptrs_compiled,
               "Failed compilation retained executable state");
       no_map(module);
@@ -477,6 +492,117 @@ void failure(refusal point) {
    require(budget->current_bytes() == root, "Failed module unload retained owner storage");
    require(fixture.wasm == unchanged, "Failure/retry mutated the caller WASM bytes");
    positive(false, false);
+}
+
+void metadata_validation() {
+   using line_table = llvm::DWARFDebugLine::LineTable;
+   // These are LLVM-owned parsed structures, not a second DWARF decoder or
+   // corrupted-emission injection. Production extract uses this same predicate.
+   const std::array<NativeRange, 3> ranges{{{100, 200}, {300, 400}, {700, 800}}};
+   const auto append_sequence = [](line_table& table, std::uint64_t begin, std::uint64_t end) {
+      llvm::DWARFDebugLine::Row first;
+      first.Address.Address = begin;
+      first.Line = 0;
+      auto last = first;
+      last.Address.Address = end;
+      last.EndSequence = true;
+      llvm::DWARFDebugLine::Sequence sequence;
+      sequence.LowPC = begin;
+      sequence.HighPC = end;
+      sequence.FirstRowIndex = static_cast<unsigned>(table.Rows.size());
+      sequence.LastRowIndex = sequence.FirstRowIndex + 2;
+      sequence.Empty = false;
+      table.appendRow(first);
+      table.appendRow(last);
+      table.appendSequence(sequence);
+   };
+   const auto reset_table = [&](line_table& table, std::uint64_t begin = 100, std::uint64_t end = 200) {
+      table.clear();
+      append_sequence(table, begin, end);
+   };
+   unsigned negatives = 0;
+   const auto reject = [&](const line_table* table) {
+      ProfileMetadata metadata;
+      require(!metadata.accept_unit(table, ranges), "Incomplete parsed metadata was accepted");
+      require(!metadata.complete(), "Rejected parsed metadata completed extraction");
+      ++negatives;
+   };
+   ProfileMetadata no_units;
+   require(!no_units.complete(), "Zero compile units completed extraction");
+   ++negatives;
+   reject(nullptr);
+   line_table table;
+   reset_table(table);
+   table.Rows.clear();
+   reject(&table);
+   reset_table(table);
+   table.Rows.pop_back();
+   reject(&table);
+   reset_table(table);
+   table.Sequences.clear();
+   reject(&table);
+   reset_table(table);
+   table.Sequences.front().Empty = true;
+   reject(&table);
+   reset_table(table);
+   table.Sequences.front().HighPC = table.Sequences.front().LowPC;
+   reject(&table);
+   reset_table(table);
+   table.Sequences.front().FirstRowIndex = table.Sequences.front().LastRowIndex;
+   reject(&table);
+   reset_table(table);
+   table.Sequences.front().LastRowIndex = 3;
+   reject(&table);
+   reset_table(table);
+   table.Sequences.front().FirstRowIndex = 1;
+   reject(&table);
+   reset_table(table);
+   table.Rows.back().EndSequence = false;
+   reject(&table);
+   for (const auto range : std::array<NativeRange, 3>{{{500, 600}, {90, 100}, {400, 500}}}) {
+      reset_table(table, range.begin, range.end);
+      ProfileMetadata unrelated;
+      require(unrelated.accept_unit(&table, ranges), "Unrelated valid sequence was malformed");
+      require(!unrelated.complete(), "No guest sequence overlap completed extraction");
+      ++negatives;
+   }
+   reset_table(table);
+   ProfileMetadata sticky_failure;
+   require(sticky_failure.accept_unit(&table, ranges) && sticky_failure.complete(),
+           "Valid initial table did not complete");
+   require(!sticky_failure.accept_unit(nullptr, ranges) && !sticky_failure.complete(),
+           "A later rejected unit retained completion");
+   require(!sticky_failure.accept_unit(&table, ranges) && !sticky_failure.complete(),
+           "A later valid unit erased a prior rejection");
+   ++negatives;
+
+   unsigned positives = 0;
+   ProfileMetadata line_zero;
+   require(line_zero.accept_unit(&table, ranges) && line_zero.complete(),
+           "Complete line-zero metadata required invented attribution");
+   ++positives;
+   table.Rows.front().Line = 38;
+   ProfileMetadata attributed;
+   require(attributed.accept_unit(&table, ranges) && attributed.complete(),
+           "Positive source lines changed the structural predicate");
+   ++positives;
+   reset_table(table, 300, 400);
+   append_sequence(table, 500, 600);
+   append_sequence(table, 100, 200);
+   ProfileMetadata unsorted;
+   require(unsorted.accept_unit(&table, ranges) && unsorted.complete(),
+           "Unsorted sequences, gaps or an unmapped function required fabricated coverage");
+   ++positives;
+   line_table unrelated_table;
+   reset_table(unrelated_table, 500, 600);
+   ProfileMetadata multiple_units;
+   require(multiple_units.accept_unit(&unrelated_table, ranges) && !multiple_units.complete(),
+           "A non-guest unit completed extraction before a guest sequence");
+   require(multiple_units.accept_unit(&table, ranges) && multiple_units.complete(),
+           "Global guest overlap was incorrectly required for every unit");
+   ++positives;
+   std::cout << "metadata_predicate_negatives=" << negatives << " positives=" << positives
+             << " corrupted_emission_end_to_end=NOT_RUN\n";
 }
 
 void empty_or_plain(bool empty) {
@@ -547,6 +673,10 @@ int main(int argc, char** argv) {
          failure(refusal::late_cancel);
       else if (scenario == "mapping")
          failure(refusal::mapping);
+      else if (scenario == "final_cancel")
+         failure(refusal::final_cancel);
+      else if (scenario == "metadata")
+         metadata_validation();
       else
          throw std::invalid_argument("Unknown instruction-profile scenario");
       std::cout << "Runtime instruction profile " << scenario << " PASS\n";

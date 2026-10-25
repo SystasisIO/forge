@@ -477,6 +477,32 @@ BOOST_AUTO_TEST_CASE(profile_public_empty_module_has_no_native_pc_map) {
    auto observer = backend.get_module().get_debug();
    BOOST_TEST(observer.translate(reinterpret_cast<const void*>(UINTPTR_MAX)) == UINT32_MAX);
 }
+
+BOOST_AUTO_TEST_CASE(profile_public_defined_empty_function_prepares_with_default_debug_info) {
+   // Original 38-byte apply(i64,i64,i64)->void: locals0/end at offset37.
+   // Keep this valid defined function, not the zero-defined fast path or a
+   // replacement with extra instructions that happen to retain attribution.
+   auto wasm = fixtures::bytes{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x03,
+                               0x7e, 0x7e, 0x7e, 0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x09, 0x01, 0x05, 0x61,
+                               0x70, 0x70, 0x6c, 0x79, 0x00, 0x00, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b};
+   const auto original = wasm;
+   BOOST_REQUIRE_EQUAL(wasm.size(), 38U);
+   using default_debug_backend = vm::backend<std::nullptr_t, vm::jit_profile>;
+   auto backend = default_debug_backend{wasm, nullptr};
+   BOOST_CHECK_NO_THROW(backend.validate());
+   BOOST_TEST(backend.get_module().function_count() == 1U);
+   BOOST_TEST(backend.call("env", "apply", std::uint64_t{1}, std::uint64_t{2}, std::uint64_t{3}));
+   auto observer = backend.get_module().get_debug();
+   BOOST_TEST(observer.translate(nullptr) == UINT32_MAX);
+   BOOST_TEST(observer.translate(wasm.data()) == UINT32_MAX);
+   BOOST_TEST(observer.translate(reinterpret_cast<const void*>(UINTPTR_MAX)) == UINT32_MAX);
+   auto explicit_observer = profiled_backend{wasm, nullptr};
+   BOOST_TEST(explicit_observer.call("env", "apply", std::uint64_t{1}, std::uint64_t{2}, std::uint64_t{3}));
+   BOOST_TEST(explicit_observer.get_debug().translate(nullptr) == UINT32_MAX);
+   BOOST_TEST(explicit_observer.get_debug().translate(wasm.data()) == UINT32_MAX);
+   BOOST_TEST(explicit_observer.get_debug().translate(reinterpret_cast<const void*>(UINTPTR_MAX)) == UINT32_MAX);
+   BOOST_TEST(wasm == original);
+}
 #else
 BOOST_AUTO_TEST_CASE(profile_public_requires_the_explicit_llvm_runtime_profile) {
    profile_fixture fixture;

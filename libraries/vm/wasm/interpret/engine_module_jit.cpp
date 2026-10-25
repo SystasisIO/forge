@@ -75,15 +75,9 @@ void engine_module::compile_llvm_jit(bool profiling) {
    stack_sizes(_module);
    if (_budget)
       _budget->check();
-#if defined(WASM_LOADER_HAS_LLVM_JIT_INSTRUCTION_PROFILE)
-   const auto* module = reinterpret_cast<const WASMModule*>(_module);
-   if (profiling && module->function_count) {
-      std::uint32_t count = 0;
-      const auto* rows = aot_jit_profile_intervals(module->comp_ctx, &count);
-      if (!rows || !count)
-         throw std::runtime_error("LLVM JIT instruction profile was not published");
-   }
-#endif
+   // Successful profile compilation already requires validated metadata to be
+   // linked and published (zero-defined modules need no map). Readiness is not
+   // interval cardinality: a complete empty map translates every PC as UNKNOWN.
    _llvm_jit_profiling = profiling;
    _llvm_jit_ready = true;
 #else
