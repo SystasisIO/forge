@@ -13,6 +13,9 @@ int main() {
    auto gate = forge::asio::gate{};
    auto notification = forge::asio::notification{};
    auto lane = forge::asio::affine::lane{};
+   auto scheduled = scheduler.submit(forge::asio::task::task{.name = "package-completion", .work = [] {}});
+   forge::asio::blocking::run(runtime, scheduled.wait());
+   const auto completed = scheduled.completed();
 
    auto ticket = forge::asio::blocking::run(runtime, gate.acquire());
    ticket.release();
@@ -25,5 +28,5 @@ int main() {
    forge::asio::blocking::run(runtime, lane.shutdown());
    forge::asio::blocking::run(runtime, compute.shutdown());
    forge::asio::blocking::run(runtime, scheduler.shutdown());
-   return result == 42 && affine_result == 43 ? 0 : 1;
+   return result == 42 && affine_result == 43 && completed ? 0 : 1;
 }

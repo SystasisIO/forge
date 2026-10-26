@@ -294,6 +294,11 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
       before_read_return_ = std::move(callback);
    }
 
+   void before_next_write_return(std::function<void(boost::asio::any_io_executor)> callback) {
+      const auto lock = std::scoped_lock{mutex_};
+      before_write_return_ = std::move(callback);
+   }
+
    void push(bytes value) {
       std::shared_ptr<boost::asio::steady_timer> wake;
       {
@@ -388,6 +393,14 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
                                   "fake API transport write completion failed after delivery");
          }
       }
+      auto callback = std::function<void(boost::asio::any_io_executor)>{};
+      {
+         const auto lock = std::scoped_lock{mutex_};
+         callback = std::exchange(before_write_return_, {});
+      }
+      if (callback) {
+         callback(executor);
+      }
       write_active_.store(false, std::memory_order_release);
       co_return;
    }
@@ -410,6 +423,7 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
    std::vector<bytes> writes_;
    std::size_t read_count_ = 0;
    std::function<void()> before_read_return_;
+   std::function<void(boost::asio::any_io_executor)> before_write_return_;
    std::shared_ptr<boost::asio::steady_timer> read_wake_;
    std::weak_ptr<fake_stream> peer_;
    std::atomic_bool hold_writes_{false};
@@ -694,6 +708,99 @@ boost::asio::awaitable<void> exercise_cancelled_outgoing_request(bool during_hel
    BOOST_TEST(cancelled);
    BOOST_TEST(model->write_count() == 1U);
    BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::request, "echo") == 0U);
+}
+
+boost::asio::awaitable<void> exercise_cancelled_session_readiness_call(bool cancel_head) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto client_model = std::make_shared<fake_stream>();
+   auto server_model = std::make_shared<fake_stream>();
+   client_model->pause_write_completion_after_delivery();
+   auto [client_stream, server_stream] = make_stream_pair(client_model, server_model);
+   auto implementation = std::make_shared<live_impl>();
+   auto registry = forge::api::core::registry{};
+   registry.install<live_api>(live_api::describe(), implementation);
+   auto service =
+       start_service(executor, forge::api::transport::serve_stream(
+                                   std::move(server_stream), forge::api::core::binding().serve(registry).build()));
+   auto connection = forge::api::transport::connection{std::move(client_stream)};
+   auto remote = co_await connection.get_remote_api<live_api>();
+   auto cancellation = std::make_shared<boost::asio::cancellation_signal>();
+   auto warm = std::future<item>{};
+   client_model->before_next_write_return([remote, cancellation, cancel_head,
+                                           &warm](boost::asio::any_io_executor writer_executor) {
+      boost::asio::post(writer_executor, [remote, cancellation, cancel_head, writer_executor, &warm] {
+         // The warm call reaches the readiness gate before the cold waiter resumes.
+         warm = cancel_head
+                    ? boost::asio::co_spawn(writer_executor, remote->echo(item{.value = 52}), boost::asio::use_future)
+                    : boost::asio::co_spawn(
+                          writer_executor, remote->echo(item{.value = 52}),
+                          boost::asio::bind_cancellation_slot(cancellation->slot(), boost::asio::use_future));
+         cancellation->emit(boost::asio::cancellation_type::all);
+      });
+   });
+   auto cold =
+       cancel_head
+           ? boost::asio::co_spawn(executor, remote->echo(item{.value = 51}),
+                                   boost::asio::bind_cancellation_slot(cancellation->slot(), boost::asio::use_future))
+           : boost::asio::co_spawn(executor, remote->echo(item{.value = 51}), boost::asio::use_future);
+   co_await wait_until(
+       [&] {
+          return client_model->delivered_completion_pending() && client_model->read_count() >= 2U &&
+                 server_model->read_count() >= 2U;
+       },
+       std::chrono::milliseconds{1000});
+   BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 0U);
+   BOOST_CHECK(!warm.valid());
+   client_model->complete_delivered_write();
+   co_await wait_until(
+       [&] {
+          return warm.valid() && cold.wait_for(std::chrono::seconds{0}) == std::future_status::ready &&
+                 warm.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+       },
+       std::chrono::milliseconds{1000});
+
+   auto observed_cancel = false;
+   auto first_failure = std::exception_ptr{};
+   for (const auto& [call, expected] : {std::pair{&cold, std::uint32_t{51}}, std::pair{&warm, std::uint32_t{52}}}) {
+      const auto victim = cancel_head ? call == &cold : call == &warm;
+      try {
+         const auto value = call->get();
+         BOOST_CHECK(!victim);
+         BOOST_TEST(value.value == expected);
+      } catch (const forge::api::core::exceptions::cancelled&) {
+         BOOST_TEST(victim);
+         observed_cancel = victim;
+      } catch (...) {
+         if (!first_failure) {
+            first_failure = std::current_exception();
+         }
+      }
+   }
+   BOOST_TEST(observed_cancel);
+   const auto victim_id = cancel_head ? std::uint64_t{1} : std::uint64_t{2};
+   BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo", victim_id) == 0U);
+   BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::cancel, "echo", victim_id) == 0U);
+   BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 1U);
+   if (!first_failure) {
+      BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 1U);
+      BOOST_TEST((co_await remote->echo(item{.value = 53})).value == 53U);
+      BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 2U);
+      BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 2U);
+      BOOST_TEST(connection.valid());
+   }
+   auto cleanup_failure = std::exception_ptr{};
+   try {
+      co_await connection.async_close();
+      co_await wait_service(service);
+   } catch (...) {
+      cleanup_failure = std::current_exception();
+   }
+   if (first_failure) {
+      std::rethrow_exception(first_failure);
+   }
+   if (cleanup_failure) {
+      std::rethrow_exception(cleanup_failure);
+   }
 }
 
 using exchange_call = forge::api::core::bidirectional_stream_call<item, item>;
@@ -1462,8 +1569,8 @@ BOOST_AUTO_TEST_CASE(contextual_stream_admission_decodes_once_and_allows_same_se
           make_stream_pair(malformed_client_model, malformed_server_model);
 
       auto service = start_service(
-         executor, forge::api::transport::serve_stream(std::move(malformed_server_stream),
-                                                       forge::api::core::binding().serve(registry).build()));
+          executor, forge::api::transport::serve_stream(std::move(malformed_server_stream),
+                                                        forge::api::core::binding().serve(registry).build()));
       auto malformed_session = forge::api::stream::session{std::move(malformed_client_stream)};
 
       auto malformed_output = forge::api::core::detail::make_local_stream_pair(executor, 4096, 2, 8192);
@@ -1481,21 +1588,20 @@ BOOST_AUTO_TEST_CASE(contextual_stream_admission_decodes_once_and_allows_same_se
       auto neighbor_output = forge::api::core::detail::make_local_stream_pair(executor, 4096, 2, 8192);
       auto neighbor_result = std::make_shared<std::optional<forge::api::core::frame>>();
       const auto run_neighbor =
-         [](forge::api::stream::session& session,
-            std::shared_ptr<forge::api::core::detail::stream_endpoint> output,
-            std::shared_ptr<std::optional<forge::api::core::frame>> result) -> boost::asio::awaitable<void> {
+          [](forge::api::stream::session& session, std::shared_ptr<forge::api::core::detail::stream_endpoint> output,
+             std::shared_ptr<std::optional<forge::api::core::frame>> result) -> boost::asio::awaitable<void> {
          *result = co_await session.async_stream_call(
-            forge::api::core::frame{
-                .kind = forge::api::core::frame_kind::request,
-                .api = live_api::ref(),
-                .method = "download",
-                .codec = {.value = "forge.raw"},
-                .payload = forge::raw::pack(std::uint32_t{1}),
-            },
-            forge::api::core::method_kind::server_stream, {}, std::move(output));
+             forge::api::core::frame{
+                 .kind = forge::api::core::frame_kind::request,
+                 .api = live_api::ref(),
+                 .method = "download",
+                 .codec = {.value = "forge.raw"},
+                 .payload = forge::raw::pack(std::uint32_t{1}),
+             },
+             forge::api::core::method_kind::server_stream, {}, std::move(output));
       };
       auto neighbor_call =
-         start_service(executor, run_neighbor(malformed_session, neighbor_output.writer, neighbor_result));
+          start_service(executor, run_neighbor(malformed_session, neighbor_output.writer, neighbor_result));
       const auto item = co_await neighbor_output.reader->async_read();
       BOOST_REQUIRE(item.has_value());
       BOOST_TEST(forge::api::core::unpack_body<transport_live_types::item>(*item).value == 1U);
@@ -1525,8 +1631,9 @@ BOOST_AUTO_TEST_CASE(stream_session_keeps_admitted_generation_for_decoder_and_ha
       auto original = std::make_shared<live_impl>();
       auto replacement = std::make_shared<live_impl>();
       auto replacement_descriptor = std::make_shared<forge::api::core::descriptor>(live_api::describe());
-      auto replacement_method = std::find_if(replacement_descriptor->methods.begin(), replacement_descriptor->methods.end(),
-                                             [](const auto& value) { return value.name == "download"; });
+      auto replacement_method =
+          std::find_if(replacement_descriptor->methods.begin(), replacement_descriptor->methods.end(),
+                       [](const auto& value) { return value.name == "download"; });
       BOOST_REQUIRE(replacement_method != replacement_descriptor->methods.end());
       forge::api::core::detail::remove_stream_context(*replacement_method);
       forge::api::core::detail::remove_request_context(*replacement_method);
@@ -1538,9 +1645,9 @@ BOOST_AUTO_TEST_CASE(stream_session_keeps_admitted_generation_for_decoder_and_ha
       forge::api::core::detail::remove_stream_context(*original_method);
       forge::api::core::detail::remove_request_context(*original_method);
       const auto original_request_decoder = original_method->request_decoder;
-      original_method->request_decoder = [old_decodes, replaced, &registry, replacement_descriptor,
-                                          replacement, original_request_decoder](const bytes& payload,
-                                                                                forge::raw::unpack_limits limits) {
+      original_method->request_decoder = [old_decodes, replaced, &registry, replacement_descriptor, replacement,
+                                          original_request_decoder](const bytes& payload,
+                                                                    forge::raw::unpack_limits limits) {
          original_request_decoder(payload, limits);
          old_decodes->fetch_add(1, std::memory_order_release);
          if (!replaced->exchange(true, std::memory_order_acq_rel)) {
@@ -1553,27 +1660,26 @@ BOOST_AUTO_TEST_CASE(stream_session_keeps_admitted_generation_for_decoder_and_ha
       auto client_model = std::make_shared<fake_stream>();
       auto server_model = std::make_shared<fake_stream>();
       auto [client_stream, server_stream] = make_stream_pair(client_model, server_model);
-      auto service = start_service(
-         executor, forge::api::transport::serve_stream(std::move(server_stream),
-                                                       forge::api::core::binding().serve(registry).build()));
+      auto service =
+          start_service(executor, forge::api::transport::serve_stream(
+                                      std::move(server_stream), forge::api::core::binding().serve(registry).build()));
       auto client = forge::api::stream::session{std::move(client_stream)};
       auto output = forge::api::core::detail::make_local_stream_pair(executor, 4096, 2, 8192);
       auto result = std::make_shared<std::optional<forge::api::core::frame>>();
       const auto run_call =
-         [](forge::api::stream::session& session,
-            std::shared_ptr<forge::api::core::detail::stream_endpoint> stream_output,
-            std::shared_ptr<std::optional<forge::api::core::frame>> call_result)
-         -> boost::asio::awaitable<void> {
-            *call_result = co_await session.async_stream_call(
-               forge::api::core::frame{
-                   .kind = forge::api::core::frame_kind::request,
-                   .api = live_api::ref(),
-                   .method = "download",
-                   .codec = {.value = "forge.raw"},
-                   .payload = forge::raw::pack(std::uint32_t{1}),
-               },
-               forge::api::core::method_kind::server_stream, {}, std::move(stream_output));
-         };
+          [](forge::api::stream::session& session,
+             std::shared_ptr<forge::api::core::detail::stream_endpoint> stream_output,
+             std::shared_ptr<std::optional<forge::api::core::frame>> call_result) -> boost::asio::awaitable<void> {
+         *call_result = co_await session.async_stream_call(
+             forge::api::core::frame{
+                 .kind = forge::api::core::frame_kind::request,
+                 .api = live_api::ref(),
+                 .method = "download",
+                 .codec = {.value = "forge.raw"},
+                 .payload = forge::raw::pack(std::uint32_t{1}),
+             },
+             forge::api::core::method_kind::server_stream, {}, std::move(stream_output));
+      };
       auto call = start_service(executor, run_call(client, output.writer, result));
 
       const auto item = co_await output.reader->async_read();
@@ -2276,31 +2382,203 @@ BOOST_AUTO_TEST_CASE(concurrent_initial_calls_share_session_handshake) {
       const auto executor = co_await boost::asio::this_coro::executor;
       auto client_model = std::make_shared<fake_stream>();
       auto server_model = std::make_shared<fake_stream>();
+      client_model->pause_write_completion_after_delivery();
+      server_model->pause_write_completion_after_delivery();
       auto [client_stream, server_stream] = make_stream_pair(client_model, server_model);
 
+      auto implementation = std::make_shared<live_impl>();
       auto registry = forge::api::core::registry{};
-      registry.install<live_api>(live_api::describe(), std::make_shared<live_impl>());
+      registry.install<live_api>(live_api::describe(), implementation);
       auto service =
           start_service(executor, forge::api::transport::serve_stream(
                                       std::move(server_stream), forge::api::core::binding().serve(registry).build()));
       auto connection = forge::api::transport::connection{std::move(client_stream)};
       auto remote = co_await connection.get_remote_api<live_api>();
 
-      auto first = boost::asio::co_spawn(executor, remote->echo(item{.value = 31}), boost::asio::use_future);
-      auto second = boost::asio::co_spawn(executor, remote->echo(item{.value = 32}), boost::asio::use_future);
+      auto initiated = std::atomic_uint32_t{0};
+      auto echo = [remote, &initiated](std::uint32_t value) -> boost::asio::awaitable<item> {
+         initiated.fetch_add(1, std::memory_order_release);
+         co_return co_await remote->echo(item{.value = value});
+      };
+      auto calls = std::vector<std::future<item>>{};
+      for (auto index = std::uint32_t{0}; index != 8; ++index) {
+         calls.push_back(boost::asio::co_spawn(executor, echo(31U + index), boost::asio::use_future));
+      }
       co_await wait_until(
           [&] {
-             return first.wait_for(std::chrono::seconds{0}) == std::future_status::ready &&
-                    second.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+             return initiated.load(std::memory_order_acquire) == 8U && client_model->delivered_completion_pending() &&
+                    server_model->delivered_completion_pending() && client_model->read_count() >= 2U &&
+                    server_model->read_count() >= 2U;
           },
-          std::chrono::milliseconds{250});
+          std::chrono::milliseconds{1000});
+      BOOST_TEST(client_model->write_count() == 1U);
+      BOOST_TEST(server_model->write_count() == 1U);
+      BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 0U);
+      BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 0U);
+      for (const auto& call : calls) {
+         BOOST_CHECK(call.wait_for(std::chrono::seconds{0}) != std::future_status::ready);
+      }
 
-      BOOST_TEST(first.get().value == 31U);
-      BOOST_TEST(second.get().value == 32U);
-      co_await connection.async_close();
-      co_await wait_service(service);
+      client_model->complete_delivered_write();
+      server_model->complete_delivered_write();
+      co_await wait_until(
+          [&] {
+             return std::all_of(calls.begin(), calls.end(), [](const auto& call) {
+                return call.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+             });
+          },
+          std::chrono::milliseconds{1000});
+
+      auto request_ids = std::vector<std::uint64_t>{};
+      for (auto index = std::size_t{0}; index != client_model->write_count(); ++index) {
+         const auto frame = unpack_api_frame(client_model->written(index));
+         if (frame.kind != forge::api::core::frame_kind::request) {
+            continue;
+         }
+         BOOST_TEST_MESSAGE("cold handshake request wire_id=" << frame.id.value << " order=" << request_ids.size());
+         if (!request_ids.empty()) {
+            BOOST_TEST(frame.id.value > request_ids.back());
+         }
+         request_ids.push_back(frame.id.value);
+      }
+      BOOST_TEST(request_ids.size() == 8U);
+
+      auto first_failure = std::exception_ptr{};
+      for (auto index = std::size_t{0}; index != calls.size(); ++index) {
+         try {
+            BOOST_TEST(calls[index].get().value == 31U + index);
+         } catch (...) {
+            if (!first_failure) {
+               first_failure = std::current_exception();
+            }
+         }
+      }
+      if (!first_failure) {
+         BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 8U);
+         BOOST_TEST((co_await remote->echo(item{.value = 99})).value == 99U);
+         BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 9U);
+         BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 9U);
+         const auto follow_up = unpack_api_frame(client_model->written(client_model->write_count() - 1U));
+         BOOST_CHECK(follow_up.kind == forge::api::core::frame_kind::request);
+         if (!request_ids.empty()) {
+            BOOST_TEST(follow_up.id.value > request_ids.back());
+         }
+      }
+      auto cleanup_failure = std::exception_ptr{};
+      try {
+         co_await connection.async_close();
+         co_await wait_service(service);
+      } catch (...) {
+         cleanup_failure = std::current_exception();
+      }
+      if (first_failure) {
+         std::rethrow_exception(first_failure);
+      }
+      if (cleanup_failure) {
+         std::rethrow_exception(cleanup_failure);
+      }
    };
    forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(warm_call_does_not_overtake_cold_handshake_waiter) {
+   auto runtime = forge::asio::runtime{};
+   auto scenario = []() -> boost::asio::awaitable<void> {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto client_model = std::make_shared<fake_stream>();
+      auto server_model = std::make_shared<fake_stream>();
+      client_model->pause_write_completion_after_delivery();
+      auto [client_stream, server_stream] = make_stream_pair(client_model, server_model);
+
+      auto implementation = std::make_shared<live_impl>();
+      auto registry = forge::api::core::registry{};
+      registry.install<live_api>(live_api::describe(), implementation);
+      auto service =
+          start_service(executor, forge::api::transport::serve_stream(
+                                      std::move(server_stream), forge::api::core::binding().serve(registry).build()));
+      auto connection = forge::api::transport::connection{std::move(client_stream)};
+      auto remote = co_await connection.get_remote_api<live_api>();
+      auto warm = std::future<item>{};
+      client_model->before_next_write_return([remote, &warm](boost::asio::any_io_executor writer_executor) {
+         // Queue on the session strand before hello completion wakes its cold waiter.
+         // The writer sets hello_sent before this handler runs; the warm call can
+         // then reach its request queue while the older call still awaits notification.
+         boost::asio::post(writer_executor, [remote, writer_executor, &warm] {
+            warm = boost::asio::co_spawn(writer_executor, remote->echo(item{.value = 42}), boost::asio::use_future);
+         });
+      });
+      auto cold = boost::asio::co_spawn(executor, remote->echo(item{.value = 41}), boost::asio::use_future);
+      co_await wait_until(
+          [&] {
+             return client_model->delivered_completion_pending() && client_model->read_count() >= 2U &&
+                    server_model->read_count() >= 2U;
+          },
+          std::chrono::milliseconds{1000});
+      BOOST_TEST(client_model->write_count() == 1U);
+      BOOST_TEST(count_written_frames(client_model, forge::api::core::frame_kind::request, "echo") == 0U);
+      BOOST_CHECK(cold.wait_for(std::chrono::seconds{0}) != std::future_status::ready);
+      BOOST_CHECK(!warm.valid());
+
+      client_model->complete_delivered_write();
+      co_await wait_until(
+          [&] {
+             return warm.valid() && cold.wait_for(std::chrono::seconds{0}) == std::future_status::ready &&
+                    warm.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+          },
+          std::chrono::milliseconds{1000});
+
+      auto request_ids = std::vector<std::uint64_t>{};
+      for (auto index = std::size_t{0}; index != client_model->write_count(); ++index) {
+         const auto frame = unpack_api_frame(client_model->written(index));
+         if (frame.kind != forge::api::core::frame_kind::request) {
+            continue;
+         }
+         BOOST_TEST_MESSAGE("mixed handshake request wire_id=" << frame.id.value << " order=" << request_ids.size());
+         if (!request_ids.empty()) {
+            BOOST_TEST(frame.id.value > request_ids.back());
+         }
+         request_ids.push_back(frame.id.value);
+      }
+      BOOST_TEST(request_ids.size() == 2U);
+
+      auto first_failure = std::exception_ptr{};
+      for (const auto& [call, expected] : {std::pair{&cold, std::uint32_t{41}}, std::pair{&warm, std::uint32_t{42}}}) {
+         try {
+            BOOST_TEST(call->get().value == expected);
+         } catch (...) {
+            if (!first_failure) {
+               first_failure = std::current_exception();
+            }
+         }
+      }
+      if (!first_failure) {
+         BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 2U);
+      }
+      auto cleanup_failure = std::exception_ptr{};
+      try {
+         co_await connection.async_close();
+         co_await wait_service(service);
+      } catch (...) {
+         cleanup_failure = std::current_exception();
+      }
+      if (first_failure) {
+         std::rethrow_exception(first_failure);
+      }
+      if (cleanup_failure) {
+         std::rethrow_exception(cleanup_failure);
+      }
+   };
+   forge::asio::blocking::run(runtime, scenario());
+}
+
+BOOST_AUTO_TEST_CASE(cancelled_cold_head_releases_waiting_warm_call) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, exercise_cancelled_session_readiness_call(true));
+}
+
+BOOST_AUTO_TEST_CASE(cancelled_warm_call_never_overtakes_its_cold_head) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, exercise_cancelled_session_readiness_call(false));
 }
 
 BOOST_AUTO_TEST_CASE(session_rejects_reuse_of_retired_custom_call_id) {

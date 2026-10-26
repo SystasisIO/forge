@@ -18,6 +18,16 @@ find_package(Forge CONFIG REQUIRED COMPONENTS api_core_values)
 target_link_libraries(protocol PUBLIC Forge::forge_api_core_values)
 ```
 
+## Void Unary Responses
+
+Remote unary methods may return `boost::asio::awaitable<void>`. A successful
+Raw response has an empty body; extra bytes are rejected as a protocol error.
+Remote errors retain the same typed projection as value-returning methods.
+For a typed `remote_invoker`, a void call supplies `typeid(void)` and a null
+response-storage pointer. Value-returning calls still supply their
+`std::optional<Response>` storage. HTTP-specific response mapping belongs to
+the HTTP binding and is not changed by this Core behavior.
+
 ## Trusted Invocation Lifetime
 
 `forge.api.core.invocation_context` composes the existing immutable

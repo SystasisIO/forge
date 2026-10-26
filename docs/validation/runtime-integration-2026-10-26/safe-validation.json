@@ -1,0 +1,299 @@
+{
+  "schema": 1,
+  "date": "2026-10-26",
+  "status": "PARTIAL_QUALIFICATION",
+  "acceptance": "NOT_FULL_PASS",
+  "publication": "REPORT_VERSIONED_BY_CONTAINING_COMMIT",
+  "platform_scope": "macOS arm64 integration evidence only",
+  "source_identity": {
+    "base_commit": "1e396b54dc8b81b3eb23e6e2b386482e29c497c8",
+    "observed_dev_commit": "97ffc1bbbe7e43ca47fdba0a471e5f081e654230",
+    "observed_dev_is_ancestor_of_base": true,
+    "runtime_candidate_paths": 72,
+    "tracked_modified": 50,
+    "untracked_required_source": 22,
+    "owner_count": 12,
+    "owner_counts": {
+      "engineering_rules": 2,
+      "package_and_test_composition": 4,
+      "tlsnotary_passive_values_and_reflection": 6,
+      "api_core_void": 6,
+      "api_stream_ordering": 5,
+      "native_lifecycle_admission": 4,
+      "native_task_completion_and_cancellation": 12,
+      "native_object_registration_and_snapshot_read": 18,
+      "http_wire_serializer": 5,
+      "p2p_identity_codecs": 5,
+      "typed_tcp_tlsnotary_diagnostics": 3,
+      "crypto_exchange_leaf_registry": 2
+    },
+    "all_existing_owners": true,
+    "manifest_hashes_match_current_files": 72,
+    "manifest": {
+      "id": "forge-delivered-candidate-pending-owners-r1.json",
+      "sha256": "a452b444c2db9b18b278e21b5b14cdb025ca62e0389c554ebaaa1bd0338d661b"
+    },
+    "initial_prerequisite_paths": 18,
+    "initial_prerequisite_is_not_full_current_patch": true,
+    "report_revision": "The exact revision is the commit containing this report",
+    "identity_basis": "Base commit plus source manifest SHA-256 identify the tested pending source cut; the containing commit versions the report and delivered sources"
+  },
+  "vm_boundary": {
+    "VM_WAMR_or_guest_API_paths_changed": false,
+    "WAMR_already_in_base": "aed18d79539ac608077caad6be41021ffc927aad",
+    "execution_module": "forge.vm.wasm.execution",
+    "portable_values_module": "forge.api.wasm",
+    "new_vm_or_vm_migration_in_this_candidate": false,
+    "JIT_AOT_or_Linux_qualification_inferred": false
+  },
+  "integration_evidence": {
+    "consumer_build": {
+      "status": "PASS",
+      "targets": 25
+    },
+    "selected_consumer_ctest": {
+      "status": "PASS",
+      "passed": 77,
+      "failed": 0,
+      "full_forge_suite": false
+    },
+    "consumer_contract_regression": {
+      "status": "PASS",
+      "passed": 1,
+      "seconds": 89.79,
+      "scope": "Existing native/WASM/CEL testhost regression; not a VM change or live-chain qualification"
+    },
+    "frozen_binary_identity": "Separate production R3 role hashes retained in coordinator evidence; no release identity implied"
+  },
+  "remaining_qualification": {
+    "OFF_producer": {
+      "status": "PASS_CONFIGURE_BUILD_INSTALL",
+      "configure": "PASS",
+      "build": "PASS",
+      "initial_install": {
+        "status": "NOT_INSTALLED",
+        "observed_exit_code": 0,
+        "prefix_created": false,
+        "package_config_created": false,
+        "cause": "Parent build install did not traverse excluded vendor subdirectory",
+        "raw_result_preserved": true
+      },
+      "corrected_install": {
+        "status": "PASS",
+        "observed_exit_code": 0,
+        "installed_files": 862,
+        "package_config_sha256": "3e3df03a8b7f67f1129b63afa60fc2fd399ae1f4bd69bb1049de5e7e102abbcd",
+        "inventory_sha256": "ccf6aab37fe5fee11238518e9fe2a2ab4c254a63214c68b81435a17f015e7e7e",
+        "two_frozen_off_binary_hashes_verified": true
+      },
+      "correction_scope": "External install command selects existing configured Forge sub-build; no source change",
+      "fresh_installed_consumers": "PARTIAL_QUALIFICATION_KNOWN_LIFECYCLE_FAILURE",
+      "evidence": [
+        {
+          "id": "off-producer-final-r1-off-reconfigure-result.json",
+          "sha256": "03dfa6d4929adbf8d1082d531ea057a211118295280362d094f91b674814059f"
+        },
+        {
+          "id": "off-producer-final-r1-off-build-result.json",
+          "sha256": "8fca11f76c4d816ee474768c569a40605c9eff622bf3cd158f3affeae09680f9"
+        },
+        {
+          "id": "off-install-noop-r1-diagnosis.json",
+          "sha256": "67607ed45cb8e40d723ade5a906113fd2b665b885e5ffaf48bd4348a45c17cc0"
+        },
+        {
+          "id": "off-install-corrected-r2-result.json",
+          "sha256": "c5d47e9e21b8581042f52137be579a93dec0678a5f309c7d046c86bdc7bdbf8d"
+        },
+        {
+          "id": "deliverables/forge-upgrade-off-r1/manifest.json",
+          "sha256": "d4ec798588004376b0b7668d07aabe96a172cc2c6275327dbf49dcdfde4deeac"
+        },
+        {
+          "id": "deliverables/forge-upgrade-off-r1/installed-file-inventory.json",
+          "sha256": "ccf6aab37fe5fee11238518e9fe2a2ab4c254a63214c68b81435a17f015e7e7e"
+        }
+      ],
+      "artifact_collection": "Original parent install manifest is empty from the preserved no-op. Nested installation does not generate the expected global manifest; actual installed prefix was independently inventoried. Archive assertions are not a product defect and caused no source or installation change."
+    },
+    "fresh_installed_consumer_sequence": {
+      "status": "PARTIAL_QUALIFICATION_KNOWN_ALLOCATION_FAILURE",
+      "planned_steps": 39,
+      "first_eight_consumers": {
+        "status": "PASS",
+        "consumers": 8,
+        "steps": 24
+      },
+      "runtime_regression": {
+        "configure": "PASS",
+        "initial_build": "FAILED",
+        "initial_failed_step": 26,
+        "initial_runtime_run": "NOT_RUN",
+        "original_failure_retained": true,
+        "missing_module": "forge.crypto.asymmetric",
+        "failure_scope": "Artifact-only standalone consumer CMake omitted a direct public dependency imported by the original libp2p_identity_fixture.cpp",
+        "producer_sources_changed": false,
+        "original_test_sources_changed": false,
+        "minimal_composition_correction": "REVIEWED_ACCEPTED_APPLIED_ARTIFACT_ONLY",
+        "resumed_runtime_build_and_run": {
+          "configure": "PASS",
+          "build": "PASS",
+          "run": "PASS",
+          "ctest_passed": 7,
+          "ctest_failed": 0,
+          "ctest_seconds": 2.24,
+          "evidence": [
+            {
+              "id": "installed-runtime-corrected-r4-sequence-result.json",
+              "sha256": "88965bc0f0f685909574adb7b351135de6581fadbda0ec3c02558ee9cd8ee130"
+            },
+            {
+              "id": "installed-runtime-corrected-r4-installed-runtime-regression-run-result.json",
+              "sha256": "667612438007fe0baf86cc95f008bd03aff050a4364938ef10ed41a4e17a1920"
+            },
+            {
+              "id": "installed-runtime-corrected-r4-installed-runtime-regression-run.log",
+              "sha256": "b12d0031679e7729d5dc7003776907526f16bd8e15abd4000e01f32b5d6ff72f"
+            }
+          ]
+        },
+        "timeouts_or_guards_weakened": false,
+        "correction_review": {
+          "status": "ACCEPT_SCOPED_ARTIFACT_COMPOSITION_CORRECTION",
+          "before_sha256": "a888817c741045346be11d44bfe9bed9ca596d795ec44b9ca95605312f3517bd",
+          "after_sha256": "528ec8e44e67a6cd3c42a1ed4ad7eab1421f11085b0c8b077568ed2b58aba61d",
+          "evidence": {
+            "id": "root-installed-runtime-dependency-review-r1.json",
+            "sha256": "a3b27ba03815e29821b4127e891b0f9f69a1d0cff2a444db94d45f4af3ea4a6d"
+          }
+        }
+      },
+      "independent_remaining_consumers": {
+        "planned_steps": 12,
+        "completed_steps": 12,
+        "passed_steps": 11,
+        "failed_steps": 1,
+        "scope": "HTTP, API WASM, VM WASM, lifecycle",
+        "status": "COMPLETE_WITH_KNOWN_FAILURE",
+        "http_wire": "CONFIGURE_BUILD_RUN_PASS",
+        "api_wasm": "CONFIGURE_BUILD_RUN_PASS",
+        "vm_wasm_execution": "CONFIGURE_BUILD_RUN_PASS",
+        "lifecycle": {
+          "configure": "PASS",
+          "build": "PASS",
+          "run": "FAILED",
+          "test_passed": 2,
+          "test_failed": 1,
+          "tests": [
+            {
+              "test": "test_forge_asio",
+              "status": "PASS",
+              "seconds": 2.92
+            },
+            {
+              "test": "test_forge_app",
+              "status": "PASS",
+              "seconds": 1.03
+            },
+            {
+              "test": "test_forge_asio_task_admission",
+              "status": "FAILED",
+              "scope": "Original allocation-failure cancellation-scope constructor test; known Boost 1.90 failure freshly reproduced",
+              "source": "tests/asio/task_admission_tests.cpp:490"
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "id": "installed-final-independent-r4-sequence-result.json",
+            "sha256": "77f4140778cda25b7d89b294aa8addb6598af4bb06ebf7efeda5d662a01529f7"
+          },
+          {
+            "id": "installed-final-independent-r4-installed-lifecycle-run-result.json",
+            "sha256": "55d0718188eac37d4970f124481e68a3b00c8643941c5169bd0a29ea474370ab"
+          },
+          {
+            "id": "installed-final-independent-r4-installed-lifecycle-run.log",
+            "sha256": "52f88694917d3a77c7b6266e5891285752c9ce2b4b04a2de5d66a76e15cc3770"
+          }
+        ]
+      },
+      "full_package_acceptance": "NOT_ACCEPTED_KNOWN_LIFECYCLE_FAILURE",
+      "evidence": [
+        {
+          "id": "installed-runtime-regression-r3-diagnosis.json",
+          "sha256": "d0d76da35c990107d2d298d37081f0997be64e6cbf68531a4f1de8803207f360"
+        },
+        {
+          "id": "installed-final-r3-installed-runtime-regression-build-result.json",
+          "sha256": "8f9f9c0a75948e1b8488c75888a6a599f11b47a2cd8e4c3875ef460746253329"
+        },
+        {
+          "id": "installed-final-r3-installed-runtime-regression-build.log",
+          "sha256": "b6efa42fa745c87d3ceac011d582887aff536a14035c22ca5c8e0a00b99b5f58"
+        }
+      ],
+      "normal_consumers": {
+        "status": "PASS",
+        "consumers": 12,
+        "scope": "Eight original component consumers, corrected runtime regression consumer, and independent HTTP/API WASM/VM WASM consumers"
+      },
+      "initial_sequence_pass_steps_before_failure": 25,
+      "original_failure_preserved": true
+    },
+    "isolated_allocation_fault_injection": {
+      "status": "FAILED",
+      "scope": "Original isolated Asio task_admission test with Boost 1.90",
+      "boost_patch_or_upgrade": false,
+      "skip_or_waiver": false,
+      "fresh_installed_reproduction": {
+        "status": "FAILED",
+        "test": "test_forge_asio_task_admission",
+        "source": "tests/asio/task_admission_tests.cpp:490",
+        "other_lifecycle_tests_passed": 2,
+        "no_source_or_boost_patch": true,
+        "no_waiver": true,
+        "evidence": [
+          {
+            "id": "installed-final-independent-r4-sequence-result.json",
+            "sha256": "77f4140778cda25b7d89b294aa8addb6598af4bb06ebf7efeda5d662a01529f7"
+          },
+          {
+            "id": "installed-final-independent-r4-installed-lifecycle-run-result.json",
+            "sha256": "55d0718188eac37d4970f124481e68a3b00c8643941c5169bd0a29ea474370ab"
+          },
+          {
+            "id": "installed-final-independent-r4-installed-lifecycle-run.log",
+            "sha256": "52f88694917d3a77c7b6266e5891285752c9ce2b4b04a2de5d66a76e15cc3770"
+          }
+        ]
+      }
+    },
+    "static_donor_registry": {
+      "status": "OPEN_EXTERNAL_GATE",
+      "diagnostics": 58,
+      "owner": "Forge:jit_profile",
+      "scope": "Static registration/checker alignment; not 58 runtime failures"
+    },
+    "dev_promotion": "BLOCKED_EXTERNAL_GATE_AND_KNOWN_ALLOCATION_FAILURE",
+    "full_runtime_acceptance": "NOT_CLAIMED_KNOWN_LIFECYCLE_ALLOCATION_FAILURE"
+  },
+  "evidence_scope": "Selected consumer integration results do not prove complete Forge runtime, package installation, upstream service, protocol interop or platform acceptance. Product pricing, cost sampling and settlement acceptance are not generic Forge runtime gates.",
+  "excluded_public_material": "No raw configs, logs, credentials, keys, secret references, databases, payloads, nonces, ciphertext, raw wire, process IDs or private absolute paths",
+  "source_review": {
+    "status": "CLEAN_SCOPED_SOURCE_WITH_RUNTIME_LIMITS",
+    "confirmed_actionable_findings": 0,
+    "scope": "Final applicability check of previous scoped source reviews plus production R3 recovery and six-file test-only legacy/read_delivery R2 delta; not a fresh semantic review of all pending files",
+    "evidence": [
+      {
+        "id": "review-final-forge-upgrade-r4.json",
+        "sha256": "f08ee1efd7754e5702aa8f369162743b4f6c02b64f38c0be7855cd491ff3ca54"
+      },
+      {
+        "id": "review-final-forge-upgrade-r4.md",
+        "sha256": "5d25bd6328dad700ca261a00af12c6f3bcd406f88f120fbf3652b6486b543593"
+      }
+    ]
+  },
+  "final_scope": "All listed local build/test activity is complete; remaining failures and excluded scopes are reported without waiver"
+}

@@ -6,6 +6,16 @@ Enable `FORGE_ENABLE_TLSNOTARY=ON`; link `Forge::forge_net_tlsnotary` and reques
 the installed `net_tlsnotary` package component. This is host code only.
 Consumers which also import Asio modules link `Forge::forge_asio` explicitly.
 
+The existing `forge.net.tlsnotary.types` module belongs to
+`Forge::forge_net_tlsnotary_values` (package component `net_tlsnotary_values`).
+It is available in the full host profile with TLSNotary execution disabled and
+does not discover Cargo or build a worker. The native session component links
+this values component; there is one definition of each type in both modes.
+Canonical Raw reflection covers the full `result`, including its visible
+transcript ranges. Persisting a verifier result preserves its context for local
+recovery; it does not turn that record into an independently authenticated proof.
+Prover results additionally contain private openings and require private storage.
+
 Use this library when two peers must jointly authenticate selected TLS transcript
 bytes without disclosing the remaining request bytes to the verifier. Applications
 own the meaning of those bytes, source approval, credentials, replay protection

@@ -803,3 +803,32 @@ Acceptance targets: `forge_app_readme_example` and
 `test_forge_app_readme_example` and `test_forge_app_readme_correspondence`.
 These names describe executable coverage, not a claim that any build or test
 has passed.
+
+## Bounded service admission
+
+`plugin_lifecycle::admit(generation, active, limit, changed)` admits setup/service
+work using the same lifecycle predicate as no-phase `try_admit`.
+`admit(generation, required_phase, active, limit, changed)` additionally requires
+that exact phase. Both return a move-only scoped `admission`, with `admission_status::accepted`,
+`closed` or `exhausted`. It checks the existing lifecycle generation/phase/stop
+and the caller's concurrent bound under the same lifecycle mutex, without
+waiting, callbacks or product error policy. A zero limit rejects admission;
+the `std::atomic_size_t` counter cannot overflow at `SIZE_MAX`. The limit is
+`std::size_t`; an owner's existing `uint32_t` configuration widens without changing
+its configured bound. These are in-memory counters, not persisted or wire fields.
+
+An accepted token releases the borrowed atomic counter exactly once and notifies
+the borrowed `forge::asio::notification` on destruction or explicit `release()`,
+including exception/cancellation unwind. Moving transfers that responsibility;
+move assignment first releases its current admission. `status()` records the
+original result, while `active()` reports whether the token still owns a slot.
+The counter and notification must outlive every accepted token. Use one lifecycle
+for all admissions to a counter; do not mutate that counter outside admission and
+release. Token move/release is owner-serialized, not a concurrent shared operation.
+
+The caller retains its limits, domain error mapping and shutdown drain loop.
+Observe the notification epoch before checking the count and wait outside locks.
+This token does not cancel accepted work, join it or extend the lifetime of the
+borrowed objects. It does not replace lifecycle hook `operation` or queued
+`asio::gate` mutual exclusion. Existing `try_admit` synchronous resource setup is
+unchanged. Focused coverage lives in the existing `test_forge_app` lifecycle suite.

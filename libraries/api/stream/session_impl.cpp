@@ -329,11 +329,20 @@ void session::impl::throw_if_terminated_on_strand(const std::shared_ptr<call_sta
    }
 }
 
-boost::asio::awaitable<void> session::impl::ensure_handshake_on_strand(const std::shared_ptr<call_state>& call) {
+boost::asio::awaitable<void> session::impl::wait_for_session_ready_on_strand(const std::shared_ptr<call_state>& call) {
    while (true) {
       const auto observed = session_wake.epoch();
       throw_if_terminated_on_strand(call);
-      if (hello_sent && peer_hello_received) {
+      // IDs are reserved before hello so quotas and deadlines include its wait.
+      // A warm caller must not overtake an older hello waiter on the wire.
+      // Writer completion, cancellation and retirement wake this same notification;
+      // terminal calls never hold the next request behind an unsent ID.
+      if (hello_sent && peer_hello_received &&
+          (!call || std::none_of(calls.begin(), calls.end(), [&](const auto& entry) {
+             const auto& earlier = *entry.second;
+             return earlier.local_origin && earlier.admission_order < call->admission_order && !earlier.done &&
+                    !earlier.request_written;
+          }))) {
          co_return;
       }
       auto wait_cancelled = false;
@@ -349,9 +358,10 @@ boost::asio::awaitable<void> session::impl::ensure_handshake_on_strand(const std
          const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
          if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
             FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled,
-                                  "API stream call was cancelled during hello");
+                                  "API stream call was cancelled while waiting for session readiness");
          }
-         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "API stream handshake wait was cancelled");
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled,
+                               "API stream session readiness wait was cancelled");
       }
    }
 }

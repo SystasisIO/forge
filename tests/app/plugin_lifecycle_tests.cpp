@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <boost/test/unit_test.hpp>
 
 #include <boost/asio/awaitable.hpp>
@@ -10,17 +11,22 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/system/system_error.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <cstdint>
 #include <exception>
 #include <future>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -51,6 +57,9 @@ concept can_begin = requires(T value) { value.begin(lifecycle_operation::startup
 
 static_assert(!can_stop<forge::app::lifecycle_observer>);
 static_assert(!can_begin<forge::app::lifecycle_observer>);
+static_assert(!std::is_copy_constructible_v<plugin_lifecycle::admission>);
+static_assert(std::is_nothrow_move_constructible_v<plugin_lifecycle::admission>);
+static_assert(std::is_nothrow_move_assignable_v<plugin_lifecycle::admission>);
 
 boost::asio::awaitable<std::exception_ptr> capture(boost::asio::awaitable<void> value) {
    try {
@@ -70,6 +79,19 @@ boost::asio::awaitable<void> begin_and_finish(plugin_lifecycle lifecycle, lifecy
 
 boost::asio::awaitable<void> executor_barrier() {
    co_return;
+}
+
+boost::asio::awaitable<void> hold_admission(plugin_lifecycle lifecycle, std::atomic_size_t& active,
+                                           forge::asio::notification& changed, forge::asio::notification& entered,
+                                           forge::asio::notification& release, std::stop_token stop) {
+   const auto admitted = lifecycle.admit(lifecycle.snapshot().generation, lifecycle_phase::started,
+                                         active, 1, changed);
+   if (!admitted.active()) {
+      throw forge::app::exceptions::invalid_state{"test request was not admitted"};
+   }
+   const auto observed = release.epoch();
+   entered.notify();
+   static_cast<void>(co_await release.async_wait(observed, stop));
 }
 
 boost::asio::awaitable<void> cancel_then_complete(plugin_lifecycle::operation operation,
@@ -373,6 +395,220 @@ BOOST_AUTO_TEST_CASE(plugin_lifecycle_setup_and_phase_qualified_admission_share_
    BOOST_CHECK(!lifecycle.try_admit(lifecycle.snapshot().generation, [] {}));
    auto cleanup = fixture.run(fixture.plugin.shutdown());
    BOOST_REQUIRE(!ready(cleanup));
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lifecycle_scoped_admission_without_phase_preserves_setup_and_word_limit) {
+   auto active = std::atomic_size_t{0};
+   auto changed = forge::asio::notification{};
+   auto lifecycle = plugin_lifecycle{};
+   const auto generation = lifecycle.snapshot().generation;
+   BOOST_CHECK(lifecycle.snapshot().phase == lifecycle_phase::created);
+   BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active, 1, changed).status() ==
+               forge::app::admission_status::closed);
+   BOOST_CHECK(lifecycle.admit(generation + 1, active, 1, changed).status() ==
+               forge::app::admission_status::closed);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 0U);
+   {
+      auto admitted = lifecycle.admit(generation, active, 1, changed);
+      BOOST_REQUIRE(admitted.active());
+      BOOST_CHECK(lifecycle.admit(generation, active, 1, changed).status() ==
+                  forge::app::admission_status::exhausted);
+      auto moved = plugin_lifecycle::admission{std::move(admitted)};
+      BOOST_CHECK(!admitted.active() && moved.active());
+      BOOST_CHECK_EQUAL(active.load(), 1U);
+      moved.release();
+      moved.release();
+   }
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 1U);
+   BOOST_CHECK_THROW(([&] {
+      const auto admitted = lifecycle.admit(generation, active, 1, changed);
+      BOOST_REQUIRE(admitted.active());
+      throw forge::app::exceptions::invalid_state{"test request failed"};
+   }()), forge::app::exceptions::invalid_state);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 2U);
+
+   const auto configured_limit = std::numeric_limits<std::uint32_t>::max();
+   active.store(static_cast<std::size_t>(configured_limit) - 1);
+   {
+      const auto admitted = lifecycle.admit(generation, active, configured_limit, changed);
+      BOOST_CHECK(admitted.active());
+      BOOST_CHECK_EQUAL(active.load(), static_cast<std::size_t>(configured_limit));
+      BOOST_CHECK(lifecycle.admit(generation, active, configured_limit, changed).status() ==
+                  forge::app::admission_status::exhausted);
+   }
+   BOOST_CHECK_EQUAL(active.load(), static_cast<std::size_t>(configured_limit) - 1);
+   active.store(std::numeric_limits<std::size_t>::max() - 1);
+   {
+      const auto admitted = lifecycle.admit(generation, active, std::numeric_limits<std::size_t>::max(), changed);
+      BOOST_CHECK(admitted.active());
+      BOOST_CHECK_EQUAL(active.load(), std::numeric_limits<std::size_t>::max());
+      BOOST_CHECK(lifecycle.admit(generation, active, std::numeric_limits<std::size_t>::max(), changed).status() ==
+                  forge::app::admission_status::exhausted);
+   }
+   BOOST_CHECK_EQUAL(active.load(), std::numeric_limits<std::size_t>::max() - 1);
+   active.store(0);
+   const auto epoch = changed.epoch();
+   BOOST_CHECK(lifecycle.request_stop());
+   lifecycle.complete_stop();
+   BOOST_CHECK(lifecycle.admit(generation, active, 1, changed).status() == forge::app::admission_status::closed);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), epoch);
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lifecycle_scoped_admission_bounds_moves_and_unwind) {
+   auto fixture = plugin_fixture{};
+   auto lifecycle = fixture.plugin.resources->lifecycle;
+   auto active = std::atomic_size_t{0};
+   auto changed = forge::asio::notification{};
+   const auto generation = lifecycle.snapshot().generation;
+   BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active, 1, changed).status() ==
+               forge::app::admission_status::closed);
+   fixture.initialize();
+   auto startup = fixture.run(fixture.plugin.startup());
+   BOOST_REQUIRE(!ready(startup));
+   BOOST_CHECK(lifecycle.admit(generation + 1, lifecycle_phase::started, active, 1, changed).status() ==
+               forge::app::admission_status::closed);
+   BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active, 0, changed).status() ==
+               forge::app::admission_status::exhausted);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 0U);
+   {
+      auto first = lifecycle.admit(generation, lifecycle_phase::started, active, 2, changed);
+      auto second = lifecycle.admit(generation, lifecycle_phase::started, active, 2, changed);
+      BOOST_CHECK(first.status() == forge::app::admission_status::accepted && first.active());
+      BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active, 2, changed).status() ==
+                  forge::app::admission_status::exhausted);
+      BOOST_CHECK_EQUAL(active.load(), 2U);
+      auto moved = plugin_lifecycle::admission{std::move(first)};
+      BOOST_CHECK(!first.active() && moved.active());
+      second = std::move(moved);
+      BOOST_CHECK(!moved.active() && second.active());
+      BOOST_CHECK_EQUAL(active.load(), 1U);
+      BOOST_CHECK_EQUAL(changed.epoch(), 1U);
+      second.release();
+      second.release();
+      BOOST_CHECK(!second.active());
+      BOOST_CHECK(second.status() == forge::app::admission_status::accepted);
+   }
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 2U);
+   auto unwound = false;
+   try {
+      const auto admitted = lifecycle.admit(generation, lifecycle_phase::started, active, 1, changed);
+      BOOST_REQUIRE(admitted.active());
+      throw forge::app::exceptions::invalid_state{"test request failed"};
+   } catch (const forge::app::exceptions::invalid_state&) {
+      unwound = true;
+   }
+   BOOST_CHECK(unwound);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 3U);
+
+   active.store(std::numeric_limits<std::size_t>::max() - 1);
+   {
+      const auto last = lifecycle.admit(generation, lifecycle_phase::started, active,
+                                         std::numeric_limits<std::size_t>::max(), changed);
+      BOOST_CHECK(last.active());
+      BOOST_CHECK_EQUAL(active.load(), std::numeric_limits<std::size_t>::max());
+      BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active,
+                                   std::numeric_limits<std::size_t>::max(), changed).status() ==
+                  forge::app::admission_status::exhausted);
+      BOOST_CHECK_EQUAL(active.load(), std::numeric_limits<std::size_t>::max());
+   }
+   BOOST_CHECK_EQUAL(active.load(), std::numeric_limits<std::size_t>::max() - 1);
+   active.store(0);
+   auto shutdown = fixture.run(fixture.plugin.shutdown());
+   BOOST_REQUIRE(!ready(shutdown));
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lifecycle_scoped_admission_concurrent_bound_and_stop) {
+   auto fixture = plugin_fixture{};
+   fixture.initialize();
+   auto startup = fixture.run(fixture.plugin.startup());
+   BOOST_REQUIRE(!ready(startup));
+   auto lifecycle = fixture.plugin.resources->lifecycle;
+   const auto generation = lifecycle.snapshot().generation;
+   auto active = std::atomic_size_t{0};
+   auto changed = forge::asio::notification{};
+   auto accepted = std::atomic<unsigned>{0};
+   auto exhausted = std::atomic<unsigned>{0};
+   auto rendezvous = std::barrier{9};
+   auto threads = std::vector<std::jthread>{};
+   threads.reserve(8);
+   for (auto index = 0; index < 8; ++index) {
+      threads.emplace_back([&] {
+         rendezvous.arrive_and_wait();
+         const auto admitted = lifecycle.admit(generation, lifecycle_phase::started, active, 3, changed);
+         if (admitted.active()) ++accepted;
+         else if (admitted.status() == forge::app::admission_status::exhausted) ++exhausted;
+         rendezvous.arrive_and_wait();
+         rendezvous.arrive_and_wait();
+      });
+   }
+   rendezvous.arrive_and_wait();
+   rendezvous.arrive_and_wait();
+   BOOST_CHECK_EQUAL(active.load(), 3U);
+   BOOST_CHECK_EQUAL(accepted.load(), 3U);
+   BOOST_CHECK_EQUAL(exhausted.load(), 5U);
+   fixture.plugin.request_stop();
+   BOOST_CHECK(lifecycle.admit(generation, lifecycle_phase::started, active, 3, changed).status() ==
+               forge::app::admission_status::closed);
+   BOOST_CHECK(lifecycle.admit(lifecycle.snapshot().generation, lifecycle_phase::started, active, 3, changed).status() ==
+               forge::app::admission_status::closed);
+   rendezvous.arrive_and_wait();
+   threads.clear();
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   BOOST_CHECK_EQUAL(changed.epoch(), 3U);
+   auto shutdown = fixture.run(fixture.plugin.shutdown());
+   BOOST_REQUIRE(!ready(shutdown));
+}
+
+BOOST_AUTO_TEST_CASE(plugin_lifecycle_scoped_admission_cancellation_releases_and_wakes_drain) {
+   // The fixture stops its runtime before the borrowed request state is destroyed,
+   // including a failed assertion while the request coroutine is still suspended.
+   auto active = std::atomic_size_t{0};
+   auto changed = forge::asio::notification{};
+   auto entered = forge::asio::notification{};
+   auto release = forge::asio::notification{};
+   auto stop = std::stop_source{};
+   auto fixture = plugin_fixture{};
+   fixture.initialize();
+   auto startup = fixture.run(fixture.plugin.startup());
+   BOOST_REQUIRE(!ready(startup));
+   auto lifecycle = fixture.plugin.resources->lifecycle;
+   const auto entered_epoch = entered.epoch();
+   auto waiting = fixture.run(hold_admission(lifecycle, active, changed, entered, release, stop.get_token()));
+   const auto stop_on_exit = boost::scope::scope_exit{[&] {
+      stop.request_stop();
+      release.notify();
+      if (waiting.valid()) {
+         if (waiting.wait_for(test_timeout) == std::future_status::ready) {
+            static_cast<void>(waiting.get());
+         } else {
+            fixture.runtime.stop();
+         }
+      }
+   }};
+   auto entry = boost::asio::co_spawn(fixture.runtime.context(),
+       entered.async_wait_until(entered_epoch, std::chrono::steady_clock::now() + test_timeout),
+       boost::asio::use_future);
+   BOOST_REQUIRE_NE(ready(entry), entered_epoch);
+   BOOST_CHECK_EQUAL(active.load(), 1U);
+   const auto before = changed.epoch();
+   auto drain = boost::asio::co_spawn(fixture.runtime.context(),
+       changed.async_wait_until(before, std::chrono::steady_clock::now() + test_timeout),
+       boost::asio::use_future);
+   fixture.plugin.request_stop();
+   stop.request_stop();
+   const auto error = ready(waiting);
+   BOOST_CHECK(is_error<boost::system::system_error>(error));
+   BOOST_CHECK_NE(ready(drain), before);
+   BOOST_CHECK_EQUAL(active.load(), 0U);
+   auto shutdown = fixture.run(fixture.plugin.shutdown());
+   BOOST_REQUIRE(!ready(shutdown));
 }
 
 BOOST_AUTO_TEST_CASE(plugin_lifecycle_input_operations_reject_duplicates_and_owner_ensure_joins_atomically) {

@@ -1177,3 +1177,10 @@ fields. They also support a coordinator-owned `FORGE_DISABLE_LOGGING` build.
 path manager fallback, connect/open timeouts, peer exchange, relay, reachability,
 hole punching, DHT/rendezvous component behavior and production option
 validation.
+
+`forge.net.p2p.identity` also provides the standard ADL `to_variant/from_variant`
+and Schema scalar adapter for `peer_id`. JSON/YAML uses the canonical string,
+while Raw retains the one-string aggregate layout. Empty text roundtrips the
+default empty sentinel; it is not a valid admitted peer. A Raw-decoded aggregate
+can contain arbitrary text, so network admission must call `valid_peer_id` rather
+than rely on the C++ type or a successful decode.

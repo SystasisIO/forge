@@ -210,7 +210,7 @@ session::impl::async_call_on_strand(forge::api::core::frame request, forge::api:
                                     call_options value, const forge::api::core::method_descriptor* descriptor) {
    auto call = reserve_local_call(request, kind, std::move(input), std::move(output), value, descriptor);
    try {
-      co_await ensure_handshake_on_strand(call);
+      co_await wait_for_session_ready_on_strand(call);
       if (!negotiated_capabilities.supports(capability_for(kind))) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
                                "API stream method kind was not negotiated");
@@ -854,7 +854,7 @@ boost::asio::awaitable<void> session::impl::async_serve_on_strand() {
       if (!plan) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "API stream session has no binding plan");
       }
-      co_await ensure_handshake_on_strand();
+      co_await wait_for_session_ready_on_strand();
       while (!closed.load(std::memory_order_acquire)) {
          const auto observed = session_wake.epoch();
          if (failure) {

@@ -38,22 +38,29 @@ template <typename Interface> struct api_traits;
 
 template <typename T>
 [[nodiscard]] T unpack_body(std::span<const std::uint8_t> body) {
-   const auto bounded = static_cast<std::uint32_t>(std::min<std::size_t>(
-      body.size(), std::numeric_limits<std::uint32_t>::max()));
-   try {
-      return forge::raw::unpack_exact<T>(
-         body, forge::raw::unpack_limits{
-                  .max_container_elements = bounded,
-                  .max_total_container_elements = bounded,
-                  .max_bytes = bounded,
-                  .first_container_elements = bounded,
-               });
-   } catch (const forge::raw::exceptions::allocation_limit&) {
-      throw exceptions::resource_exhausted{"API body exceeds decode limits"};
-   } catch (const std::bad_alloc&) {
-      throw exceptions::resource_exhausted{"API body allocation failed"};
-   } catch (const forge::raw::exceptions::codec_error&) {
-      throw exceptions::protocol_error{"API body is malformed"};
+   if constexpr (std::is_void_v<T>) {
+      if (!body.empty()) {
+         throw exceptions::protocol_error{"void API response contains a body"};
+      }
+      return;
+   } else {
+      const auto bounded = static_cast<std::uint32_t>(std::min<std::size_t>(
+         body.size(), std::numeric_limits<std::uint32_t>::max()));
+      try {
+         return forge::raw::unpack_exact<T>(
+            body, forge::raw::unpack_limits{
+                     .max_container_elements = bounded,
+                     .max_total_container_elements = bounded,
+                     .max_bytes = bounded,
+                     .first_container_elements = bounded,
+                  });
+      } catch (const forge::raw::exceptions::allocation_limit&) {
+         throw exceptions::resource_exhausted{"API body exceeds decode limits"};
+      } catch (const std::bad_alloc&) {
+         throw exceptions::resource_exhausted{"API body allocation failed"};
+      } catch (const forge::raw::exceptions::codec_error&) {
+         throw exceptions::protocol_error{"API body is malformed"};
+      }
    }
 }
 

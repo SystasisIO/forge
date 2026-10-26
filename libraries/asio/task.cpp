@@ -158,6 +158,10 @@ bool handle::accepted() const noexcept {
    return state_ != nullptr && state_->accepted.load(std::memory_order_acquire);
 }
 
+bool handle::completed() const noexcept {
+   return state_ != nullptr && state_->completed.load(std::memory_order_acquire);
+}
+
 std::uint64_t handle::id() const noexcept {
    return state_ == nullptr ? 0 : state_->id;
 }

@@ -5,6 +5,7 @@ add_library(
    details/record_key.hxx
    details/sequence_record.hxx
    sequence_record.cpp
+   registration.cpp
    ranked_index.cpp
    snapshot.cpp
    store.cpp

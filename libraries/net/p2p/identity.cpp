@@ -8,10 +8,12 @@ module;
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
 
 module forge.net.p2p.identity;
 
 import forge.codec.base58;
+import forge.net.p2p.exceptions;
 import forge.crypto.asymmetric;
 import forge.crypto.pki.x509;
 import forge.multiformats.exceptions;
@@ -25,6 +27,17 @@ import forge.multiformats.multiaddr;
 #include "details/identity_signature.hxx"
 
 namespace forge::net::p2p {
+
+void to_variant(const peer_id& value, forge::variant& result) {
+   result = std::get<std::string>(forge::schema::value_adapter<peer_id>::encode(value).storage);
+}
+
+void from_variant(const forge::variant& value, peer_id& result) {
+   if (!value.is_string()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_identity, "Peer ID requires a string");
+   }
+   result = forge::schema::value_adapter<peer_id>::decode(forge::schema::input_value{value.as_string()});
+}
 
 namespace {
 
@@ -262,3 +275,20 @@ bool valid_peer_id(const peer_id& id) noexcept {
 }
 
 } // namespace forge::net::p2p
+
+forge::schema::input_value forge::schema::value_adapter<forge::net::p2p::peer_id>::encode(
+    const forge::net::p2p::peer_id& input) {
+   if (!input.value.empty() && !forge::net::p2p::valid_peer_id(input)) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_identity, "Peer ID is not canonical");
+   }
+   return forge::schema::input_value{input.to_string()};
+}
+
+forge::net::p2p::peer_id forge::schema::value_adapter<forge::net::p2p::peer_id>::decode(
+    const forge::schema::input_value& input) {
+   const auto* text = std::get_if<std::string>(&input.storage);
+   if (!text) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_identity, "Peer ID requires a string");
+   }
+   return text->empty() ? forge::net::p2p::peer_id{} : forge::net::p2p::peer_id::from_string(*text);
+}

@@ -210,6 +210,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/net_plugins_tests.py
 )
 add_test(
+   NAME test_forge_crypto_family_rules
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/crypto_family_tests.py
+)
+add_test(
    NAME test_forge_swarm_structure
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/swarm_boundaries_tests.py
 )
@@ -1281,6 +1285,7 @@ add_executable(
    test_forge_asio
    unit/main.cpp
    asio/affine_tests.cpp
+   asio/cancellation_scope_tests.cpp
    asio/compute_tests.cpp
    asio/gate_tests.cpp
    asio/notification_tests.cpp
@@ -1522,7 +1527,10 @@ add_executable(
    unit/main.cpp
    api/transport_api_tests.cpp
 )
-target_link_libraries(test_forge_api_transport forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_api_transport
+   forge_api_core forge_api_stream forge_api_transport forge_api_websocket forge_asio
+   forge_net_http forge_net_transport forge_net_websocket forge_raw Boost::included_unit_test_framework
+)
 add_test(NAME test_forge_api_transport COMMAND test_forge_api_transport WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(test_forge_http_error_renderer unit/main.cpp api/http_error_renderer_tests.cpp)
@@ -1667,6 +1675,16 @@ target_link_libraries(
 target_compile_definitions(test_forge_quic_p2p PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
+
+add_executable(test_forge_p2p_identity_codecs
+   unit/main.cpp
+   quic_p2p/identity_codec_tests.cpp
+)
+target_link_libraries(test_forge_p2p_identity_codecs forge_net_p2p forge_variant forge_schema forge_raw
+   Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_identity_codecs COMMAND test_forge_p2p_identity_codecs
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_identity_codecs PROPERTIES TIMEOUT 30)
 
 add_executable(test_forge_p2p_lifecycle
    unit/main.cpp
@@ -2991,6 +3009,31 @@ add_custom_target(
       --test-command forge_package_api_core_component
    DEPENDS test_forge_package_install
 )
+# Installed public consumer for true unary void responses. The only supplied
+# boundary is in-memory transport; invocation uses the actual Core dispatcher.
+set(forge_api_void_response_package_command
+   ${CMAKE_CTEST_COMMAND}
+   --build-and-test
+   ${CMAKE_CURRENT_SOURCE_DIR}/package_api_void_response_component
+   ${CMAKE_BINARY_DIR}/forge-package-api-void-response-component
+   --build-generator ${CMAKE_GENERATOR}
+   --build-options
+      ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+      -DCMAKE_DISABLE_FIND_PACKAGE_Ngtcp2=ON
+      -DCMAKE_DISABLE_FIND_PACKAGE_glaze=ON
+      -DCMAKE_DISABLE_FIND_PACKAGE_Notcurses=ON
+   --test-command forge_package_api_void_response_component
+)
+add_custom_target(test_forge_package_api_void_response_component
+   COMMAND ${forge_api_void_response_package_command}
+   DEPENDS test_forge_package_install
+)
+add_test(NAME test_forge_package_api_void_response_component
+   COMMAND ${forge_api_void_response_package_command})
+set_tests_properties(test_forge_package_api_void_response_component PROPERTIES
+   DEPENDS test_forge_package_install)
+
 add_custom_target(
    test_forge_package_net_transport_component
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -5185,6 +5228,18 @@ if(TARGET forge_auth_liboauth2)
          --test-command forge_package_auth_liboauth2_component
    )
    set_tests_properties(test_forge_package_auth_liboauth2_component PROPERTIES DEPENDS test_forge_package_install)
+endif()
+
+if(TARGET forge_net_tlsnotary_values)
+   add_test(NAME test_forge_package_net_tlsnotary_values_component
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_net_tlsnotary_values_component
+         ${CMAKE_BINARY_DIR}/forge-package-net-tlsnotary-values-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_net_tlsnotary_values_component)
+   set_tests_properties(test_forge_package_net_tlsnotary_values_component PROPERTIES
+      DEPENDS test_forge_package_install TIMEOUT 180)
 endif()
 
 if(TARGET forge_net_tlsnotary)

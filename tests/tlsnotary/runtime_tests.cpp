@@ -130,7 +130,9 @@ class leaking_stream final : public forge::net::transport::detail::stream_concep
    void cancel() override {}
 };
 
-enum class channel_failure_kind { forge, boost, standard, unknown };
+enum class channel_failure_kind {
+   forge, forge_native, forge_redacted, forge_invalid, forge_unknown_category, boost, standard, unknown
+};
 
 class channel_failure_stream final : public forge::net::transport::detail::stream_concept {
  public:
@@ -181,9 +183,27 @@ class channel_failure_stream final : public forge::net::transport::detail::strea
       failure_location = std::source_location::current();
       switch (_kind) {
       case channel_failure_kind::forge:
+      case channel_failure_kind::forge_native:
+      case channel_failure_kind::forge_redacted:
+      case channel_failure_kind::forge_invalid:
+      case channel_failure_kind::forge_unknown_category: {
+         auto fields = forge::exceptions::fields{forge::exceptions::ctx("private", "secret-sentinel context")};
+         if (_kind == channel_failure_kind::forge_native) {
+            fields.push_back(forge::exceptions::ctx("native_category", "system"));
+            fields.push_back(forge::exceptions::ctx("native_code", ENOTCONN));
+         } else if (_kind == channel_failure_kind::forge_redacted) {
+            fields.push_back(forge::exceptions::secret("native_category", "system"));
+            fields.push_back(forge::exceptions::secret("native_code", ENOTCONN));
+         } else if (_kind == channel_failure_kind::forge_invalid) {
+            fields.push_back(forge::exceptions::ctx("native_category", "system"));
+            fields.push_back(forge::exceptions::ctx("native_code", "42secret-sentinel code"));
+         } else if (_kind == channel_failure_kind::forge_unknown_category) {
+            fields.push_back(forge::exceptions::ctx("native_category", "secret-sentinel category"));
+            fields.push_back(forge::exceptions::ctx("native_code", ENOTCONN));
+         }
          throw forge::net::transport::exceptions::closed{"secret-sentinel transport message",
-                                                         {forge::exceptions::ctx("private", "secret-sentinel context")},
-                                                         failure_location};
+                                                         std::move(fields), failure_location};
+      }
       case channel_failure_kind::boost:
          throw boost::system::system_error{boost::system::errc::make_error_code(boost::system::errc::broken_pipe),
                                            "secret-sentinel boost message"};
@@ -911,6 +931,14 @@ void channel_diagnostic_tests(const temporary_directory& files, const identity& 
                 2},
        scenario{"diagnostic-close-peer", false, "close_write", channel_failure_kind::unknown, "unknown", "unknown", 0},
        scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge, "forge",
+                "forge.net.transport", 2},
+       scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge_native, "forge",
+                "forge.net.transport", 2},
+       scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge_redacted, "forge",
+                "forge.net.transport", 2},
+       scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge_invalid, "forge",
+                "forge.net.transport", 2},
+       scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge_unknown_category, "forge",
                 "forge.net.transport", 2}};
    auto runtime = forge::asio::runtime{{.worker_threads = 2}};
    auto compute = forge::asio::compute::pool{{.worker_threads = 1}};
@@ -961,7 +989,7 @@ void channel_diagnostic_tests(const temporary_directory& files, const identity& 
             "channel failure used the wrong diagnostic boundary");
       const auto& failed = test.server ? server : peer;
       const auto location =
-          test.failure == channel_failure_kind::forge ? failed->failure_location : std::source_location{};
+          std::string_view{test.cause_kind} == "forge" ? failed->failure_location : std::source_location{};
       const auto expected = forge::log_fields{{"event", "tlsnotary.channel_failure"},
                                               {"session", std::to_string(session)},
                                               {"role", test.server ? "prover" : "verifier"},
@@ -971,7 +999,11 @@ void channel_diagnostic_tests(const temporary_directory& files, const identity& 
                                               {"cause_category", test.category},
                                               {"cause_code", std::to_string(test.code)},
                                               {"cause_file", location.file_name()},
-                                              {"cause_line", std::to_string(location.line())}};
+                                              {"cause_line", std::to_string(location.line())},
+                                              {"native_category", test.failure == channel_failure_kind::forge_native
+                                                                       ? "system" : "unknown"},
+                                              {"native_code", std::to_string(test.failure == channel_failure_kind::forge_native
+                                                                                ? ENOTCONN : 0)}};
       check(record.fields.size() == expected.size(), "channel diagnostic contains fields outside its allowlist");
       for (const auto& field : expected) {
          const auto actual =

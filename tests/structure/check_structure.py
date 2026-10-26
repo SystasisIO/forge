@@ -2491,6 +2491,7 @@ def check_crypto_family(root: Path, files: list[Path], errors: list[str]) -> Non
       "jose",
       "core",
       "digest",
+      "exchange",
       "keystore",
       "wallet",
       "math",

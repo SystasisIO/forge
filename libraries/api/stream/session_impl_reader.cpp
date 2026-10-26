@@ -157,7 +157,7 @@ boost::asio::awaitable<void> session::impl::handle_inbound_frame(forge::api::cor
    }
    if (!hello_sent) {
       // The peer can reply to our delivered hello before its async_write completion resumes.
-      co_await ensure_handshake_on_strand();
+      co_await wait_for_session_ready_on_strand();
    }
    if (value.codec != settings.codec) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::codec_failed, "API stream frame codec is not negotiated",

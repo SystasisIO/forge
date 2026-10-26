@@ -24,6 +24,7 @@ import forge.db.object.header;
 import forge.db.object.hooks;
 import forge.db.object.index;
 import forge.db.object.object;
+import forge.db.object.registration;
 import forge.db.object.snapshot;
 import forge.db.object.transaction;
 
@@ -74,6 +75,8 @@ class store {
    [[nodiscard]] options runtime_options() const noexcept;
 
    template <application_object_model Object> void register_object();
+
+   void register_object(registration value);
 
    template <system_object_model Object> void register_system_object();
 
@@ -147,7 +150,7 @@ class store {
 };
 
 template <application_object_model Object> void store::register_object() {
-   register_object_type(object_id_of<Object>::value, std::type_index{typeid(Object)});
+   register_object(registration::of<Object>());
 }
 
 template <system_object_model Object> void store::register_system_object() {

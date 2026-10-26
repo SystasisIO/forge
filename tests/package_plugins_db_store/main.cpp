@@ -1,175 +1,142 @@
 #include <boost/asio/awaitable.hpp>
-#include <boost/describe.hpp>
-
-#include <concepts>
-#include <coroutine>
+#include <forge/exceptions/macros.hpp>
+#include <chrono>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <new>
+#include <optional>
+#include <span>
 #include <string>
-#include <vector>
-#include <type_traits>
+#include <tuple>
 #include <utility>
+#include <variant>
+#include <vector>
 
+import forge.package.db.registration.catalog;
+import forge.app.application_builder;
+import forge.app.application_shell;
+import forge.asio.blocking;
+import forge.api.core.registry;
+import forge.config.core.decode;
+import forge.config.core.value;
+import forge.db.core.exceptions;
+import forge.db.object.exceptions;
 import forge.plugins.db.store.plugin;
 import forge.plugins.db.store.api;
-import forge.db.authenticated.store;
-import forge.db.authenticated.transaction;
-import forge.db.authenticated.types;
-import forge.db.blob.snapshot;
-import forge.db.core.record;
-import forge.db.object.index;
-import forge.db.object.object;
-import forge.db.object.store;
-import forge.db.revision.types;
 
-struct usage_record : forge::db::object::object<usage_record, 1, 31> {
-   std::uint64_t bytes = 0;
-};
+int package_api_contract_checks();
 
-BOOST_DESCRIBE_STRUCT(usage_record, (forge::db::object::object<usage_record, 1, 31>), (bytes))
+namespace {
 
-struct by_id;
-struct by_bytes;
-
-using usage_index = forge::db::object::object_index<
-    usage_record, forge::db::object::indexed_by<forge::db::object::ranked_primary_unique<
-                      by_id, forge::db::object::ranked_schema<1>,
-                      forge::db::object::sum<by_bytes, forge::db::object::member<&usage_record::bytes>>>>>;
-
-boost::asio::awaitable<void> use_revision_layer(forge::plugins::db::store::store_handle store) {
-   auto active = co_await store.begin_transaction();
-   const auto revision = co_await store.revisions().join(active);
-   if (revision.id() == 0U) {
-      co_await active.rollback();
-      co_return;
+template <typename Exception, typename Work> void expect_error(Work work) {
+   auto denied = false;
+   try {
+      work();
+   } catch (const Exception&) {
+      denied = true;
    }
-   co_await active.rollback();
+   FORGE_ASSERT(denied, "Native registration returned a different admission result");
 }
 
-boost::asio::awaitable<void> use_shared_read(forge::plugins::db::store::store_handle store) {
-   auto read = co_await store.begin_read();
-   if (read.active()) {
-      static_cast<void>(read.objects());
-      static_cast<void>(read.blobs());
+boost::asio::awaitable<void> require_closed_guards(forge::plugins::db::store::store_handle store) {
+   const auto objects = store.objects();
+   auto retained = co_await store.begin_read();
+   auto busy = false;
+   try {
+      static_cast<void>(co_await store.close_for_activation());
+   } catch (const forge::db::core::exceptions::driver_busy&) {
+      busy = true;
    }
-}
-
-boost::asio::awaitable<void> use_checkpoint(forge::plugins::db::store::store_handle store,
-                                            const std::filesystem::path& destination) {
-   co_await store.create_checkpoint(destination);
-}
-
-boost::asio::awaitable<bool> use_strict_activation(forge::plugins::db::store::store_handle store,
-                                                   std::filesystem::path destination) {
-   auto closed = co_await store.close_for_activation();
-   co_await closed.activate(std::move(destination));
-   const auto status = closed.state();
-   co_return status.published&& status.phase == forge::plugins::db::store::activation_phase::durable;
-}
-
-boost::asio::awaitable<void> use_authenticated_layer(forge::plugins::db::store::store_handle store) {
-   auto authenticated = store.authenticated({
-       .family = forge::db::core::family{"state.authenticated"},
-       .domain = "package.consumer",
+   FORGE_ASSERT(busy, "Real MDBX snapshot did not hold strict close incomplete");
+   expect_error<forge::plugins::db::store::exceptions::stopped>([&] {
+      objects.register_object(package_registration::metadata());
    });
-   auto active = co_await store.begin_transaction();
-   auto state = co_await authenticated.join(active, 1U);
-   const auto mutations = std::vector<forge::db::authenticated::mutation>{};
-   co_await state.stage(mutations);
-   co_await active.rollback();
+   expect_error<forge::plugins::db::store::exceptions::stopped>([&] {
+      package_registration::register_legacy(objects);
+   });
+   retained = {};
+   auto closed = co_await store.close_for_activation();
+   FORGE_ASSERT(!closed.state().published, "Registration consumer unexpectedly published its temporary store");
+   expect_error<forge::plugins::db::store::exceptions::stopped>([&] {
+      objects.register_object(package_registration::metadata());
+   });
+   expect_error<forge::plugins::db::store::exceptions::stopped>([&] {
+      package_registration::register_legacy(objects);
+   });
 }
 
-boost::asio::awaitable<void> use_allocation_restore(forge::plugins::db::store::store_handle store,
-                                                    std::vector<forge::db::object::store::allocation> values) {
-   auto active = co_await store.begin_transaction();
-   co_await store.objects().restore_allocations(active, std::move(values));
-   co_await active.rollback();
-}
-
-boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>
-use_authenticated_checkpoint(forge::plugins::db::store::store_handle source,
-                             forge::plugins::db::store::store_handle target,
-                             forge::db::authenticated::store::config settings,
-                             forge::db::authenticated::root expected,
-                             forge::db::authenticated::checkpoint_sink sink,
-                             forge::db::authenticated::checkpoint_source frames,
-                             forge::db::authenticated::checkpoint_verify verify,
-                             forge::db::authenticated::checkpoint_limits limits) {
-   auto read = co_await source.begin_read();
-   const auto exported = co_await source.authenticated(settings).export_checkpoint(
-       read, expected, std::move(sink), limits);
-   auto active = co_await target.begin_transaction();
-   auto restoring = target.authenticated(std::move(settings)).join_restore(active, expected, limits);
-   const auto restored = co_await restoring.restore_checkpoint(std::move(frames), std::move(verify));
-   co_await active.rollback();
-   co_return restored == exported ? restored : forge::db::authenticated::checkpoint_summary{};
-}
+} // namespace
 
 int main() {
-   using store_plugin = forge::plugins::db::store::plugin;
-   static_assert(std::is_constructible_v<store_plugin, store_plugin::options>);
-   auto opening = store_plugin::options{};
-   opening.prerequisites.push_back({
-       .store = "local",
-       .before = {"protected"},
-       .check = [](forge::db::object::store& actual) -> boost::asio::awaitable<void> {
-          actual.register_object<usage_index>();
-          auto read = co_await actual.begin_read();
-          static_cast<void>(read);
-       },
-   });
-   const auto configured_descriptor = store_plugin::descriptor(std::move(opening));
-   auto configured_plugin = configured_descriptor.factory();
-   if (!configured_plugin) { return 1; }
-   static_assert(!std::is_default_constructible_v<forge::plugins::db::store::closed_store>);
-   static_assert(!std::is_copy_constructible_v<forge::plugins::db::store::closed_store>);
-   static_assert(std::is_nothrow_move_constructible_v<forge::plugins::db::store::closed_store>);
-   using object_handle = forge::plugins::db::store::object_handle;
-   using revision_handle = forge::plugins::db::store::revision_handle;
-   using store_transaction = forge::plugins::db::store::transaction;
-   using authenticated_handle = forge::plugins::db::store::authenticated_handle;
-   using store_snapshot = forge::plugins::db::store::snapshot;
-   static_assert(std::same_as<
-       decltype(std::declval<const authenticated_handle&>().export_checkpoint(
-           std::declval<store_snapshot>(), forge::db::authenticated::root{},
-           forge::db::authenticated::checkpoint_sink{}, forge::db::authenticated::checkpoint_limits{})),
-       boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>>);
-   static_assert(std::same_as<
-       decltype(std::declval<const authenticated_handle&>().join_restore(
-           std::declval<store_transaction&>(), forge::db::authenticated::root{},
-           forge::db::authenticated::checkpoint_limits{})), forge::db::authenticated::transaction>);
-   static_assert(
-       std::same_as<decltype(std::declval<const object_handle&>().restore_allocations(
-                        std::declval<store_transaction&>(), std::vector<forge::db::object::store::allocation>{})),
-                    boost::asio::awaitable<void>>);
-   static_assert(
-       std::same_as<decltype(std::declval<const object_handle&>().require_pristine(std::declval<store_transaction&>())),
-                    boost::asio::awaitable<void>>);
-   static_assert(std::same_as<decltype(std::declval<const revision_handle&>().require_pristine(
-                                  std::declval<store_transaction&>())),
-                              boost::asio::awaitable<void>>);
-   static_assert(requires(const object_handle& objects, const usage_record& value) {
-      objects.index<usage_index, by_id>().count();
-      objects.index<usage_index, by_id>().sum<by_bytes>();
-      objects.index<usage_index, by_id>().nth(0U);
-      objects.index<usage_index, by_id>().rank(value);
-   });
-
-   const auto plugin = forge::plugins::db::store::plugin{};
-   const auto descriptor = forge::plugins::db::store::plugin::descriptor();
-   const auto api = forge::plugins::db::store::api::describe();
-   const auto options = forge::db::revision::prune_options{
-       .max_revisions = 1U,
-       .max_deltas = 1U,
-   };
-   const auto mdbx = forge::plugins::db::store::mdbx_driver_config{
-       .durability = "safe-nosync",
-       .max_readers = 64U,
-       .map = {.upper_size = 64ULL * 1024ULL * 1024ULL},
-       .lane = {.max_pending_operations = 32U, .max_waiting_submissions = 32U},
-   };
-   return plugin.version() == "2.0.0" && descriptor.id.value == "forge.plugins.db.store" && api.version.major == 2U &&
-                  api.version.revision == 0U && options.max_revisions == 1U && mdbx.max_readers == 64U
-              ? 0
-              : 1;
+   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+   const auto root = std::filesystem::temp_directory_path() / ("forge-native-registration-" + std::to_string(nonce));
+   auto app = std::unique_ptr<forge::app::application_shell>{};
+   try {
+      FORGE_ASSERT(package_api_contract_checks() == 0, "Existing installed DB plugin API contracts regressed");
+      FORGE_ASSERT(std::filesystem::create_directory(root), "Temporary registration namespace already exists");
+      std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+      const auto stage = root / "state";
+      FORGE_ASSERT(std::filesystem::create_directory(stage), "Cannot create owned MDBX test root");
+      std::filesystem::permissions(stage, std::filesystem::perms::owner_all);
+      auto store = forge::plugins::db::store::store_handle{};
+      auto registered = false;
+      auto builder = forge::app::application_builder{};
+      builder.name("installed-native-registration")
+          .runtime({.worker_threads = 2})
+          .compute({.worker_threads = 2})
+          .plugin(forge::plugins::db::store::plugin::descriptor())
+          .after_initialize([&](const forge::app::application_context& context) -> boost::asio::awaitable<void> {
+             auto api = context.api_view().get<forge::plugins::db::store::api>(forge::plugins::db::store::api::ref());
+             store = co_await api->store("native");
+             const auto metadata = package_registration::metadata();
+             expect_error<forge::plugins::db::store::exceptions::stopped>([&] {
+                forge::plugins::db::store::object_handle{}.register_object(metadata);
+             });
+             auto objects = store.objects();
+             objects.register_object(metadata);
+             expect_error<forge::db::object::exceptions::invalid_descriptor>([&] {
+                objects.register_object(metadata);
+             });
+             expect_error<forge::db::object::exceptions::invalid_descriptor>([&] {
+                objects.register_object(package_registration::conflicting_metadata());
+             });
+             package_registration::register_legacy(objects);
+             expect_error<forge::db::object::exceptions::invalid_descriptor>([&] {
+                objects.register_object(package_registration::legacy_metadata());
+             });
+             registered = true;
+             co_return;
+          });
+      app = std::move(builder).build();
+      auto settings = forge::plugins::db::store::config{};
+      settings.stores.push_back({.name = "native", .driver = "mdbx", .path = stage.string(),
+          .object = forge::plugins::db::store::object_layer_config{},
+          .mdbx = forge::plugins::db::store::mdbx_driver_config{
+              .durability = "durable-sync", .map = {.upper_size = std::uint64_t{64U * 1024U * 1024U}}}});
+      app->configure(forge::config::core::encode(settings, "plugins.db.store"));
+      forge::asio::blocking::run(app->runtime(), app->startup());
+      FORGE_ASSERT(registered, "Metadata registration did not run through the actual setup phase");
+      forge::asio::blocking::run(app->runtime(), package_registration::create_and_read(store));
+      forge::asio::blocking::run(app->runtime(), require_closed_guards(store));
+      forge::asio::blocking::run(app->runtime(), app->shutdown());
+      app.reset();
+      std::filesystem::remove_all(root);
+      std::cout << "PASS installed multi-TU native registration / typed read-write-index / duplicate-model / strict-close\n";
+      return 0;
+   } catch (const std::exception& error) {
+      if (app) {
+         try {
+            forge::asio::blocking::run(app->runtime(), app->shutdown());
+         } catch (...) {
+            std::cerr << "HARNESS_ERROR registration consumer shutdown incomplete; owned root " << root << '\n';
+            std::terminate();
+         }
+      }
+      std::cerr << "FAIL native registration consumer: " << error.what() << "; owned root preserved " << root << '\n';
+      return 1;
+   }
 }

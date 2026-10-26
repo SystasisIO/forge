@@ -101,3 +101,24 @@ Offline checks bind openings to caller-authenticated commitments; they do not
 independently authenticate a TLS source. Applications sign or trust the complete
 record with their own context before allowing disclosure. Local macOS evidence
 must be assessed separately from Linux or commercial production acceptance.
+
+## Values without the native worker
+
+The additive `net_tlsnotary_values` component exports
+`Forge::forge_net_tlsnotary_values` and the existing
+`forge.net.tlsnotary.types` module even with `FORGE_ENABLE_TLSNOTARY=OFF`.
+It supplies passive values for retaining session outcomes; it neither starts a
+worker nor provides a session engine. Existing consumers of `net_tlsnotary`
+retain the same imports through its public dependency on this component.
+
+`authenticated_range` and `result` now declare their fields for canonical Raw
+serialization. A retained verifier result contains authenticated public ranges
+and commitments. Prover results can also contain secret openings: applications
+must protect those values and must not publish the whole serialized object.
+Deserialization does not reauthenticate a transcript or create a portable proof.
+The application still owns the trusted origin of a retained result, its binding
+to a request, and disclosure policy. FTN1/FTN2 and upstream pins are unchanged.
+
+The official `package_net_tlsnotary_values_component` consumer checks the public
+component and exact Raw field order, separately for verifier and prover values.
+Build-tree, installed-package and runtime qualification are separate gates.

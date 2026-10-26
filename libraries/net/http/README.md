@@ -102,6 +102,18 @@ Content-Length/Connection, final CRLF and body together. Caller-supplied Connect
 token lists use a conservative growth allowance for Beast normalization; requests
 near a configured size boundary may be rejected before serialization.
 
+The serializer first measures Beast's native buffer sequence without copying the
+body, then reserves the complete measured byte size once and copies with a fresh
+serializer over the same owned message. Output bytes do not grow incrementally
+as header/body segments arrive. The macOS/libc++ qualification gate checks
+`bytes.capacity() == bytes.size()`; `std::vector::reserve` alone does not provide
+that exact-capacity guarantee for every standard-library allocator. Exact retained
+capacity, golden framing, sensitive offsets and the configured wire boundary are
+covered by `test_forge_http_wire`. This allocation property matters to consumers
+that bound retained capacity separately from logical size. The existing Beast message
+conversion still owns a body copy. See the
+[buffer ownership donor note](../../../docs/donors/forge-http-wire-capacity.md).
+
 `parse_request(bytes, limits)` and `parse_response(bytes, request_method, limits)`
 parse exactly one contiguous message using Beast. Wire bytes, header bytes/count
 and decoded body bytes have independent bounds. Content-Length, chunked and

@@ -36,6 +36,7 @@ BOOST_AUTO_TEST_CASE(http_wire_request_golden_and_exact_sensitive_ranges) {
    const auto expected = std::string{"POST /v1/tasks HTTP/1.1\r\nHost: source.test\r\nx-auth: Bearer private-key\r\n"
                                      "Connection: close\r\nContent-Length: 7\r\n\r\n{\"a\":1}"};
    BOOST_TEST(text(value.bytes) == expected);
+   BOOST_TEST(value.bytes.capacity() == value.bytes.size());
    BOOST_TEST(value.body_begin == expected.find("\r\n\r\n") + 4);
    BOOST_REQUIRE_EQUAL(value.sensitive.size(), 1U);
    BOOST_TEST(value.sensitive[0].begin == expected.find("Bearer private-key"));
@@ -48,6 +49,40 @@ BOOST_AUTO_TEST_CASE(http_wire_request_golden_and_exact_sensitive_ranges) {
    BOOST_TEST(parsed.target() == "/v1/tasks");
    BOOST_CHECK(parsed.method() == forge::net::http::method::post);
    BOOST_CHECK(!parsed.keep_alive());
+}
+
+BOOST_AUTO_TEST_CASE(http_wire_serializer_retains_exact_capacity_for_segmented_header_and_binary_body) {
+   const auto names = std::array<std::string_view, 1>{"X-Auth"};
+   for (const auto size : std::array<std::size_t, 12>{0, 1, 7, 127, 128, 255, 256, 511, 512, 4096, 16384, 32768}) {
+      auto source = request();
+      source.set("X-Segment-A", std::string(29, 'a'));
+      source.set("X-Segment-B", std::string(71, 'b'));
+      auto body = std::string(size, 'x');
+      if (size > 2) {
+         body[size / 2] = '\0';
+      }
+      source.body() = body;
+      const auto baseline = forge::net::http::serialize_request(source, names);
+      const auto value = forge::net::http::serialize_request(
+          source, names, {.max_wire_bytes = baseline.bytes.size(), .max_body_bytes = size});
+      BOOST_TEST(value.bytes.capacity() == value.bytes.size());
+      BOOST_TEST(value.bytes.size() == baseline.bytes.size());
+      BOOST_CHECK_EQUAL_COLLECTIONS(value.bytes.begin(), value.bytes.end(), baseline.bytes.begin(), baseline.bytes.end());
+      BOOST_TEST(value.body_begin + body.size() == value.bytes.size());
+      BOOST_TEST(source.body() == body);
+      BOOST_REQUIRE_EQUAL(value.sensitive.size(), 1U);
+      const auto& range = value.sensitive.front();
+      BOOST_TEST(range.end < value.body_begin);
+      BOOST_TEST(text(std::span{value.bytes}.subspan(range.begin, range.end - range.begin)) == "Bearer private-key");
+      const auto parsed = forge::net::http::parse_request(value.bytes);
+      BOOST_TEST(parsed.body() == body);
+      BOOST_TEST(parsed["X-Segment-A"] == std::string(29, 'a'));
+      BOOST_TEST(parsed["X-Segment-B"] == std::string(71, 'b'));
+      BOOST_TEST(parsed.target() == "/v1/tasks");
+      BOOST_CHECK_THROW(forge::net::http::serialize_request(
+                            source, names, {.max_wire_bytes = value.bytes.size() - 1, .max_body_bytes = size}),
+                        forge::net::http::exceptions::payload_too_large);
+   }
 }
 
 BOOST_AUTO_TEST_CASE(http_wire_sensitive_ranges_are_field_offsets_and_cover_repeated_custom_fields) {

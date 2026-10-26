@@ -291,6 +291,14 @@ co_await objects.insert(witness_record{.content = content});
 co_await tx.commit();
 ```
 
+The same setup-time registration can consume native model-owner metadata:
+`witness.objects().register_object(registration)`, where the owner constructed
+the value with `forge::db::object::registration::of<witness_object>()` from
+`forge.db.object.registration`. The composition need not import that model.
+This overload shares the existing setup-store admission and duplicate checks;
+it does not permit registration through an empty, closing or closed handle.
+Metadata is native-only, immutable and cannot be constructed for system models.
+
 `begin_transaction()` does not create a revision automatically. Callers opt in
 with `revisions().join(tx)` before the first mutation or savepoint. The returned
 scope exposes its candidate revision ID, while commit ownership remains with the
@@ -422,6 +430,13 @@ Both views observe the same committed point, including Object indexes and Blob
 owner references. `objects()` or `blobs()` reports `unavailable_layer` when the
 named store does not configure that layer. The wrapper deliberately does not
 expose its raw Core snapshot.
+
+`snapshot::get(family, record_key)` reads an application-owned Core KV value at
+that same committed point. It returns owning optional bytes and provides no
+mutation or commit capability. Use it for raw records instead of opening a writer
+transaction merely to perform a lookup. Reads stay isolated from a concurrent
+writer and from commits made after the snapshot opened; an empty snapshot reports
+the Core `transaction_closed` error. Release the snapshot before unrelated I/O.
 
 The Object handle forwards ranked index operations without creating plugin
 state or a second transaction boundary. The same descriptor can be queried

@@ -10,9 +10,11 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <coroutine>
 #include <cstdint>
+#include <cstddef>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -292,6 +294,72 @@ bool plugin_lifecycle::try_admit(std::uint64_t generation, lifecycle_phase requi
    }
    install();
    return true;
+}
+
+plugin_lifecycle::admission plugin_lifecycle::admit(std::uint64_t generation, std::atomic_size_t& active,
+                                                  std::size_t limit, forge::asio::notification& changed) const {
+   return admit_owned(generation, std::nullopt, active, limit, changed);
+}
+
+plugin_lifecycle::admission plugin_lifecycle::admit(std::uint64_t generation, lifecycle_phase required_phase,
+                                                  std::atomic_size_t& active, std::size_t limit,
+                                                  forge::asio::notification& changed) const {
+   return admit_owned(generation, required_phase, active, limit, changed);
+}
+
+plugin_lifecycle::admission plugin_lifecycle::admit_owned(std::uint64_t generation,
+                                                        std::optional<lifecycle_phase> required_phase,
+                                                        std::atomic_size_t& active, std::size_t limit,
+                                                        forge::asio::notification& changed) const {
+   const auto lock = std::scoped_lock{impl_->mutex};
+   if (generation != impl_->generation || !impl_->admits() || (required_phase && impl_->phase != *required_phase)) {
+      return admission{admission_status::closed};
+   }
+   if (active.load() >= limit) {
+      return admission{admission_status::exhausted};
+   }
+   active.fetch_add(1);
+   return admission{admission_status::accepted, &active, &changed};
+}
+
+plugin_lifecycle::admission::admission() noexcept = default;
+plugin_lifecycle::admission::~admission() {
+   release();
+}
+
+plugin_lifecycle::admission::admission(admission_status status, std::atomic_size_t* active,
+                                      forge::asio::notification* changed) noexcept
+    : status_{status}, active_{active}, changed_{changed} {}
+
+plugin_lifecycle::admission::admission(admission&& other) noexcept
+    : status_{std::exchange(other.status_, admission_status::closed)},
+      active_{std::exchange(other.active_, nullptr)}, changed_{std::exchange(other.changed_, nullptr)} {}
+
+plugin_lifecycle::admission& plugin_lifecycle::admission::operator=(admission&& other) noexcept {
+   if (this != &other) {
+      release();
+      status_ = std::exchange(other.status_, admission_status::closed);
+      active_ = std::exchange(other.active_, nullptr);
+      changed_ = std::exchange(other.changed_, nullptr);
+   }
+   return *this;
+}
+
+admission_status plugin_lifecycle::admission::status() const noexcept {
+   return status_;
+}
+
+bool plugin_lifecycle::admission::active() const noexcept {
+   return active_ != nullptr;
+}
+
+void plugin_lifecycle::admission::release() noexcept {
+   auto* active = std::exchange(active_, nullptr);
+   auto* changed = std::exchange(changed_, nullptr);
+   if (active != nullptr) {
+      active->fetch_sub(1);
+      changed->notify();
+   }
 }
 
 plugin_lifecycle::operation::operation() noexcept = default;
