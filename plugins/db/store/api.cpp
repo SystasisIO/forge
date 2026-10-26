@@ -118,6 +118,11 @@ std::string snapshot::name() const {
    return store_name_;
 }
 
+boost::asio::awaitable<std::optional<std::vector<std::byte>>>
+snapshot::get(forge::db::core::family column_family, forge::db::core::record_key key) {
+   co_return co_await active_.get(std::move(column_family), std::move(key));
+}
+
 forge::db::object::snapshot snapshot::objects() const {
    if (!objects_.has_value()) {
       FORGE_THROW_EXCEPTION(exceptions::unavailable_layer, "db store object layer is not configured",
@@ -243,6 +248,10 @@ std::shared_ptr<forge::db::object::store> object_handle::require_store() const {
 
 forge::db::object::store::options object_handle::runtime_options() const {
    return require_store()->runtime_options();
+}
+
+void object_handle::register_object(forge::db::object::registration value) const {
+   require_setup_store()->register_object(std::move(value));
 }
 
 void object_handle::add_interceptor(std::shared_ptr<forge::db::object::interceptor> value) const {

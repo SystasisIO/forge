@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="3"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="0"
+	timestamp="2026-10-25T19:59:11"
+	>
+	<testcase name="turbine_jobs_wire_tests" classname="turbine_jobs_wire_tests" time="0.857955" status="run">
+		<properties>
+			<property name="cmake_labels" value="job0;jobs;native;wasm"/>
+		</properties>
+		<system-out>PASS JOB4 native/real-WASM independent Keccak vectors, exact invalid witness/fault distinction
+JOB0 real WASM/native accepted=219 rejected=57 (transport/crypto only; JOB1 state machine NOT_RUN)
+</system-out>
+	</testcase>
+	<testcase name="turbine_jobs_wire_abi" classname="turbine_jobs_wire_abi" time="0.0185983" status="run">
+		<properties/>
+		<system-out>actual Abigen: all natural action arguments and external record widths/orders PASS
+</system-out>
+	</testcase>
+	<testcase name="turbine_jobs_golden_sha256" classname="turbine_jobs_golden_sha256" time="0.0212127" status="run">
+		<properties/>
+		<system-out>fixed Raw domains, SHA256, K1 variant/width and uint8 enums: PASS
+</system-out>
+	</testcase>
+</testsuite>

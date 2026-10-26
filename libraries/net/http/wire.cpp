@@ -303,8 +303,31 @@ serialized_request serialize_request(const request& source, std::span<const std:
                                      wire_limits limits) {
    validate_serialization(source, sensitive_headers, limits);
    auto message = detail::to_beast_request(source);
+   auto wire_size = std::size_t{};
+   {
+      auto sizing = boost::beast::http::request_serializer<boost::beast::http::string_body>{message};
+      while (!sizing.is_done()) {
+         auto consumed = std::size_t{};
+         auto error = boost::system::error_code{};
+         sizing.next(error, [&](boost::system::error_code&, const auto& buffers) {
+            for (const auto& buffer : boost::beast::buffers_range_ref(buffers)) {
+               if (buffer.size() > limits.max_wire_bytes - wire_size) {
+                  FORGE_THROW_EXCEPTION(exceptions::payload_too_large, "HTTP wire message exceeds its limit");
+               }
+               wire_size += buffer.size();
+               consumed += buffer.size();
+            }
+         });
+         check_parser_error(error);
+         if (consumed != 0) {
+            sizing.consume(consumed);
+         }
+      }
+   }
+
    auto serializer = boost::beast::http::request_serializer<boost::beast::http::string_body>{message};
    auto output = serialized_request{};
+   output.bytes.reserve(wire_size);
    while (!serializer.is_done()) {
       auto copied = std::size_t{};
       auto error = boost::system::error_code{};
@@ -313,13 +336,21 @@ serialized_request serialize_request(const request& source, std::span<const std:
             if (buffer.size() > limits.max_wire_bytes - output.bytes.size()) {
                FORGE_THROW_EXCEPTION(exceptions::payload_too_large, "HTTP wire message exceeds its limit");
             }
+            if (buffer.size() > wire_size - output.bytes.size()) {
+               FORGE_THROW_EXCEPTION(exceptions::bad_request, "HTTP wire size changed during serialization");
+            }
             const auto* begin = static_cast<const std::uint8_t*>(buffer.data());
             output.bytes.insert(output.bytes.end(), begin, begin + buffer.size());
             copied += buffer.size();
          }
       });
       check_parser_error(error);
-      serializer.consume(copied);
+      if (copied != 0) {
+         serializer.consume(copied);
+      }
+   }
+   if (output.bytes.size() != wire_size) {
+      FORGE_THROW_EXCEPTION(exceptions::bad_request, "HTTP wire size changed during serialization");
    }
    // Inspect generated framing and header offsets without parsing/copying the
    // already bounded body a second time.

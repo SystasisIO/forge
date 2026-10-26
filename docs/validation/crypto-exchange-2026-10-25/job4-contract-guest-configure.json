@@ -1,0 +1,27 @@
+{
+  "name": "job4-contract-guest-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/turbine-jobs45-v1/tests/integration/jobs/contract/guest",
+    "-B",
+    "artifacts/jobs45-20261025/build/contract-guest",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_TOOLCHAIN_FILE=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix/lib/cmake/ForgeContract/ForgeContractToolchain.cmake",
+    "-DForgeContract_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix/lib/cmake/ForgeContract",
+    "-DFORGE_CONTRACT_SOURCE_ROOT=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/turbine-jobs45-v1",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 4.966,
+  "started_unix": 1792937360.115242,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

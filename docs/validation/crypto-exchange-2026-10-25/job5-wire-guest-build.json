@@ -1,0 +1,17 @@
+{
+  "name": "job5-wire-guest-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/wire-guest",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 10.609,
+  "started_unix": 1792940179.854922,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

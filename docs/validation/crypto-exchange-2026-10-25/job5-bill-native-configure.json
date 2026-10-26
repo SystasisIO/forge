@@ -1,0 +1,35 @@
+{
+  "name": "job5-bill-native-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/turbine-jobs45-v1/tests/integration/bill",
+    "-B",
+    "artifacts/jobs45-20261025/build/bill-native",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++",
+    "-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "-DForge_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/native",
+    "-DTURBINE_BILLING_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/bill-guest/bill/artifacts/spine.bill.wasm",
+    "-DTURBINE_BILLING_CONSUMER_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/bill-guest/artifacts/billclient.wasm",
+    "-DTURBINE_BILLING_PRODUCT_WASM=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/bill-guest/artifacts/billproduct.wasm",
+    "-DTURBINE_BILLING_EXPRESSION_WORKER=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs2-20261025/deliverables/host-prefix/bin/forge-expression-worker",
+    "-DTURBINE_BILLING_SDK_PREFIX=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix",
+    "-DTURBINE_BILLING_SDK_SOURCE_RECORD=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-source.json",
+    "-DTURBINE_BILLING_EXPECTED_FORGE_COMMIT=6a34cb8eac3b4545e3fa0ef745f0381e54889daa",
+    "-DBoost_DIR=/opt/homebrew/opt/boost/lib/cmake/Boost-1.90.0",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 1.738,
+  "started_unix": 1792939732.2099352,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

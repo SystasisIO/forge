@@ -124,6 +124,33 @@ auto store = co_await forge::db::object::store::open(
 store.register_object<account_object>();
 ```
 
+`forge.db.object.registration` provides immutable **native** application-model
+metadata when the model owner and the store composition live in different
+translation units:
+
+```cpp
+import forge.db.object.registration;
+
+// Implement this catalog function in the translation unit owning the model.
+forge::db::object::registration account_registration() {
+   return forge::db::object::registration::of<account_object>();
+}
+
+// Composition receives the catalog result without importing the account model.
+store.register_object(account_registration());
+```
+
+The factory is constrained to `application_object_model`; it retains the same
+native `object_id_of<Object>` and `std::type_index{typeid(Object)}` as the existing
+template overload. `type()` and `model()` return values. There is no default or
+untyped constructor, mutable metadata, callback, reflection or serialization
+contract. This value belongs to the current native program and is not a wire or
+persisted schema descriptor. It does not register system objects.
+
+Both registration forms share the original engine and reject duplicate IDs,
+including a different native model with the same ID, as `invalid_descriptor`.
+They do not change object bytes, allocators, transactions or index descriptors.
+
 `open()` validates or creates the persisted DB Object header before returning.
 It rejects non-empty families without a header and versions outside the
 supported range. The cached header is available without I/O through

@@ -18,3 +18,5 @@ target_link_libraries(
    PUBLIC forge_exceptions
    PRIVATE OpenSSL::Crypto
 )
+
+forge_target_contract_guest_component(forge_crypto_core ID forge.crypto.core)

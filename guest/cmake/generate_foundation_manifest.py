@@ -15,6 +15,7 @@ ARCHIVES = (
     "libforge_guest_codec_base58.a",
     "libforge_guest_codec_hex.a",
     "libforge_guest_chain_protocol.a",
+    "libforge_guest_crypto_exchange.a",
     "libforge_guest_contract.a",
     "libm.a",
 )

@@ -1,0 +1,17 @@
+{
+  "name": "forge-p2p-baseline-gate",
+  "command": [
+    "python3",
+    "-B",
+    "tests/libp2p_interop/check_donor_matrix.py",
+    ".",
+    "tests/libp2p_interop/donor_cases.json"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1",
+  "exit_code": 1,
+  "elapsed_seconds": 1.31,
+  "started_unix": 1792941577.5553641,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Darwin-clang++"
+	tests="2"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="MacBook-Pro-Vladimir.local"
+	time="78"
+	timestamp="2026-10-25T20:05:49"
+	>
+	<testcase name="turbine_jobs_contract_tests" classname="turbine_jobs_contract_tests" time="78.8766" status="run">
+		<properties>
+			<property name="cmake_labels" value="cel;job1;job2;jobs;k1;native;wasm"/>
+		</properties>
+		<system-out>PASS init/auth/direct-forgery/notification/full-asset/two-transfers
+PASS actual-bill-CEL/open/max-reserve/client-bytes/profile/admission/replay
+PASS cancel/take/release/revoke/terminal-receipts/reserve-only-withdraw/real-token
+PASS free-orders/PK-zero/pages/secondary-ties/stale-cursors/exact-deadlines/expire-retry
+PASS available-plus-reserved-overflow/token-invocation-rollback/non-test-profile-disabled
+PASS sparse-quota-boundaries/owner-counter/account-cap/order-cap/PK-exhaustion/replay-at-full
+PASS product-strict-decode/missing-schema/wrong-wire/independent-code-snapshot-guards
+PASS JOB2-arm/context/real-K1/actor-variants/profile/full-asset/validity/exact-payload/strict-envelope
+PASS JOB2-distinct-real-K1-signature-bytes/same-digests/same-receipt
+PASS JOB2-reveal/key-vs-invalid-delivery/challenge/retained-checker/late-payment-drift/receipts
+PASS JOB2-honest-result/no-challenge-receipt/no-revealed-refund/settlement-eligibility-only
+PASS JOB2-first-arm/revoke-release-cancel-expire-races/competing-arm/armed-exp...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="turbine_jobs_contract_abi" classname="turbine_jobs_contract_abi" time="0.0218911" status="run">
+		<properties/>
+		<system-out>PASS actual JOB-1/2/4/5 natural ABI, frozen v1 records, settlement and independent seed layouts
+PASS additive read-only bill quotecharge arguments/result and exact payout layout
+</system-out>
+	</testcase>
+</testsuite>

@@ -284,6 +284,8 @@ target_link_libraries(
       forge_exceptions
       forge_api_core
       forge_raw
+      forge_variant
+      forge_schema
       forge_crypto_asymmetric
       forge_crypto_core
       forge_crypto_digest

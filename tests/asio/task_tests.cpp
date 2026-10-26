@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -84,6 +85,7 @@ BOOST_AUTO_TEST_CASE(task_handle_completion_is_latched_for_late_waiters) {
       std::this_thread::sleep_for(std::chrono::milliseconds{1});
    }
    BOOST_REQUIRE_EQUAL(scheduler.snapshot().completed, 1U);
+   BOOST_TEST(completed.completed());
 
    auto waiters = std::vector<std::future<void>>{};
    waiters.reserve(64);
@@ -109,6 +111,7 @@ BOOST_AUTO_TEST_CASE(task_handle_failure_is_published_before_late_wait_registrat
       std::this_thread::sleep_for(std::chrono::milliseconds{1});
    }
    BOOST_REQUIRE_EQUAL(scheduler.snapshot().failed, 1U);
+   BOOST_TEST(failed.completed());
 
    auto waiter = boost::asio::co_spawn(runtime.context(), failed.wait(), boost::asio::use_future);
    BOOST_REQUIRE(waiter.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
@@ -125,6 +128,7 @@ BOOST_AUTO_TEST_CASE(task_handle_accepted_latches_queue_admission) {
    BOOST_TEST(failed.accepted());
    BOOST_CHECK_THROW(wait_task(runtime, failed), std::runtime_error);
    BOOST_TEST(failed.accepted());
+   BOOST_TEST(failed.completed());
 
    auto canceled = scheduler.submit_after(task{.priority = priority{1}, .name = "accepted-before-cancel", .work = [] {}},
                                           std::chrono::seconds{1});
@@ -132,6 +136,33 @@ BOOST_AUTO_TEST_CASE(task_handle_accepted_latches_queue_admission) {
    BOOST_REQUIRE(canceled.cancel());
    BOOST_CHECK_THROW(wait_task(runtime, canceled), forge::asio::exceptions::canceled);
    BOOST_TEST(canceled.accepted());
+   BOOST_TEST(canceled.completed());
+}
+
+BOOST_AUTO_TEST_CASE(task_handle_completed_tracks_empty_move_and_queued_cancellation) {
+   auto empty = forge::asio::task::handle{};
+   BOOST_TEST(!empty.completed());
+
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scheduler = scheduler_type{runtime};
+   auto invoked = std::atomic_bool{false};
+   auto queued = scheduler.submit_after(
+       task{.name = "completion-before-start", .work = [&] { invoked.store(true, std::memory_order_release); }},
+       std::chrono::hours{1});
+   BOOST_REQUIRE(queued.accepted());
+   BOOST_TEST(!queued.completed());
+   const auto id = queued.id();
+   auto moved = forge::asio::task::handle{std::move(queued)};
+   BOOST_TEST(!queued.completed());
+   BOOST_TEST(!moved.completed());
+   BOOST_REQUIRE(moved.cancel());
+   BOOST_TEST(moved.completed());
+   BOOST_CHECK_THROW(wait_task(runtime, moved), forge::asio::exceptions::canceled);
+   BOOST_TEST(!invoked.load(std::memory_order_acquire));
+   empty = std::move(moved);
+   BOOST_TEST(!moved.completed());
+   BOOST_TEST(empty.completed());
+   BOOST_TEST(empty.id() == id);
 }
 
 BOOST_AUTO_TEST_CASE(task_handle_accepted_is_false_for_immediate_rejection) {
@@ -141,6 +172,7 @@ BOOST_AUTO_TEST_CASE(task_handle_accepted_is_false_for_immediate_rejection) {
 
    auto stopped = stopped_scheduler.submit(task{.priority = priority{1}, .name = "stopped", .work = [] {}});
    BOOST_TEST(!stopped.accepted());
+   BOOST_TEST(stopped.completed());
    BOOST_CHECK_THROW(wait_task(stopped_runtime, stopped), forge::asio::exceptions::rejected);
 
    auto bounded_runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
@@ -152,7 +184,9 @@ BOOST_AUTO_TEST_CASE(task_handle_accepted_is_false_for_immediate_rejection) {
                                     std::chrono::seconds{1});
 
    BOOST_TEST(queued.accepted());
+   BOOST_TEST(!queued.completed());
    BOOST_TEST(!full.accepted());
+   BOOST_TEST(full.completed());
    BOOST_CHECK_THROW(wait_task(bounded_runtime, full), forge::asio::exceptions::rejected);
    static_cast<void>(queued.cancel());
    bounded.stop();
@@ -175,6 +209,7 @@ BOOST_AUTO_TEST_CASE(task_handle_wakes_concurrent_waiters) {
        },
    });
    wait_until_true(task_started, "concurrent waiter task did not start");
+   BOOST_TEST(!active.completed());
 
    auto waiters = std::vector<std::future<void>>{};
    waiters.reserve(64);
@@ -196,6 +231,7 @@ BOOST_AUTO_TEST_CASE(task_handle_wakes_concurrent_waiters) {
       BOOST_REQUIRE(waiter.wait_until(waiter_deadline) == std::future_status::ready);
       BOOST_CHECK_NO_THROW(waiter.get());
    }
+   BOOST_TEST(active.completed());
 }
 
 BOOST_AUTO_TEST_CASE(runtime_applies_custom_worker_thread_name_when_observable) {
@@ -403,6 +439,7 @@ BOOST_AUTO_TEST_CASE(task_runs_awaitable_tasks) {
    });
 
    wait_task(runtime, handle);
+   BOOST_TEST(handle.completed());
    BOOST_CHECK(ran);
    BOOST_CHECK_EQUAL(scheduler.snapshot().completed, 1U);
 }
@@ -465,6 +502,7 @@ BOOST_AUTO_TEST_CASE(task_cancels_pending_awaitable_tasks) {
       std::chrono::seconds{1});
 
    BOOST_CHECK(handle.cancel());
+   BOOST_TEST(handle.completed());
    BOOST_CHECK_THROW(wait_task(runtime, handle), forge::asio::exceptions::canceled);
    BOOST_CHECK(!ran);
 }
@@ -474,6 +512,8 @@ BOOST_AUTO_TEST_CASE(task_running_awaitable_tasks_observe_cancel_request) {
    auto scheduler = scheduler_type{runtime, scheduler_type::options{.max_blocking_tasks = 1, .max_pending_tasks = 4}};
    auto started = std::atomic_bool{false};
    auto observed_cancel = false;
+   auto cancellation_seen = std::atomic_bool{false};
+   auto release_completion = std::atomic_bool{false};
    auto stop_possible = false;
    auto token_observed_cancel = false;
 
@@ -492,12 +532,25 @@ BOOST_AUTO_TEST_CASE(task_running_awaitable_tasks_observe_cancel_request) {
          }
          observed_cancel = true;
          token_observed_cancel = stop_token.stop_requested();
+         cancellation_seen.store(true, std::memory_order_release);
+         while (!release_completion.load(std::memory_order_acquire)) {
+            auto executor = co_await boost::asio::this_coro::executor;
+            auto timer = boost::asio::steady_timer{executor, std::chrono::milliseconds{1}};
+            co_await timer.async_wait(boost::asio::use_awaitable);
+         }
       },
    });
 
    wait_until_true(started);
+   BOOST_TEST(!handle.completed());
    BOOST_CHECK(handle.cancel());
+   const auto cancellation_observed = wait_for_true(cancellation_seen);
+   const auto completed_before_exit = handle.completed();
+   release_completion.store(true, std::memory_order_release);
+   BOOST_REQUIRE(cancellation_observed);
+   BOOST_TEST(!completed_before_exit);
    wait_task(runtime, handle);
+   BOOST_TEST(handle.completed());
    BOOST_CHECK(observed_cancel);
    BOOST_CHECK(stop_possible);
    BOOST_CHECK(token_observed_cancel);

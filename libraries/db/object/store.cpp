@@ -345,6 +345,10 @@ void store::register_object_type(forge::db::ids::object_id type, std::type_index
    impl_->register_object_type(type, model);
 }
 
+void store::register_object(registration value) {
+   register_object_type(value.type(), value.model());
+}
+
 void store::register_system_object_type(forge::db::ids::object_id type, std::type_index model) {
    const auto found = impl_->registered.find(type);
    if (found == impl_->registered.end()) {

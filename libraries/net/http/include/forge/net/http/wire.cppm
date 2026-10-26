@@ -37,6 +37,8 @@ struct serialized_request {
 
 // Buffered requests use canonical Content-Length framing. Host must already
 // be set. Sensitive names are case-insensitive and must be present.
+// Reserves the complete measured byte size once before copying, avoiding
+// segment-by-segment byte-vector growth.
 serialized_request serialize_request(const request& source, std::span<const std::string_view> sensitive_headers = {},
                                      wire_limits limits = {});
 

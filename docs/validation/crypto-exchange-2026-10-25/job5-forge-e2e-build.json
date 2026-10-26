@@ -1,0 +1,17 @@
+{
+  "name": "job5-forge-e2e-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/forge-e2e",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 42.183,
+  "started_unix": 1792938712.315339,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

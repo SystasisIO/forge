@@ -1,0 +1,14 @@
+{
+  "guest/contracts/turbine.jobs/CMakeLists.txt": "cbe608664b7ea54ebde5d198a83578524fdcb1f3f4ae6e81b9426606d0d71607",
+  "guest/contracts/turbine.jobs/jobs.cpp": "a8a64df24c41fb2e8a3baac4fb27add393995870953cb83ac6b11538acd892ae",
+  "tests/integration/jobs/CMakeLists.txt": "6e7076405bd4c585bd22a675863e982f1a13d83fb4bc1e73ed9e5e20bb2ecf3c",
+  "tests/integration/jobs/README.md": "082b2458bf4e4bb6f651c16565a538e6064500e4da29fd6cb33f68cc76c09aa9",
+  "tests/integration/jobs/check_abi.py": "a80ee2f80282903bcd408dd5e1ce4357470944a45d0a0d141b894ea458a98799",
+  "tests/integration/jobs/contract/CMakeLists.txt": "617bb2b2412d04afcf3639853708c14d209881b8850fab01e2b5346ccb148275",
+  "tests/integration/jobs/contract/README.md": "88eab861f95e773e308ea87fd4b2f29abcffa236fd87ce4eb312f1d597ed21b0",
+  "tests/integration/jobs/contract/contract_tests.cpp": "897c63581b88785560ebe155093043f74f9827dc8ffb6b3a984d6969962206b4",
+  "tests/integration/jobs/guest/CMakeLists.txt": "7a494436af2e6695ce9b8cd47352882ea56affd62ecc9a54f10df1af8f75ce77",
+  "tests/integration/jobs/guest/include/jobs/wire_fixture.cppm": "d49299895a1dc911c4b8a40a334716e3c99cd6edaa2ea85d50b7795f03afecd2",
+  "tests/integration/jobs/guest/wire_fixture.cpp": "cb5cbf37cb7da83bac23ca153c2077441e414a894b5b516cf15602eb00d2f851",
+  "tests/integration/jobs/wire_tests.cpp": "07d9452bd1bb9fe8dc032be380696b57f7db3a65cabeae7e6a0a50a182c9e520"
+}

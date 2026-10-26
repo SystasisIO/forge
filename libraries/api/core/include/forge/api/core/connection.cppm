@@ -91,6 +91,7 @@ class remote_invoker {
       return false;
    }
 
+   // A void response has response_type == typeid(void) and no response storage.
    virtual boost::asio::awaitable<void> async_call_arguments(request value, std::type_index argument_tuple_type,
                                                              void* argument_tuple, std::type_index response_type,
                                                              void* response_storage) {
@@ -145,19 +146,25 @@ class remote_invoker {
       auto arguments = argument_tuple{std::forward<Args>(args)...};
       if (supports_typed_arguments()) {
          detail::reset_fixed_request(*method_value, &arguments);
-         auto output = std::optional<Response>{};
          auto outbound = request{
              .api = std::move(api),
              .method = std::move(method),
              .codec = {.value = "forge.typed"},
          };
-         co_await async_call_arguments(std::move(outbound), typeid(argument_tuple), &arguments, typeid(Response),
-                                       &output);
-         if (!output.has_value()) {
-            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
-                                  "typed remote invoker returned no response value");
+         if constexpr (std::is_void_v<Response>) {
+            co_await async_call_arguments(std::move(outbound), typeid(argument_tuple), &arguments, typeid(void),
+                                          nullptr);
+            co_return;
+         } else {
+            auto output = std::optional<Response>{};
+            co_await async_call_arguments(std::move(outbound), typeid(argument_tuple), &arguments, typeid(Response),
+                                          &output);
+            if (!output.has_value()) {
+               FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
+                                     "typed remote invoker returned no response value");
+            }
+            co_return std::move(*output);
          }
-         co_return std::move(*output);
       }
 
       auto outbound = request{

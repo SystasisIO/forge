@@ -1,0 +1,41 @@
+{
+  "name": "sdk-configure",
+  "command": [
+    "cmake",
+    "-S",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-tlsnotary-jobs3-v1/guest",
+    "-B",
+    "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/sdk",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_INSTALL_PREFIX=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix",
+    "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang",
+    "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++",
+    "-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    "-DFORGE_CONTRACT_PROFILE=developer",
+    "-DFORGE_CONTRACT_FORGE_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/native",
+    "-DFORGE_CONTRACT_SYSROOT=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/spine-signer-wallet-v1/build/contract-sysroot",
+    "-DFORGE_CONTRACT_CLANG=/opt/homebrew/opt/llvm/bin/clang++",
+    "-DFORGE_CONTRACT_CLANG_C=/opt/homebrew/opt/llvm/bin/clang",
+    "-DFORGE_CONTRACT_CLANG_SCAN_DEPS=/opt/homebrew/opt/llvm/bin/clang-scan-deps",
+    "-DFORGE_CONTRACT_WASM_LD=/opt/homebrew/opt/lld/bin/wasm-ld",
+    "-DFORGE_CONTRACT_LLVM_AR=/opt/homebrew/opt/llvm/bin/llvm-ar",
+    "-DFORGE_CONTRACT_LLVM_RANLIB=/opt/homebrew/opt/llvm/bin/llvm-ranlib",
+    "-DLLVM_DIR=/opt/homebrew/opt/llvm/lib/cmake/llvm",
+    "-DClang_DIR=/opt/homebrew/opt/llvm/lib/cmake/clang",
+    "-DBoost_DIR=/opt/homebrew/opt/boost/lib/cmake/Boost-1.90.0",
+    "-DFORGE_CONTRACT_JOBS=4",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 2.45,
+  "started_unix": 1792936792.9458518,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

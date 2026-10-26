@@ -1,0 +1,22 @@
+{
+  "name": "native-configure-r2",
+  "command": [
+    "cmake",
+    "-S",
+    "worktrees/forge-tlsnotary-jobs3-v1",
+    "-B",
+    "artifacts/jobs45-20261025/build/native",
+    "-DFORGE_TLSNOTARY_CARGO_TARGET_DIR=/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build/cargo",
+    "-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3",
+    "-DOPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include",
+    "-DOPENSSL_SSL_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libssl.dylib",
+    "-DOPENSSL_CRYPTO_LIBRARY=/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 2.835,
+  "started_unix": 1792936524.321194,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

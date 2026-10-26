@@ -1,0 +1,35 @@
+{
+  "name": "job5-forge-consumer-build-scoped",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/forge-consumer",
+    "--target",
+    "hello",
+    "recordtest",
+    "guestmacro",
+    "allocatortst",
+    "legacyhello",
+    "legacynotify",
+    "dbhost",
+    "oracle",
+    "recovery",
+    "looping",
+    "multiidx",
+    "legacymidx",
+    "midxerrors",
+    "legmidxerr",
+    "midxextend",
+    "legmidxext",
+    "db_intrinsics_compile",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 1,
+  "elapsed_seconds": 0.038,
+  "started_unix": 1792938605.779239,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

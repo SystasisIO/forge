@@ -34,6 +34,7 @@ import forge.db.ids.object_id;
 import forge.db.object.hooks;
 import forge.db.object.index;
 import forge.db.object.object;
+import forge.db.object.registration;
 import forge.db.object.snapshot;
 import forge.db.object.store;
 import forge.db.object.transaction;
@@ -85,6 +86,8 @@ class snapshot {
    [[nodiscard]] std::string name() const;
    [[nodiscard]] forge::db::object::snapshot objects() const;
    [[nodiscard]] forge::db::blob::snapshot blobs() const;
+   boost::asio::awaitable<std::optional<std::vector<std::byte>>> get(forge::db::core::family column_family,
+                                                                  forge::db::core::record_key key);
 
  private:
    snapshot(forge::db::core::snapshot active, std::string store_name,
@@ -174,8 +177,10 @@ class object_handle {
                                                     std::vector<forge::db::object::store::allocation> values) const;
 
    template <forge::db::object::application_object_model Object> void register_object() const {
-      require_setup_store()->template register_object<Object>();
+      register_object(forge::db::object::registration::of<Object>());
    }
+
+   void register_object(forge::db::object::registration value) const;
 
    void add_interceptor(std::shared_ptr<forge::db::object::interceptor> value) const;
    void add_observer(std::shared_ptr<forge::db::object::observer> value) const;

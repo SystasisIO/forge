@@ -1,0 +1,300 @@
+{
+  "wasm": {
+    "direct": {
+      "sha256": "77f25fc019c0436ba6eeb58cb4cb500ba2c36f5c60cc5d79b22a365828f06012",
+      "features": [
+        "mvp"
+      ],
+      "imports": [
+        {
+          "module": "env",
+          "name": "db_find_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_store"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_update"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_next"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_find_primary"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_lowerbound"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_store"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_update"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_next"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_find_primary"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_lowerbound"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_upperbound"
+        },
+        {
+          "module": "env",
+          "name": "db_lowerbound_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_store_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_update_i64"
+        },
+        {
+          "module": "env",
+          "name": "call"
+        },
+        {
+          "module": "env",
+          "name": "get_call_return_value"
+        },
+        {
+          "module": "env",
+          "name": "eosio_assert_message"
+        },
+        {
+          "module": "env",
+          "name": "db_get_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_end_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_previous_i64"
+        },
+        {
+          "module": "env",
+          "name": "require_auth"
+        },
+        {
+          "module": "env",
+          "name": "is_account"
+        },
+        {
+          "module": "env",
+          "name": "get_code_hash"
+        },
+        {
+          "module": "env",
+          "name": "send_inline"
+        },
+        {
+          "module": "env",
+          "name": "get_call_data"
+        },
+        {
+          "module": "env",
+          "name": "set_call_return_value"
+        },
+        {
+          "module": "env",
+          "name": "sha256"
+        },
+        {
+          "module": "env",
+          "name": "assert_recover_key"
+        },
+        {
+          "module": "env",
+          "name": "action_data_size"
+        },
+        {
+          "module": "env",
+          "name": "read_action_data"
+        },
+        {
+          "module": "env",
+          "name": "current_receiver"
+        },
+        {
+          "module": "env",
+          "name": "current_time"
+        },
+        {
+          "module": "env",
+          "name": "get_sender"
+        },
+        {
+          "module": "env",
+          "name": "sha3"
+        }
+      ]
+    },
+    "fixture": {
+      "sha256": "72b1641fadc7bf031f01f4e84e0f3dd3c27ef17fe950b70ddf2b5910fd18ef0b",
+      "features": [
+        "mvp"
+      ],
+      "imports": [
+        {
+          "module": "env",
+          "name": "db_find_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_store"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_update"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_next"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_find_primary"
+        },
+        {
+          "module": "env",
+          "name": "db_idx64_lowerbound"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_store"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_update"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_next"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_find_primary"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_lowerbound"
+        },
+        {
+          "module": "env",
+          "name": "db_idx128_upperbound"
+        },
+        {
+          "module": "env",
+          "name": "db_lowerbound_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_store_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_update_i64"
+        },
+        {
+          "module": "env",
+          "name": "call"
+        },
+        {
+          "module": "env",
+          "name": "get_call_return_value"
+        },
+        {
+          "module": "env",
+          "name": "eosio_assert_message"
+        },
+        {
+          "module": "env",
+          "name": "db_get_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_end_i64"
+        },
+        {
+          "module": "env",
+          "name": "db_previous_i64"
+        },
+        {
+          "module": "env",
+          "name": "require_auth"
+        },
+        {
+          "module": "env",
+          "name": "is_account"
+        },
+        {
+          "module": "env",
+          "name": "get_code_hash"
+        },
+        {
+          "module": "env",
+          "name": "send_inline"
+        },
+        {
+          "module": "env",
+          "name": "get_call_data"
+        },
+        {
+          "module": "env",
+          "name": "set_call_return_value"
+        },
+        {
+          "module": "env",
+          "name": "sha256"
+        },
+        {
+          "module": "env",
+          "name": "assert_recover_key"
+        },
+        {
+          "module": "env",
+          "name": "action_data_size"
+        },
+        {
+          "module": "env",
+          "name": "read_action_data"
+        },
+        {
+          "module": "env",
+          "name": "current_receiver"
+        },
+        {
+          "module": "env",
+          "name": "current_time"
+        },
+        {
+          "module": "env",
+          "name": "get_sender"
+        },
+        {
+          "module": "env",
+          "name": "sha3"
+        }
+      ]
+    }
+  }
+}

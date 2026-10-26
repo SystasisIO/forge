@@ -4,6 +4,11 @@
 libraries. Package component: `crypto_core`. Public namespace:
 `forge::crypto::core`.
 
+The Contract SDK exposes only the existing `forge.crypto.core.types` byte-value
+module through guest component `forge.crypto.core`. Secret memory, randomness,
+constant-time host routines and OpenSSL are not guest APIs. This partial guest
+surface does not reuse native archives or introduce a second bytes type.
+
 ## Modules
 
 - `forge.crypto.core.types`: owned byte containers.

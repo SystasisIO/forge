@@ -333,6 +333,20 @@ forge_guest_add_implementation_archive(
       forge_guest_expression_values_modules
 )
 
+set(_crypto_core "${FORGE_SOURCE_DIR}/libraries/crypto/core")
+add_library(forge_guest_crypto_core_modules OBJECT)
+target_sources(forge_guest_crypto_core_modules PUBLIC FILE_SET CXX_MODULES
+   BASE_DIRS "${_crypto_core}/include"
+   FILES "${_crypto_core}/include/forge/crypto/core/types.cppm")
+forge_guest_configure_target(forge_guest_crypto_core_modules)
+set(_crypto_exchange "${FORGE_SOURCE_DIR}/libraries/crypto/exchange")
+forge_guest_add_implementation_archive(forge_guest_crypto_exchange
+   MODULE_DIRS "${_crypto_exchange}/include"
+   MODULES "${_crypto_exchange}/include/forge/crypto/exchange/exchange.cppm"
+   SOURCES "${_crypto_exchange}/exchange.cpp"
+   DEPENDENCIES forge_guest_crypto_core_modules forge_guest_crypto_modules
+      forge_guest_raw_modules forge_guest_contract_modules)
+
 set(_runtime "${FORGE_SOURCE_DIR}/guest/libraries/runtime")
 # Use the same canonical runtime declaration as the standalone library build.
 # It owns forge_guest_runtime and forge_guest_math, including pinned libc inputs.

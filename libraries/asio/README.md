@@ -24,6 +24,8 @@ race-safe notifications and single-thread affine execution.
 - `forge.asio.runtime` — owned `io_context` and worker threads.
 - `forge.asio.blocking` — explicit blocking boundary helpers.
 - `forge.asio.task` — bounded priority scheduler and task handles.
+- `forge.asio.cancellation_scope` — one joined coroutine invocation combining
+  standard stop tokens and an exclusively borrowed native cancellation slot.
 - `forge.asio.compute` — bounded FIFO execution for synchronous CPU work.
 - `forge.asio.gate` — cancellation-aware FIFO admission with RAII tickets.
   `acquire(stop_token)` combines an explicit standard stop token with existing
@@ -39,6 +41,43 @@ race-safe notifications and single-thread affine execution.
 Target: `forge_asio`.
 
 Dependencies: Boost.Asio and threads.
+
+## Joined cancellation scope
+
+`forge::asio::cancellation_scope` owns cancellation links, not a scheduler or a
+new task queue. Construct it with the current executor, a
+`std::span<const std::stop_token>` and the current Asio cancellation state. A
+temporary `std::array{first_stop, second_stop, third_stop}` is valid: registration
+is eager and the scope never retains the span or its backing storage. Empty and
+duplicate tokens are valid; all sources request the same sticky latch. Callback
+storage uses ordinary checked vector allocation, with no arbitrary source-count
+policy. A failed constructor unregisters every already-created callback; native
+parent registration happens last. `run<Result>(operation, timeout)` claims
+one invocation immediately; the returned awaitable owns its state even before
+first polling. The operation receives a sticky standard stop token and must
+check it before external I/O, including the already-stopped case. Native child
+slot installation and cancellation emission use the same owned strand. The
+outer wait joins the child before returning a value or its original exception;
+the owner does not replace successful results or errors just because stop raced
+completion. A deadline requests stop; its duration and any post-stop rejection
+policy belong to the caller. Normal and exceptional completion disarm it.
+
+Standard stop callbacks and `request_stop()` are safe from other threads.
+Parent native signal emission/handler installation/cleanup must obey Asio's
+serialization contract. The parent's output slot is exclusively borrowed until
+the scope and its returned awaitable are destroyed; do not install an unrelated
+cancellable operation in that slot during this lifetime. The parent state and
+its executor must outlive all such work. The scope neither changes the parent's
+filters nor clears its pending cancellation or throw policy. No handler registry
+or blanket `has_handler()` rejection is used: native slots cannot distinguish
+an active foreign operation from a completed operation's retained handler.
+
+All links remain active after `run()` returns, until destruction. This supports
+an opened stream's retained stop token. If a stream performs further native
+asynchronous I/O, keep its entire open/read/cleanup sequence INSIDE the joined
+operation; otherwise that I/O could overwrite the borrowed parent slot. The
+stop-token link itself may be used synchronously after the join. Timer callbacks
+hold only shared stop/armed state and cannot reference a destroyed scope.
 
 `child_signal_registration` starts empty. Call `acquire(executor)` outside a
 throwing owner constructor: a failure after native registration commits retains
@@ -181,6 +220,13 @@ scheduler queue. It becomes true on admission and remains true if that task is
 later canceled or fails. It is false for an immediate rejection because the
 scheduler is stopped or its pending queue is full; `wait()` reports that
 rejection as an exception.
+
+`task::handle::completed()` is a nonblocking query of the same latched terminal
+state observed by `wait()`. It is true after success, failure, cancellation or
+immediate rejection, and false for empty or moved-from handles. Cancellation of
+an already running task does not complete it until its work exits. Completion
+does not imply success; `wait()` still reports the retained outcome. The query
+does not replace joining owned work during shutdown.
 
 `submit(...)` and `submit_after(...)` provide strong admission: if submission
 throws before returning a handle, its candidate was not admitted and will not

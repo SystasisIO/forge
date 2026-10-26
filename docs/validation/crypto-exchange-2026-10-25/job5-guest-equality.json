@@ -1,0 +1,32 @@
+{
+  "turbine.jobs.wasm": {
+    "direct_sha256": "72b1641fadc7bf031f01f4e84e0f3dd3c27ef17fe950b70ddf2b5910fd18ef0b",
+    "fixture_sha256": "72b1641fadc7bf031f01f4e84e0f3dd3c27ef17fe950b70ddf2b5910fd18ef0b",
+    "equal": true
+  },
+  "turbine.jobs.abi": {
+    "direct_sha256": "5c99abb636f1d720869b5e9ab85d8060c4dcd03bc659bce541225cbd3f1c581f",
+    "fixture_sha256": "5c99abb636f1d720869b5e9ab85d8060c4dcd03bc659bce541225cbd3f1c581f",
+    "equal": true
+  },
+  "turbine.jobs.contract.json": {
+    "direct_sha256": "0585b6f9122768c81f63b166257661b55c6128c0dc4a42114d2b4d4874e7bc15",
+    "fixture_sha256": "0585b6f9122768c81f63b166257661b55c6128c0dc4a42114d2b4d4874e7bc15",
+    "equal": true
+  },
+  "spine.bill.wasm": {
+    "jobs_fixture_sha256": "abed439b55e075f785e57bb5616a057c0b0eb59eac671c777ee6112d65c2ffb5",
+    "bill_fixture_sha256": "abed439b55e075f785e57bb5616a057c0b0eb59eac671c777ee6112d65c2ffb5",
+    "equal": true
+  },
+  "spine.bill.abi": {
+    "jobs_fixture_sha256": "452cc8f5c94ee54b1761270de8961995ddcc8ef18b4d33ba630785f708f8e3ec",
+    "bill_fixture_sha256": "452cc8f5c94ee54b1761270de8961995ddcc8ef18b4d33ba630785f708f8e3ec",
+    "equal": true
+  },
+  "spine.bill.contract.json": {
+    "jobs_fixture_sha256": "594d7138394d7660d350a95dd185b69f6afbc8c1832cf23c9c4fd83694ff3b99",
+    "bill_fixture_sha256": "594d7138394d7660d350a95dd185b69f6afbc8c1832cf23c9c4fd83694ff3b99",
+    "equal": true
+  }
+}

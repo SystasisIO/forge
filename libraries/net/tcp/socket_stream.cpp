@@ -38,7 +38,9 @@ namespace asio = boost::asio;
 using asio_tcp = boost::asio::ip::tcp;
 
 [[noreturn]] void throw_io_error(std::string message, const boost::system::error_code& error) {
-   FORGE_THROW_EXCEPTION(exceptions::io_error, std::move(message), forge::exceptions::ctx("reason", error.message()));
+   FORGE_THROW_EXCEPTION(exceptions::io_error, std::move(message), forge::exceptions::ctx("reason", error.message()),
+                         forge::exceptions::ctx("native_category", error.category().name()),
+                         forge::exceptions::ctx("native_code", error.value()));
 }
 
 [[noreturn]] void throw_read_write_error(const boost::system::error_code& error) {

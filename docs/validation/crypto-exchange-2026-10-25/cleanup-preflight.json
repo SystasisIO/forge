@@ -1,0 +1,33 @@
+{
+  "root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025",
+  "paths": [
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/build",
+      "lsof_exit": 1,
+      "open_files": "",
+      "diagnostic": ""
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/sdk-prefix",
+      "lsof_exit": 1,
+      "open_files": "",
+      "diagnostic": ""
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/python",
+      "lsof_exit": 1,
+      "open_files": "",
+      "diagnostic": ""
+    },
+    {
+      "path": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/jobs45-20261025/python312",
+      "lsof_exit": 1,
+      "open_files": "",
+      "diagnostic": ""
+    }
+  ],
+  "active_build_processes": [],
+  "df_before": "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n/dev/disk3s5   482797652 357714900  86208080    81% 5978068 862080800    1%   /System/Volumes/Data\n",
+  "deliverables_manifest_sha256": "689ac061d5a5c7d02a1533718146738281d26a04ffc5e0c873aac4d47da3a3c4",
+  "decision": "AUTHORIZED_TASK_OWNED_OUTPUTS_ONLY"
+}

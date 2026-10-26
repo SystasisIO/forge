@@ -82,6 +82,9 @@ class handle {
 
    [[nodiscard]] bool valid() const noexcept;
    [[nodiscard]] bool accepted() const noexcept;
+   // Latched terminal state, including failure, cancellation and rejection.
+   // Empty or moved-from handles are not completed. Use wait() for the outcome.
+   [[nodiscard]] bool completed() const noexcept;
    [[nodiscard]] std::uint64_t id() const noexcept;
    [[nodiscard]] bool cancel_requested() const noexcept;
    bool cancel() noexcept;

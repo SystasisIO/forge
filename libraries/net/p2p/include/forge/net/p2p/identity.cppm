@@ -11,14 +11,10 @@ module;
 
 export module forge.net.p2p.identity;
 
-import forge.net.p2p.exceptions;
-import forge.multiformats.exceptions;
+import forge.variant.value;
+import forge.schema.input_value;
+import forge.schema.value_kind;
 import forge.multiformats.types;
-import forge.multiformats.varint;
-import forge.multiformats.multicodec;
-import forge.multiformats.multihash;
-import forge.multiformats.multibase;
-import forge.multiformats.multiaddr;
 
 export namespace forge::net::p2p {
 
@@ -59,4 +55,15 @@ void validate_public_key(const public_key& key, const peer_id& expected_peer);
 [[nodiscard]] peer_id make_peer_id_from_certificate_der(std::span<const std::uint8_t> der);
 [[nodiscard]] bool valid_peer_id(const peer_id& id) noexcept;
 
+// Text codecs preserve the canonical string representation. A default empty
+// identity is a value sentinel; protocol admission must still require validity.
+void to_variant(const peer_id& value, forge::variant& result);
+void from_variant(const forge::variant& value, peer_id& result);
+
 } // namespace forge::net::p2p
+
+export template <> struct forge::schema::value_adapter<forge::net::p2p::peer_id> {
+   static constexpr forge::schema::value_kind kind = forge::schema::value_kind::string;
+   [[nodiscard]] static forge::schema::input_value encode(const forge::net::p2p::peer_id& input);
+   [[nodiscard]] static forge::net::p2p::peer_id decode(const forge::schema::input_value& input);
+};

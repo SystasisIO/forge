@@ -2877,10 +2877,13 @@ BOOST_AUTO_TEST_CASE(store_plugin_unified_snapshot_preserves_object_blob_and_ref
    auto handle = forge::asio::blocking::run(runtime, api->store("files"));
    handle.objects().register_object<file_object>();
    const auto owner = forge::db::blob::owner_ref{"file:snapshot"};
+   const auto raw_family = forge::db::core::family{"application.settings"};
+   const auto raw_key = forge::db::core::record_key{bytes("active")};
 
    auto seed = forge::asio::blocking::run(runtime, handle.begin_transaction());
    auto seed_objects = forge::asio::blocking::run(runtime, handle.objects().join(seed));
    auto seed_blobs = handle.blobs().join(seed);
+   forge::asio::blocking::run(runtime, seed.db_transaction().put(raw_family, raw_key, bytes("original")));
    const auto content = forge::asio::blocking::run(runtime, seed_blobs.put(bytes("unified snapshot payload")));
    forge::asio::blocking::run(runtime, seed_blobs.retain(content, owner));
    forge::asio::blocking::run(runtime, seed_objects.insert(make_file(1, "/snapshot.txt", content)));
@@ -2893,13 +2896,21 @@ BOOST_AUTO_TEST_CASE(store_plugin_unified_snapshot_preserves_object_blob_and_ref
    BOOST_CHECK_EQUAL(driver->snapshot_calls(), snapshot_calls + 1U);
 
    auto erase = forge::asio::blocking::run(runtime, handle.begin_transaction());
+   const auto writer_calls = driver->transaction_calls();
+   BOOST_CHECK(forge::asio::blocking::run(runtime, read.get(raw_family, raw_key)) == bytes("original"));
+   BOOST_CHECK_EQUAL(driver->transaction_calls(), writer_calls);
    auto erase_objects = forge::asio::blocking::run(runtime, handle.objects().join(erase));
    auto erase_blobs = handle.blobs().join(erase);
+   forge::asio::blocking::run(runtime, erase.db_transaction().put(raw_family, raw_key, bytes("replacement")));
    forge::asio::blocking::run(runtime, erase_objects.erase(file_record::id_t{1}));
    forge::asio::blocking::run(runtime, erase_blobs.release(content, owner));
    const auto collected = forge::asio::blocking::run(runtime, erase_blobs.collect_unreferenced({.limit = 10}));
    BOOST_CHECK_EQUAL(collected.removed, 1U);
    forge::asio::blocking::run(runtime, erase.commit());
+   BOOST_CHECK(forge::asio::blocking::run(runtime, read.get(raw_family, raw_key)) == bytes("original"));
+   auto latest = forge::asio::blocking::run(runtime, handle.begin_read());
+   BOOST_CHECK(forge::asio::blocking::run(runtime, latest.get(raw_family, raw_key)) == bytes("replacement"));
+   BOOST_CHECK(!forge::asio::blocking::run(runtime, latest.get(raw_family, forge::db::core::record_key{bytes("absent")})));
 
    BOOST_CHECK(!forge::asio::blocking::run(runtime, handle.objects().find(file_record::id_t{1})).has_value());
    BOOST_CHECK(!forge::asio::blocking::run(runtime, handle.blobs().has(content)));

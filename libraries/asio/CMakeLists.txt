@@ -2,6 +2,8 @@ add_library(
    forge_asio STATIC
    affine.cpp
    async_waiter.cpp
+   cancellation_scope.cpp
+   cancellation_scope_impl.cpp
    child_signal_registration.cpp
    child_signal_registration_impl.cpp
    child_signal_registration_test_access.cpp

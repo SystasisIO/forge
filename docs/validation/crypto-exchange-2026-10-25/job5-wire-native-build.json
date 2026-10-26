@@ -1,0 +1,17 @@
+{
+  "name": "job5-wire-native-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/wire-native",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 13.592,
+  "started_unix": 1792940260.765981,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

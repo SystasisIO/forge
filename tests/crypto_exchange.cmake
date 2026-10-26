@@ -1,0 +1,4 @@
+add_executable(test_forge_crypto_exchange "${PROJECT_SOURCE_DIR}/tests/crypto_exchange/exchange_tests.cpp")
+target_link_libraries(test_forge_crypto_exchange PRIVATE forge_crypto_exchange forge_crypto_digest forge_raw)
+add_test(NAME test_forge_crypto_exchange COMMAND test_forge_crypto_exchange)
+set_tests_properties(test_forge_crypto_exchange PROPERTIES TIMEOUT 60)

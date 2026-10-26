@@ -1,6 +1,7 @@
 add_subdirectory(core)
 add_subdirectory(digest)
 add_subdirectory(symmetric)
+add_subdirectory(exchange)
 add_subdirectory(asymmetric)
 if(FORGE_ENABLE_JOSE)
    add_subdirectory(jose)

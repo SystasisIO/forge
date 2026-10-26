@@ -20,6 +20,7 @@ module;
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -34,6 +35,7 @@ module;
 #include <spawn.h>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -66,6 +68,8 @@ void log_channel_failure(std::uint64_t session, bool prover, bool server, const 
    auto code = 0;
    auto file = "";
    auto line = std::uint_least32_t{};
+   auto native_category = "unknown";
+   auto native_code = 0;
    try {
       throw;
    } catch (const forge::exceptions::base& error) {
@@ -74,6 +78,28 @@ void log_channel_failure(std::uint64_t session, bool prover, bool server, const 
       code = error.code().value();
       file = error.location().file_name();
       line = error.location().line();
+      auto selected_category = "unknown";
+      auto selected_code = 0;
+      auto has_code = false;
+      for (const auto& field : error.context()) {
+         if (field.redacted)
+            continue;
+         if (field.key == "native_category") {
+            if (field.value == "system")
+               selected_category = "system";
+            else if (field.value == "generic")
+               selected_category = "generic";
+         } else if (field.key == "native_code") {
+            const auto converted =
+                std::from_chars(field.value.data(), field.value.data() + field.value.size(), selected_code);
+            has_code = converted.ec == std::errc{} && converted.ptr == field.value.data() + field.value.size() &&
+                       selected_code > 0;
+         }
+      }
+      if (has_code && std::string_view{selected_category} != "unknown") {
+         native_category = selected_category;
+         native_code = selected_code;
+      }
    } catch (const boost::system::system_error& error) {
       kind = "boost";
       category = error.code().category().name();
@@ -88,7 +114,8 @@ void log_channel_failure(std::uint64_t session, bool prover, bool server, const 
    wlog("forge.net.tlsnotary", "TLSNotary raw channel operation failed",
         ("event", "tlsnotary.channel_failure")("session", session)("role", prover ? "prover" : "verifier")(
             "channel", server ? "server" : "peer")("operation", operation)("cause_kind", kind)(
-            "cause_category", category)("cause_code", code)("cause_file", file)("cause_line", line));
+            "cause_category", category)("cause_code", code)("cause_file", file)("cause_line", line)(
+            "native_category", native_category)("native_code", native_code));
 }
 
 void spawn_ok(int value) {

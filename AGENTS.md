@@ -10,6 +10,10 @@ The repository must stay neutral. Public APIs must not contain downstream produc
 
 - Before creating, extending, moving, renaming or reviewing a library under
   `libraries/`, load and apply `create-library`.
+- Before creating, changing, formatting or reviewing host-side DB Object models
+  or index declarations, apply `create-library` first and then
+  [create-db](skills/create-db/SKILL.md). Contract SDK guest `multi_index`
+  tables remain governed by `create-contract-library`.
 - Before creating, extending, moving, renaming or reviewing a dual-target
   contract library, apply `create-library` first and then
   `create-contract-library`.
@@ -669,7 +673,7 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Crypto
 
 - `forge::crypto` is an empty family root. Public symbols and dependencies live
-  in focused `core`, `digest`, `symmetric`, `asymmetric`, `pki`, `math`, `bls`,
+  in focused `core`, `digest`, `symmetric`, `exchange`, `asymmetric`, `pki`, `math`, `bls`,
   `bn256`, `signer`, `keystore` and `wallet` leaf libraries.
 - `forge.crypto.wallet` owns neutral wallet management protocol/API/errors only;
   `forge.plugins.crypto.wallet` owns wallet lifecycle and provider composition.

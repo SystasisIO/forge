@@ -1,0 +1,20 @@
+{
+  "name": "job5-product-guest-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/contract-guest",
+    "--target",
+    "turbine.jobs",
+    "spine.bill",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 6.096,
+  "started_unix": 1792938917.1212292,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

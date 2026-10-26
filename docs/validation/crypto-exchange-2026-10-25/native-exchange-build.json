@@ -1,0 +1,20 @@
+{
+  "name": "native-exchange-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/native",
+    "--target",
+    "test_forge_crypto_exchange",
+    "test_forge_net_tlsnotary_exchange",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 68.674,
+  "started_unix": 1792936967.3820019,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

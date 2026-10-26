@@ -391,6 +391,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/digest/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/symmetric/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/exchange/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/asymmetric/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/signer/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/jose/include"
@@ -861,6 +862,7 @@ set(
    forge_crypto_core
    forge_crypto_digest
    forge_crypto_symmetric
+   forge_crypto_exchange
    forge_crypto_asymmetric_values
    forge_crypto_asymmetric
    forge_crypto_signer
@@ -1026,6 +1028,9 @@ if(FORGE_ENABLE_TOOLING)
    )
 endif()
 
+if(TARGET forge_net_tlsnotary_values)
+   list(APPEND FORGE_LEAF_TARGETS forge_net_tlsnotary_values)
+endif()
 if(TARGET forge_net_tlsnotary)
    list(APPEND FORGE_LEAF_TARGETS forge_net_tlsnotary forge_plugins_net_tlsnotary_session)
 endif()
@@ -1082,6 +1087,7 @@ set(
    crypto_core
    crypto_digest
    crypto_symmetric
+   crypto_exchange
    crypto_asymmetric_values
    crypto_asymmetric
    crypto_signer
@@ -1169,6 +1175,9 @@ if(TARGET forge_expression)
    list(APPEND FORGE_BUILT_COMPONENTS expression)
 endif()
 list(APPEND FORGE_BUILT_COMPONENTS expression_values)
+if(TARGET forge_net_tlsnotary_values)
+   list(APPEND FORGE_BUILT_COMPONENTS net_tlsnotary_values)
+endif()
 if(TARGET forge_net_tlsnotary)
    list(APPEND FORGE_BUILT_COMPONENTS net_tlsnotary plugins_net_tlsnotary_session)
 endif()
@@ -1313,6 +1322,7 @@ set(
    libraries/crypto/core/include/forge
    libraries/crypto/digest/include/forge
    libraries/crypto/symmetric/include/forge
+   libraries/crypto/exchange/include/forge
    libraries/crypto/asymmetric/include/forge
    libraries/crypto/signer/include/forge
    libraries/crypto/keystore/include/forge

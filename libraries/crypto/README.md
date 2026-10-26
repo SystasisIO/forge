@@ -10,6 +10,7 @@ package component or aggregate module.
 | --- | --- | --- | --- |
 | [core](core/README.md) | `forge_crypto_core` | `crypto_core` | Owned bytes, secret bytes, secure erase and random data. |
 | [digest](digest/README.md) | `forge_crypto_digest` | `crypto_digest` | Hashes, HMAC and Raw pack hashing. |
+| [exchange](exchange/README.md) | `forge_crypto_exchange` | `crypto_exchange` | Experimental bounded exchange of authenticated source openings, shared native/WASM checker. |
 | [symmetric](symmetric/README.md) | `forge_crypto_symmetric` | `crypto_symmetric` | AES, ChaCha20-Poly1305, HKDF and scrypt. |
 | [asymmetric](asymmetric/README.md) | `forge_crypto_asymmetric_values`, `forge_crypto_asymmetric` | `crypto_asymmetric_values`, `crypto_asymmetric` | Binary key/signature values and host signing algorithms. |
 | [signer](signer/README.md) | `forge_crypto_signer` | `crypto_signer` | Product-neutral private-key provider interface. |

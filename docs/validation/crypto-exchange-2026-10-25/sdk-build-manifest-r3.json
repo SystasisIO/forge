@@ -1,0 +1,17 @@
+{
+  "name": "sdk-build-manifest-r3",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/sdk",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 9.838,
+  "started_unix": 1792939048.654567,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

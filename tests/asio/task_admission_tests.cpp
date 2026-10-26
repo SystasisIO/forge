@@ -13,7 +13,9 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stop_token>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #define BOOST_TEST_MODULE asio_task_admission
@@ -21,13 +23,18 @@
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_future.hpp>
 
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.asio.compute;
 import forge.asio.blocking;
+import forge.asio.cancellation_scope;
 
 namespace {
 
@@ -450,6 +457,40 @@ compute_outcome exercise_compute_setup(std::size_t ordinal) {
    return result;
 }
 
+std::pair<std::size_t, bool> exercise_cancellation_constructor(std::size_t ordinal) {
+   auto context = boost::asio::io_context{};
+   const auto executor = boost::asio::make_strand(context); // Warm native service before injection.
+   auto origins = std::array<std::stop_source, 3>{};
+   const auto tokens = std::array{origins[0].get_token(), origins[1].get_token(), origins[2].get_token()};
+   auto signal = boost::asio::cancellation_signal{};
+   const auto parent = boost::asio::cancellation_state{signal.slot(), boost::asio::enable_total_cancellation{}};
+   auto result = std::pair<std::size_t, bool>{};
+   {
+      const auto failure = allocation_failure{ordinal};
+      try {
+         const auto candidate = forge::asio::cancellation_scope{executor, tokens, parent};
+      } catch (const std::bad_alloc&) {
+         result.second = true;
+      }
+      result.first = failure.calls();
+   }
+
+   // Failed callback-prefix construction must leave no native handler and no
+   // dangling registration that would be invoked by these standard sources.
+   BOOST_CHECK(!parent.slot().has_handler());
+   for (auto& origin : origins) {
+      origin.request_stop();
+   }
+   signal.emit(boost::asio::cancellation_type::partial);
+   {
+      const auto recovered = forge::asio::cancellation_scope{executor, tokens, parent};
+      BOOST_CHECK(recovered.stop_token().stop_requested());
+   }
+   BOOST_CHECK(!parent.slot().has_handler());
+   BOOST_CHECK(parent.cancelled() == boost::asio::cancellation_type::partial);
+   return result;
+}
+
 } // namespace
 
 // Boost 1.90 memory.hpp uses std::aligned_alloc for recycling_allocator's slow
@@ -545,4 +586,14 @@ BOOST_AUTO_TEST_CASE(compute_execute_setup_failure_never_detaches_a_borrowed_cal
    }
    BOOST_CHECK(prepublication_failure);
    BOOST_CHECK(accepted_post_failure);
+}
+
+BOOST_AUTO_TEST_CASE(cancellation_scope_constructor_failure_retires_each_registered_prefix) {
+   const auto control = exercise_cancellation_constructor(0);
+   BOOST_REQUIRE_GT(control.first, 0U);
+   auto rejected = std::size_t{};
+   for (auto ordinal = std::size_t{1}; ordinal <= control.first; ++ordinal) {
+      rejected += exercise_cancellation_constructor(ordinal).second ? 1U : 0U;
+   }
+   BOOST_CHECK_GT(rejected, 0U);
 }

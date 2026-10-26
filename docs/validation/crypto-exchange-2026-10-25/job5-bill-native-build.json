@@ -1,0 +1,17 @@
+{
+  "name": "job5-bill-native-build",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/bill-native",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 56.86,
+  "started_unix": 1792939850.6803598,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

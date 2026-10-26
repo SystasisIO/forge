@@ -1,0 +1,17 @@
+{
+  "name": "job5-bill-guest-build-r2",
+  "command": [
+    "cmake",
+    "--build",
+    "artifacts/jobs45-20261025/build/bill-guest",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane",
+  "exit_code": 0,
+  "elapsed_seconds": 3.927,
+  "started_unix": 1792940662.914376,
+  "environment": {
+    "ambient_include_paths": "removed in child only"
+  }
+}

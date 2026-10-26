@@ -1,0 +1,110 @@
+{
+  "forge-contract-sdk-8.29.1-jobs45-macos-arm64.tar.gz": {
+    "sha256": "8a88d605636c9b7b6cc7120373caffa9641c53ec03d2e77cd7b6e0fcf57a4cb7",
+    "bytes": 131120807
+  },
+  "forge-tlsnotary-worker": {
+    "sha256": "d095f01a580d4facfb017133d4cf035631125c10ed8806a65f7d47fd6d2a43d5",
+    "bytes": 17459312
+  },
+  "job4/turbine.jobs.contract.json": {
+    "sha256": "a75d3e5f3b36a573f7f737cf3efe41259d73b770c1d4b4ed95a0f5978f4c8218",
+    "bytes": 3782
+  },
+  "job4/turbine.jobs.abi": {
+    "sha256": "075d7d913150a8386800363372a2929f969c6cfdd364e34debddc41074678805",
+    "bytes": 29737
+  },
+  "job4/jobswire.wasm": {
+    "sha256": "061bb64764fea75aa336b2ad9834055c74062ba15a40c5f782c49b289e538e84",
+    "bytes": 171673
+  },
+  "job4/turbine.jobs.wasm": {
+    "sha256": "81ca547a032e00825292ec13bdb073074cf247c56956dfee257213d351e0d360",
+    "bytes": 270164
+  },
+  "final/billclient.contract.json": {
+    "sha256": "c4f2ab5b70424880e1f52cb83c8620c216e44eb51ab8bb5b5dc813705c535aa4",
+    "bytes": 2447
+  },
+  "final/jobstoken.contract.json": {
+    "sha256": "8a68bfaef34c05314535bd8eb65de549234726042daf317e530dfd14eee07dcb",
+    "bytes": 1904
+  },
+  "final/turbine.jobs.contract.json": {
+    "sha256": "53507d41bc05dec790d713e5c615eb983b7b9724e2a90299626c153b809618d5",
+    "bytes": 3867
+  },
+  "final/jobsreader.wasm": {
+    "sha256": "d454c0c20b5ce7e55eac2e7e7f728e54269bae193f9b10a39fd0c4e312ac04ea",
+    "bytes": 173567
+  },
+  "final/spine.bill.wasm": {
+    "sha256": "c17e6ecf7e3b7d21a98ace6436ee21e2a92e4957d172108a2434730fc77f3b60",
+    "bytes": 179233
+  },
+  "final/jobswire.contract.json": {
+    "sha256": "aefd7f367ee97f84d61e09bfca97555406f2fbca59bce228d68a7241f9e4f684",
+    "bytes": 2812
+  },
+  "final/turbine.jobs.abi": {
+    "sha256": "5c99abb636f1d720869b5e9ab85d8060c4dcd03bc659bce541225cbd3f1c581f",
+    "bytes": 32545
+  },
+  "final/jobstoken.abi": {
+    "sha256": "ffd5b7f9f9d4945fe19716276b8b3825cbec092e4241316db6f2caa5f75b3a6f",
+    "bytes": 2016
+  },
+  "final/spine.bill.contract.json": {
+    "sha256": "e1595f93992f577dd502488b75a6c9bbde0b436fee6a6681cdc8e5c23c733e53",
+    "bytes": 3903
+  },
+  "final/billclient.abi": {
+    "sha256": "40ef74a59b24f7bb05a282feb38eaca43a92eca45f4f5742c18778535ea8c03f",
+    "bytes": 22650
+  },
+  "final/billproduct.abi": {
+    "sha256": "5d2d8350b308ef58b1f9266fa941c1c091b16b633d8a237af62e38663f8e9fd2",
+    "bytes": 4917
+  },
+  "final/jobsreader.abi": {
+    "sha256": "02d428c66c8b91cf74913c910fde36fd3df26a5e3eae25b920b214c7f7aa9059",
+    "bytes": 29901
+  },
+  "final/jobsreader.contract.json": {
+    "sha256": "729761fd4d5ddaff3a66a1488f04f84a0e92910382155bc63a5517531bd9755f",
+    "bytes": 2186
+  },
+  "final/billproduct.wasm": {
+    "sha256": "49e4e65f741c7a14376fd7593fabf8177ad9ea0d64dc0ce02c1e56f090a0f081",
+    "bytes": 71104
+  },
+  "final/billclient.wasm": {
+    "sha256": "f01f68a11fa61b9e909c9622827fdfdacf6e76159613aeac69c02bb3366baeac",
+    "bytes": 146173
+  },
+  "final/jobswire.wasm": {
+    "sha256": "061bb64764fea75aa336b2ad9834055c74062ba15a40c5f782c49b289e538e84",
+    "bytes": 171673
+  },
+  "final/turbine.jobs.wasm": {
+    "sha256": "77f25fc019c0436ba6eeb58cb4cb500ba2c36f5c60cc5d79b22a365828f06012",
+    "bytes": 293552
+  },
+  "final/billproduct.contract.json": {
+    "sha256": "57cab330f64426c490b71f8e6fc0e19ea02bb780f3cf924944a04f62d7967f0d",
+    "bytes": 2057
+  },
+  "final/jobstoken.wasm": {
+    "sha256": "8f540eefc151c8cf98931d8fa428f56fa8031ac2eb5308993dd3478ab1571b9b",
+    "bytes": 26947
+  },
+  "final/spine.bill.abi": {
+    "sha256": "452cc8f5c94ee54b1761270de8961995ddcc8ef18b4d33ba630785f708f8e3ec",
+    "bytes": 19512
+  },
+  "final/jobswire.abi": {
+    "sha256": "cc14b374731b9d72db871eb179f9c18dc68a8a5610c38660f15119189a2dc546",
+    "bytes": 29880
+  }
+}

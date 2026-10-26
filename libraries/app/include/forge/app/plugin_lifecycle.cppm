@@ -3,6 +3,8 @@ module;
 #include <boost/asio/awaitable.hpp>
 
 #include <chrono>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -11,6 +13,8 @@ module;
 #include <stop_token>
 
 export module forge.app.plugin_lifecycle;
+
+import forge.asio.notification;
 
 export namespace forge::app {
 
@@ -33,6 +37,8 @@ enum class lifecycle_operation {
    startup,
    shutdown,
 };
+
+enum class admission_status { accepted, closed, exhausted };
 
 struct lifecycle_failure {
    lifecycle_operation operation;
@@ -65,6 +71,7 @@ class lifecycle_observer;
 class plugin_lifecycle {
  public:
    class operation;
+   class admission;
 
    plugin_lifecycle();
    ~plugin_lifecycle();
@@ -108,10 +115,26 @@ class plugin_lifecycle {
    [[nodiscard]] bool try_admit(std::uint64_t generation, lifecycle_phase required_phase,
                                 const std::function<void()>& install) const;
 
+   // Bounded service work, with no waiting or product error policy. Counter and
+   // notification are borrowed and must outlive every accepted token. Use this
+   // lifecycle for all admissions to the counter; only token release decrements it.
+   // The no-phase overload admits setup work like try_admit(generation, install);
+   // the exact-phase overload additionally requires that phase. Count/limit use
+   // size_t without narrowing the owner's configured service limit.
+   [[nodiscard]] admission admit(std::uint64_t generation, std::atomic_size_t& active,
+                                 std::size_t limit, forge::asio::notification& changed) const;
+   [[nodiscard]] admission admit(std::uint64_t generation, lifecycle_phase required_phase,
+                                 std::atomic_size_t& active, std::size_t limit,
+                                 forge::asio::notification& changed) const;
+
  private:
    struct impl;
    struct attempt;
    std::shared_ptr<impl> impl_;
+
+   [[nodiscard]] admission admit_owned(std::uint64_t generation, std::optional<lifecycle_phase> required_phase,
+                                       std::atomic_size_t& active, std::size_t limit,
+                                       forge::asio::notification& changed) const;
 
    static boost::asio::awaitable<operation> begin_owned(std::shared_ptr<impl> owner,
        lifecycle_operation value, bool join_input, std::optional<std::stop_token> stop = {});
@@ -119,6 +142,31 @@ class plugin_lifecycle {
                                                     std::shared_ptr<attempt> pending);
 
    friend class lifecycle_observer;
+};
+
+class plugin_lifecycle::admission {
+ public:
+   admission() noexcept;
+   ~admission();
+   admission(admission&& other) noexcept;
+   admission& operator=(admission&& other) noexcept;
+   admission(const admission&) = delete;
+   admission& operator=(const admission&) = delete;
+
+   // Result of this admission attempt; release does not rewrite the result.
+   [[nodiscard]] admission_status status() const noexcept;
+   [[nodiscard]] bool active() const noexcept;
+   void release() noexcept;
+
+ private:
+   admission(admission_status status, std::atomic_size_t* active = nullptr,
+              forge::asio::notification* changed = nullptr) noexcept;
+
+   admission_status status_ = admission_status::closed;
+   std::atomic_size_t* active_ = nullptr;
+   forge::asio::notification* changed_ = nullptr;
+
+   friend class plugin_lifecycle;
 };
 
 class plugin_lifecycle::operation {

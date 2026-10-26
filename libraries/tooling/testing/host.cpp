@@ -8,6 +8,7 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -50,6 +51,10 @@ invocation_result host::invoke(std::span<const std::uint8_t> code, std::uint64_t
 invocation_result host::invoke(std::span<const std::uint8_t> code, std::uint64_t receiver, std::uint64_t first_receiver,
                                std::uint64_t action, std::vector<std::uint8_t> data, invocation_options options) {
    return impl_->invoke(code, receiver, first_receiver, action, std::move(data), std::move(options));
+}
+
+void host::transact(const std::function<void()>& body) {
+   impl_->transact(body);
 }
 
 void host::configure(oracle_state state) {

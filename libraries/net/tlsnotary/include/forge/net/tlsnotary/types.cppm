@@ -143,9 +143,11 @@ struct metrics {
 };
 BOOST_DESCRIBE_ENUM(direction, sent, received)
 BOOST_DESCRIBE_STRUCT(byte_range, (), (begin, end))
+BOOST_DESCRIBE_STRUCT(authenticated_range, (), (begin, bytes))
 BOOST_DESCRIBE_STRUCT(commitment_selection, (), (direction, ranges))
 BOOST_DESCRIBE_STRUCT(commitment, (), (direction, ranges, digest))
 BOOST_DESCRIBE_STRUCT(opening, (), (commitment, plaintext, blinder))
 BOOST_DESCRIBE_STRUCT(evidence, (), (format, implementation, server_name, sent_size, received_size, commitments))
+BOOST_DESCRIBE_STRUCT(result, (), (server_name, sent_size, received_size, sent, received, retained, openings))
 
 } // namespace forge::net::tlsnotary

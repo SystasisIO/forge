@@ -93,6 +93,7 @@ set(
    crypto_core
    crypto_digest
    crypto_symmetric
+   crypto_exchange
    crypto_asymmetric_values
    crypto_asymmetric
    crypto_signer
@@ -110,6 +111,7 @@ set(
    cli
    net_transport
    net_tlsnotary
+   net_tlsnotary_values
    net_tcp
    net_dns
    net_tls
@@ -518,6 +520,11 @@ macro(_forge_add_component component)
          _forge_add_component(exceptions)
          _forge_add_component(raw)
          _forge_add_component(variant)
+      elseif("${component}" STREQUAL "crypto_exchange")
+         _forge_add_component(crypto_core)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(raw)
+         _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "crypto_symmetric")
          _forge_add_component(crypto_core)
          _forge_add_component(exceptions)
@@ -586,7 +593,14 @@ macro(_forge_add_component component)
          _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "net_transport")
          _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "net_tlsnotary_values")
+         _forge_add_component(crypto_core)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(net_transport)
       elseif("${component}" STREQUAL "net_tlsnotary")
+         _forge_add_component(net_tlsnotary_values)
+         _forge_add_component(crypto_exchange)
+         _forge_add_component(raw)
          _forge_add_component(crypto_core)
          _forge_add_component(crypto_digest)
          _forge_add_component(net_transport)
@@ -712,6 +726,8 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "net_p2p")
          _forge_add_component(log)
          _forge_add_component(chrono)
+         _forge_add_component(schema)
+         _forge_add_component(variant)
          _forge_add_component(api_core)
          _forge_add_component(asio)
          _forge_add_component(multiformats)
