@@ -110,6 +110,8 @@ struct query_options {
    std::size_t requested_count = 20;
    std::size_t quorum = 1;
    std::chrono::milliseconds timeout{10'000};
+   // find_providers counts only these identities when the list is nonempty.
+   std::vector<peer_id> allowed_providers;
 };
 
 struct value_put_result {

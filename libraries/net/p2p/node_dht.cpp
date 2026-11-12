@@ -495,15 +495,34 @@ boost::asio::awaitable<std::vector<dht::peer>> async_find_providers_owned(auto s
       FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "DHT profile does not enable providers");
    }
    validate_query_options(options);
+   const auto restricted = !options.allowed_providers.empty();
+   auto allowed = std::move(options.allowed_providers);
+   std::ranges::sort(allowed);
+   allowed.erase(std::unique(allowed.begin(), allowed.end()), allowed.end());
+   if (restricted) {
+      options.requested_count = std::min(options.requested_count, allowed.size());
+   }
+   auto admits = [allowed = std::move(allowed)](const peer_id& peer) {
+      return allowed.empty() || std::ranges::binary_search(allowed, peer);
+   };
+   const auto scan_limit = restricted ? state.profile.limits.replication : options.requested_count;
    auto output = std::vector<dht::peer>{};
-   for (const auto& provider : state.records.find_providers(key, options.requested_count)) {
-      merge_provider(output, provider_peer(provider), options.requested_count, state.profile.limits.max_peer_endpoints);
+   for (const auto& provider : state.records.find_providers(key, scan_limit)) {
+      if (admits(provider.provider)) {
+         merge_provider(output, provider_peer(provider), options.requested_count, state.profile.limits.max_peer_endpoints);
+         if (output.size() >= options.requested_count) {
+            co_return output;
+         }
+      }
    }
-   if (output.size() >= options.requested_count) {
-      co_return output;
-   }
-
-   auto lookup = co_await run_lookup(self, protocol, key, std::nullopt, dht::message_type::get_providers, options);
+   auto lookup = co_await run_lookup(
+       self, protocol, key, std::nullopt, dht::message_type::get_providers, options,
+       [restricted, admits = std::move(admits)](const dht::peer&, dht::message& response) -> boost::asio::awaitable<bool> {
+          if (restricted) {
+             std::erase_if(response.provider_peers, [&](const auto& provider) { return !admits(provider.id); });
+          }
+          co_return false;
+       });
    for (auto provider : lookup.query.provider_peers) {
       // A third-party GET_PROVIDERS response is discovery evidence, not an
       // authenticated provider announcement. Only inbound ADD_PROVIDER stores
@@ -690,7 +709,7 @@ boost::asio::awaitable<provider_registration> node::async_provide(protocol_id pr
 
 boost::asio::awaitable<std::vector<dht::peer>> node::async_find_providers(protocol_id protocol, dht::key key,
                                                                           dht::query_options options) {
-   return async_find_providers_owned(impl_, std::move(protocol), std::move(key), options);
+   return async_find_providers_owned(impl_, std::move(protocol), std::move(key), std::move(options));
 }
 
 boost::asio::awaitable<dht::value_put_result> node::async_put_value(protocol_id protocol, dht::record value,

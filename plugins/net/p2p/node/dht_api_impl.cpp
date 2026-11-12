@@ -69,7 +69,7 @@ plugin::dht_api_impl::provide(forge::net::p2p::protocol_id profile, forge::net::
 boost::asio::awaitable<std::vector<forge::net::p2p::dht::peer>>
 plugin::dht_api_impl::find_providers(forge::net::p2p::protocol_id profile, forge::net::p2p::dht::key key,
                                      forge::net::p2p::dht::query_options options) {
-   return find_providers_owned(impl_, std::move(profile), std::move(key), options);
+   return find_providers_owned(impl_, std::move(profile), std::move(key), std::move(options));
 }
 
 boost::asio::awaitable<forge::net::p2p::dht::value_put_result>
@@ -102,7 +102,7 @@ boost::asio::awaitable<std::vector<forge::net::p2p::dht::peer>>
 plugin::dht_api_impl::find_providers_owned(std::shared_ptr<plugin::impl> state, forge::net::p2p::protocol_id profile,
                                            forge::net::p2p::dht::key key, forge::net::p2p::dht::query_options options) {
    const auto current = state->require_running_node();
-   co_return co_await current->async_find_providers(std::move(profile), std::move(key), options);
+   co_return co_await current->async_find_providers(std::move(profile), std::move(key), std::move(options));
 }
 
 boost::asio::awaitable<forge::net::p2p::dht::value_put_result>

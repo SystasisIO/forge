@@ -892,7 +892,7 @@ template <object_model Object, typename Tag> class index_view {
       if (result.items.empty()) {
          co_return std::nullopt;
       }
-      co_return result.items.front();
+      co_return std::move(result.items.front());
    }
 
    template <typename... PrefixValues>
