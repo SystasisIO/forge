@@ -16,6 +16,8 @@ struct sse_event {
    // Complete logical last-event-id; an empty value resets a prior id.
    std::string id;
    std::optional<std::uint64_t> retry;
+   // Formatter option for events that leave the client's last-event-id unchanged.
+   bool omit_id = false;
 };
 
 struct sse_limits {

@@ -778,7 +778,9 @@ comments, multiline data, event names, persistent IDs, and numeric retry fields.
 without its terminating blank line is discarded. The decoder owns no event queue.
 Line, event-data and input-buffer limits are explicit; violations raise typed
 `payload_too_large` errors. `format_sse(event, limits)` rejects metadata injection
-and bounds its encoded output. JSON decoding and terminal sentinels belong to
+and bounds its encoded output. Set `sse_event::omit_id` to leave the last event ID
+unchanged on the client. The default writes an ID field, including an explicit
+reset when the ID is empty. JSON decoding and terminal sentinels belong to
 the consuming API.
 
 Use `streaming_response::from_source` with `content_type = "text/event-stream"`
