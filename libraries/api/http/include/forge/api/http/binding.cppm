@@ -133,6 +133,7 @@ struct route_options {
    error_codec error_body_codec = error_codec::json;
    cache_policy cache = cache_policy::unspecified;
    forge::api::http::error_renderer error_renderer;
+   std::vector<status> alternate_success_statuses;
 };
 
 class binding_plan {
@@ -216,6 +217,7 @@ class binding_builder {
                                                                 .response_body_codec = value.response_body_codec,
                                                                 .error_body_codec = value.error_body_codec,
                                                                 .cache = value.cache,
+                                                                .alternate_success_statuses = value.alternate_success_statuses,
                                                             },
                                                             value.method_name));
       return *this;
@@ -1763,23 +1765,24 @@ class binding_builder {
    [[nodiscard]] static response make_success_response(const request& request_value, status success_status,
                                                        const Response& value, const route_options& options,
                                                        const std::shared_ptr<endpoint_state>& endpoint = {}) {
-      require_endpoint_success_status(success_status, endpoint);
+      const auto actual = endpoint_success_status(success_status, options, endpoint);
       auto output = response{};
       if constexpr (detail::is_bytes_response_v<Response>) {
-         require_route_success_status(success_status, value.status_code);
+         require_consistent_success_status(actual, value.status_code, options);
          auto body = std::string{reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
-         output = make_text_response(request_value, success_status, std::move(body), value.content_type);
+         output = make_text_response(request_value, value.status_code, std::move(body), value.content_type);
       } else if constexpr (detail::is_empty_response_v<Response>) {
-         require_route_success_status(success_status, value.status_code);
-         output = response{success_status, request_value.version()};
+         require_consistent_success_status(actual, value.status_code, options);
+         output = response{value.status_code, request_value.version()};
          output.prepare_payload();
          output.keep_alive(request_value.keep_alive());
       } else {
          require_response_accept(request_value, options.response_body_codec);
          auto encoded = encode_response_body(value, options.response_body_codec);
-         output = make_text_response(request_value, success_status, std::move(encoded),
+         output = make_text_response(request_value, actual, std::move(encoded),
                                      std::string{detail::content_type(options.response_body_codec)});
       }
+      require_partial_content_header(options, output);
       if (request_value.method() == method::head) {
          output.body().clear();
       }
@@ -1788,28 +1791,50 @@ class binding_builder {
       return output;
    }
 
-   static void require_route_success_status(status declared, status actual) {
-      if (actual != declared) {
+   static void require_status(status expected, status actual) {
+      if (actual != expected) {
          FORGE_THROW_EXCEPTION(forge::net::http::exceptions::internal,
                                "HTTP response status does not match declared route",
-                               forge::exceptions::ctx("declared", static_cast<std::uint16_t>(declared)),
+                               forge::exceptions::ctx("declared", static_cast<std::uint16_t>(expected)),
                                forge::exceptions::ctx("actual", static_cast<std::uint16_t>(actual)));
       }
    }
 
-   static void require_endpoint_success_status(status declared, const std::shared_ptr<endpoint_state>& endpoint) {
-      if (endpoint) {
-         require_route_success_status(declared, endpoint_state_access::response(endpoint).result());
+   static void require_route_success_status(const route_options& options, status actual) {
+      if (std::ranges::find(options.alternate_success_statuses, actual) == options.alternate_success_statuses.end()) {
+         require_status(options.success_status, actual);
+      }
+   }
+
+   static status endpoint_success_status(status declared, const route_options& options,
+                                         const std::shared_ptr<endpoint_state>& endpoint) {
+      const auto actual = endpoint ? endpoint_state_access::response(endpoint).result() : declared;
+      require_route_success_status(options, actual);
+      return actual;
+   }
+
+   static void require_consistent_success_status(status endpoint, status actual, const route_options& options) {
+      require_route_success_status(options, actual);
+      if (endpoint != options.success_status) {
+         require_status(endpoint, actual);
+      }
+   }
+
+   static void require_partial_content_header(const route_options& options, const response& output) {
+      if (output.result() == status::partial_content && options.success_status != status::partial_content &&
+          output[field::content_range].empty()) {
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::internal,
+                               "Alternate HTTP partial content requires Content-Range");
       }
    }
 
    static void require_file_response_status(status declared, status actual, bool path_backed) {
       if (!path_backed) {
-         require_route_success_status(declared, actual);
+         require_status(declared, actual);
          return;
       }
 
-      require_route_success_status(declared, status::ok);
+      require_status(declared, status::ok);
       if (actual != status::ok && actual != status::partial_content && actual != status::not_modified &&
           actual != status::not_found && actual != status::range_not_satisfiable) {
          FORGE_THROW_EXCEPTION(forge::net::http::exceptions::internal,
@@ -1823,7 +1848,7 @@ class binding_builder {
    make_success_stream_response(const request& request_value, status success_status, Response value,
                                 const route_options& options, const std::shared_ptr<endpoint_state>& endpoint = {},
                                 const stream_request* stream_request_value = nullptr) {
-      require_endpoint_success_status(success_status, endpoint);
+      const auto actual = endpoint_success_status(success_status, options, endpoint);
       auto output = stream_response{};
       auto endpoint_headers_merged = false;
       if constexpr (std::is_same_v<std::remove_cvref_t<Response>, file_response>) {
@@ -1831,8 +1856,8 @@ class binding_builder {
          output = co_await std::move(value).materialize(request_value);
          require_file_response_status(success_status, output.head.result(), path_backed);
       } else if constexpr (detail::is_streaming_response_v<Response>) {
-         output = stream_request_value != nullptr ? std::move(value).materialize(*stream_request_value, success_status)
-                                                  : std::move(value).materialize(request_value, success_status);
+         output = stream_request_value != nullptr ? std::move(value).materialize(*stream_request_value, actual)
+                                                  : std::move(value).materialize(request_value, actual);
       } else if constexpr (detail::is_stream_response_v<Response>) {
          output = std::move(value);
       } else {
@@ -1841,7 +1866,8 @@ class binding_builder {
          endpoint_headers_merged = true;
       }
       if constexpr (!std::is_same_v<std::remove_cvref_t<Response>, file_response>) {
-         require_route_success_status(success_status, output.head.result());
+         require_consistent_success_status(actual, output.head.result(), options);
+         require_partial_content_header(options, output.head);
       }
       if (!endpoint_headers_merged) {
          merge_endpoint_headers(output.head, endpoint);
@@ -1989,6 +2015,19 @@ class binding_builder {
       }
    }
 
+   template <typename Response> static void validate_alternate_success_statuses(const route_options& options) {
+      auto previous = std::vector<status>{options.success_status};
+      for (auto value : options.alternate_success_statuses) {
+         const auto number = static_cast<unsigned>(value);
+         if (number < 200U || number >= 300U || std::ranges::find(previous, value) != previous.end() ||
+             options.response_file || (!detail::is_empty_response_v<Response> && (number == 204U || number == 205U))) {
+            FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                  "Invalid alternate HTTP success status");
+         }
+         previous.push_back(value);
+      }
+   }
+
    template <auto Method, typename Request, typename Response>
    [[nodiscard]] mount_action make_step(method verb, std::string path, route_options options,
                                         std::string explicit_name) {
@@ -2015,6 +2054,7 @@ class binding_builder {
       return [plan = std::move(plan), provider = invocation_provider_, verb, path = std::move(path), options = std::move(options),
               name = std::move(name)](router& target, std::string_view base_path) {
          validate_response_file_option<Response>(options);
+         validate_alternate_success_statuses<Response>(options);
          const auto api_descriptor = interface_type::describe();
          const auto& mount_method_descriptor = require_route_method_descriptor(&api_descriptor, name);
          validate_route_method_descriptor<Method, Request, Response>(mount_method_descriptor, name);

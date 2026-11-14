@@ -544,7 +544,11 @@ struct request_body_description {
       response("content", media_schema(operation.response_schema, content_type(operation.mapping.response_body_codec)));
    }
    auto responses = forge::mutable_variant_object{};
-   responses.set(status_name(operation.mapping.success_status), forge::variant{std::move(response)});
+   auto success = forge::variant{std::move(response)};
+   responses.set(status_name(operation.mapping.success_status), success);
+   for (const auto status : operation.mapping.alternate_success_statuses) {
+      responses.set(status_name(status), success);
+   }
    if (operation.mapping.response_file) {
       auto partial = forge::mutable_variant_object{}("description", "Partial file response");
       if (operation.mapping.verb != forge::net::http::method::head) {

@@ -76,6 +76,7 @@ struct route {
    cache_policy cache = cache_policy::unspecified;
    std::optional<std::string> timeout_field;
    std::optional<std::uint64_t> max_response_body_bytes;
+   std::vector<status> alternate_success_statuses;
 };
 
 class route_builder {
@@ -113,6 +114,11 @@ class route_builder {
 
    route_builder&& success_status(status value) && {
       route_.success_status = value;
+      return std::move(*this);
+   }
+
+   route_builder&& alternate_success_status(status value) && {
+      route_.alternate_success_statuses.push_back(value);
       return std::move(*this);
    }
 

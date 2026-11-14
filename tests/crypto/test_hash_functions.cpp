@@ -9,6 +9,7 @@
 #include <string>
 
 import forge.codec.hex;
+import forge.crypto.digest.blake3;
 import forge.crypto.digest.ripemd160;
 import forge.crypto.digest.sha1;
 import forge.crypto.digest.sha224;
@@ -22,6 +23,31 @@ import forge.exceptions;
 using namespace forge;
 
 BOOST_AUTO_TEST_SUITE(hash_functions)
+
+BOOST_AUTO_TEST_CASE(blake3_vectors_and_incremental_chunks) {
+   BOOST_CHECK_EQUAL(forge::crypto::digest::blake3::hash({}).str(),
+                     "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
+
+   auto input = std::array<std::byte, 3073>{};
+   for (std::size_t index = 0; index < input.size(); ++index) {
+      input[index] = static_cast<std::byte>(index % 251);
+   }
+   const auto bytes = std::span<const std::byte>{input};
+   const auto expected = "7124b49501012f81cc7f11ca069ec9226cecb8a2c850cfe644e327d22d3e1cd3";
+   BOOST_CHECK_EQUAL(forge::crypto::digest::blake3::hash(bytes).str(), expected);
+   auto encoder = forge::crypto::digest::blake3::encoder{};
+   encoder.write(bytes.first(1023));
+   encoder.write(bytes.subspan(1023, 2));
+   encoder.write(bytes.subspan(1025));
+   BOOST_CHECK_EQUAL(encoder.result().str(), expected);
+   BOOST_CHECK(encoder.result() == forge::crypto::digest::blake3::from_hex(expected));
+
+   encoder.reset();
+   const auto abc = std::array{'a', 'b', 'c'};
+   encoder.write(std::as_bytes(std::span{abc}));
+   BOOST_CHECK_EQUAL(encoder.result().str(),
+                     "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85");
+}
 
 BOOST_AUTO_TEST_CASE(shake128_variable_output_vectors_and_boundaries) {
    const auto empty = forge::crypto::digest::shake128({}, 32);

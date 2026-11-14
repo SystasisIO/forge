@@ -16,6 +16,12 @@ remains 8 MiB; zero permits only an empty body. This is local client transport
 policy, never a request DTO or HTTP header, and does not change timeout/retry
 policy or disable server-side limits.
 
+`FORGE_HTTP_ALTERNATE_SUCCESS_STATUS(status)` adds an explicitly allowed 2xx
+status to a route and its generated OpenAPI responses. A typed endpoint can
+select it through `endpoint_request::response()`. A buffered or streamed
+HTTP response can carry its own declared status and framing. Alternate 206
+responses require a `Content-Range` on the returned response.
+
 ## Server Admission
 
 Call `binding_builder::invocation(provider)` before registering/binding routes.

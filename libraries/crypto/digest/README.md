@@ -6,7 +6,7 @@ hashing. Package component: `crypto_digest`. Public namespace:
 
 ## Modules
 
-The leaf exports SHA-1, SHA-224, SHA-256, SHA-3, SHA-512, RIPEMD-160, BLAKE2,
+The leaf exports SHA-1, SHA-224, SHA-256, SHA-3, SHA-512, RIPEMD-160, BLAKE2 and BLAKE3,
 `forge.crypto.digest.hmac` and `forge.crypto.digest.packhash`.
 The `forge.crypto.digest.shake128` module adds variable-output SHAKE128.
 
@@ -29,6 +29,9 @@ OpenSSL Crypto. Digest values preserve their existing Raw and Variant layouts.
 The library does not own text transport profiles or signing policy.
 `test_forge_crypto_digest` covers golden vectors, incremental encoders, HMAC,
 BLAKE2, serialization and compiler-enforced borrowed-view lifetimes.
+
+`forge.crypto.digest.blake3` exposes a 32-byte digest and incremental encoder.
+It uses the portable C implementation of BLAKE3 1.8.7 from `vendor/blake3`.
 
 ## SHAKE128
 
