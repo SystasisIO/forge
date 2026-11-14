@@ -128,3 +128,16 @@ BOOST_AUTO_TEST_CASE(sse_formatter_preserves_explicit_last_event_id_reset)
    BOOST_TEST(relayed_first->id == "7");
    BOOST_TEST(relayed_second->id.empty());
 }
+
+BOOST_AUTO_TEST_CASE(sse_formatter_can_leave_the_last_event_id_unchanged)
+{
+   auto decoder = forge::net::http::sse_decoder{};
+   decoder.append("id: 7\ndata: first\n\n");
+   BOOST_REQUIRE(decoder.next());
+   const auto next = forge::net::http::format_sse({.data = "second", .event = "status", .omit_id = true});
+   BOOST_TEST(next == "event: status\ndata: second\n\n");
+   decoder.append(next);
+   const auto event = decoder.next();
+   BOOST_REQUIRE(event);
+   BOOST_TEST(event->id == "7");
+}
