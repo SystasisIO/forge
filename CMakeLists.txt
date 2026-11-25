@@ -928,6 +928,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_api_quic
       forge_api_websocket
       forge_api_p2p
+      forge_api_chain
       forge_otlp
       forge_multiformats
       forge_net_tls
@@ -953,6 +954,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_app
       forge_crypto_bls_signer
       forge_plugins_chain_signer
+      forge_plugins_chain_outbox
       forge_plugins_crypto_secrets
       forge_plugins_crypto_wallet
       forge_crypto_wallet
@@ -1122,6 +1124,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       api_quic
       api_websocket
       api_p2p
+      api_chain
       otlp
       multiformats
       net_transport
@@ -1148,6 +1151,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       crypto_bls_signer
       crypto_wallet
       plugins_chain_signer
+      plugins_chain_outbox
       plugins_crypto_secrets
       plugins_crypto_wallet
       plugins_net_p2p_node
@@ -1243,6 +1247,15 @@ set_property(TARGET forge ${FORGE_LEAF_TARGETS} PROPERTY EXPORT_NO_SYSTEM TRUE)
 
 if(DEFINED BUILD_TESTING AND BUILD_TESTING AND NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    add_subdirectory(tests)
+endif()
+
+option(FORGE_ENABLE_CHAIN_API_TESTS "Build Forge Chain API tests for an embedded Forge checkout" OFF)
+if(FORGE_ENABLE_CHAIN_API_TESTS AND NOT BUILD_TESTING AND NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
+   if(NOT TARGET forge_db_mdbx)
+      message(FATAL_ERROR "FORGE_ENABLE_CHAIN_API_TESTS requires the Forge MDBX driver")
+   endif()
+   enable_testing()
+   add_subdirectory(tests/api_chain)
 endif()
 
 foreach(_forge_install_target IN ITEMS forge ${FORGE_LEAF_TARGETS})
@@ -1353,6 +1366,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/api/quic/include/forge
       libraries/api/websocket/include/forge
       libraries/api/p2p/include/forge
+      libraries/api/chain/include/forge
       libraries/otlp/include/forge
       libraries/multiformats/include/forge
       libraries/net/http/include/forge
@@ -1377,6 +1391,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/cli/include/forge
       libraries/app/include/forge
       plugins/chain/signer/include/forge
+      plugins/chain/outbox/include/forge
       plugins/crypto/secrets/include/forge
       plugins/net/p2p/node/include/forge
       plugins/net/p2p/resolver/include/forge

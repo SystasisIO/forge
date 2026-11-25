@@ -1,4 +1,5 @@
 add_subdirectory(chain/signer)
+add_subdirectory(chain/outbox)
 add_subdirectory(crypto/secrets)
 add_subdirectory(crypto/wallet)
 add_subdirectory(db/store)
@@ -13,6 +14,7 @@ target_include_directories(forge_plugins INTERFACE ${FORGE_PUBLIC_INCLUDE_DIRS})
 target_link_libraries(
    forge_plugins INTERFACE
       forge_plugins_chain_signer
+      forge_plugins_chain_outbox
       forge_plugins_crypto_secrets
       forge_plugins_crypto_wallet
       forge_plugins_net_p2p_node

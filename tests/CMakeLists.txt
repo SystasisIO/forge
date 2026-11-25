@@ -2,6 +2,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/crypto_exchange.cmake")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 include("${CMAKE_CURRENT_LIST_DIR}/expression.cmake")
 
+if(TARGET forge_db_mdbx)
+   add_subdirectory(api_chain)
+endif()
+
 add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
 target_link_libraries(test_forge_auth_attestation PRIVATE
    forge_auth_attestation forge_codec_json forge_variant Boost::included_unit_test_framework)

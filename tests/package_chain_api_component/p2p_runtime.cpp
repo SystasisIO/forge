@@ -159,11 +159,15 @@ void register_p2p_stack(forge::app::plugin_registry& registry) {
        .id = forge::app::plugin_id{.value = "forge.plugins.db.store"},
        .factory = [] { return std::make_unique<p2p_dependency>("forge.plugins.db.store"); },
    });
-   registry.register_plugin(forge::app::plugin_descriptor{
+   registry.register_plugin(p2p_secrets_descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
+}
+
+forge::app::plugin_descriptor p2p_secrets_descriptor() {
+   return {
        .id = forge::app::plugin_id{.value = "forge.plugins.crypto.secrets"},
        .factory = [] { return std::make_unique<p2p_secrets_plugin>(); },
-   });
-   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
+   };
 }
 
 chain_api_publisher::chain_api_publisher(std::shared_ptr<const p2p_publication_callbacks> callbacks)

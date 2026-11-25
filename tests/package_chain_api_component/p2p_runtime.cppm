@@ -116,6 +116,7 @@ class p2p_client_application final : public forge::app::application_shell {
 };
 
 [[nodiscard]] forge::net::p2p::peer_id test_peer(std::uint8_t seed);
+[[nodiscard]] forge::app::plugin_descriptor p2p_secrets_descriptor();
 [[nodiscard]] forge::config::core::document p2p_config(const forge::net::p2p::peer_id& peer);
 void shutdown_after_failure(forge::app::application_shell& application, bool started) noexcept;
 

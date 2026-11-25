@@ -188,6 +188,7 @@ class object_handle {
    boost::asio::awaitable<forge::db::object::transaction> begin_transaction() const;
    boost::asio::awaitable<forge::db::object::snapshot> begin_read() const;
    boost::asio::awaitable<forge::db::object::transaction> join(forge::db::core::transaction& active) const;
+   boost::asio::awaitable<forge::db::object::transaction> join(forge::db::object::transaction& active) const;
    boost::asio::awaitable<forge::db::object::transaction> join(transaction& active) const;
 
    template <typename SharedTransaction>

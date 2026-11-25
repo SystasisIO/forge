@@ -274,6 +274,10 @@ boost::asio::awaitable<forge::db::object::transaction> object_handle::join(forge
    co_return co_await require_store()->join(active);
 }
 
+boost::asio::awaitable<forge::db::object::transaction> object_handle::join(forge::db::object::transaction& active) const {
+   co_return co_await require_store()->join(active);
+}
+
 boost::asio::awaitable<forge::db::object::transaction> object_handle::join(transaction& active) const {
    active.require_named_store(name());
 
