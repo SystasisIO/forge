@@ -1,6 +1,7 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <atomic>
 #include <forge/exceptions/macros.hpp>
 
 #include <bit>
@@ -22,6 +23,9 @@ import forge.app.application_shell;
 import forge.app.plugin_context;
 import forge.chain.api.exceptions;
 import forge.chain.api.info;
+import forge.chain.api.block;
+import forge.chain.api.state;
+import test.api_chain.counter_read;
 import forge.chain.api.submission;
 import forge.chain.api.transaction;
 import forge.chain.protocol.block;
@@ -35,8 +39,8 @@ struct counter_peer::state final : api::info, api::transaction, api::submission,
    explicit state(forge::crypto::asymmetric::public_key expected, bool accept)
        : signer(std::move(expected)), accept_pending(accept) {
       genesis.chain = protocol::chain_id{"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"};
-      genesis.block_num = 1;
-      genesis.block._hash[0] = std::byteswap(genesis.block_num);
+      checkpoint = counter_genesis(genesis.chain, genesis_time);
+      genesis = *checkpoint.context.anchor;
    }
 
    std::optional<protocol::chain_id> trusted_chain() const override {
@@ -175,6 +179,8 @@ struct counter_peer::state final : api::info, api::transaction, api::submission,
    }
 
    forge::crypto::asymmetric::public_key signer;
+   protocol::block_header_response checkpoint;
+   std::shared_ptr<read_counts> reads = std::make_shared<read_counts>();
    protocol::state_anchor genesis;
    const protocol::time_point genesis_time{
        std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now())};
@@ -195,10 +201,14 @@ counter_peer::counter_peer(forge::crypto::asymmetric::public_key signer, bool ac
 counter_peer::~counter_peer() = default;
 
 void counter_peer::install(forge::api::core::installer apis) const {
+   install_counter_reads(apis, state_->checkpoint, state_->reads);
    apis.install<api::info>(state_);
    apis.install<api::submission>(state_);
    apis.install<api::transaction>(state_);
 }
+
+unsigned counter_peer::header_reads() const { return state_->reads->headers.load(); }
+unsigned counter_peer::row_reads() const { return state_->reads->rows.load(); }
 
 package_chain_api_component::p2p_publication_callbacks counter_peer::publication() const {
    return {
@@ -210,6 +220,8 @@ package_chain_api_component::p2p_publication_callbacks counter_peer::publication
            [](forge::app::plugin_context& ctx) {
               return forge::api::core::binding()
                   .serve(ctx.apis())
+                  .export_api<api::block>(api::block::ref())
+                  .export_api<api::state>(api::state::ref())
                   .export_api<api::info>(api::info::ref())
                   .export_api<api::submission>(api::submission::ref())
                   .export_api<api::transaction>(api::transaction::ref())

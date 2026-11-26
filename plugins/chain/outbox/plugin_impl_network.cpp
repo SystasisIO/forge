@@ -3,7 +3,9 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <forge/exceptions/macros.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <cstddef>
 #include <map>
@@ -18,6 +20,7 @@ module;
 module forge.plugins.chain.outbox.plugin;
 
 import forge.api.chain.outbox;
+import forge.api.core.types;
 import forge.api.http.proxy;
 import forge.asio.notification;
 import forge.asio.task;
@@ -36,6 +39,13 @@ import forge.plugins.net.p2p.resolver.api;
 #include "details/plugin_impl.hxx"
 
 namespace forge::plugins::chain::outbox {
+
+const plugin::impl::read_profile* plugin::impl::profile_for(const forge::api::core::api_ref& contract) const {
+   const auto found = std::ranges::find_if(read_profiles, [&](const auto& profile) {
+      return profile.contract.id == contract.id && profile.contract.major == contract.major;
+   });
+   return found == read_profiles.end() ? nullptr : &*found;
+}
 
 void plugin::impl::configure_http(std::vector<http_profile> profiles) {
    if (!options.p2p && profiles.empty()) {
@@ -82,7 +92,17 @@ forge::api::chain::outbox::transport plugin::impl::connect() {
       co_return co_await forge::api::http::remote<Api>(*client->second);
    };
 
-   info = [open, verification = options.verification](forge::api::chain::destination target)
+   read_client = [open](forge::api::chain::destination target,
+                       const forge::chain::api::verified_client_options& verification)
+       -> boost::asio::awaitable<forge::chain::api::verified_client> {
+      auto blocks = co_await open.operator()<forge::chain::api::block>(target);
+      auto state = co_await open.operator()<forge::chain::api::state>(target);
+      co_return forge::chain::api::make_verified_client(
+          forge::chain::api::raw_client{{.blocks = std::move(blocks), .state_queries = std::move(state)}}, verification);
+   };
+
+   info = [open](forge::api::chain::destination target,
+                 const forge::chain::api::verified_client_options& verification)
        -> boost::asio::awaitable<forge::chain::protocol::info_response> {
       auto handle = co_await open.operator()<forge::chain::api::info>(target);
       auto client = forge::chain::api::make_verified_client(
@@ -105,7 +125,7 @@ forge::api::chain::outbox::transport plugin::impl::connect() {
                                    "Outbox transaction belongs to another chain");
           }
           // Verify the destination before giving it a signed transaction.
-          (void)co_await state->info(target);
+          (void)co_await state->info(target, state->options.verification);
           auto service = co_await open.operator()<forge::chain::api::submission>(target);
           co_await state->flush();
           if (cancel.stop_requested() || state->stop.stop_requested()) {

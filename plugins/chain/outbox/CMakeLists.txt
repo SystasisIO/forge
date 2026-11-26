@@ -30,3 +30,8 @@ target_link_libraries(forge_plugins_chain_outbox PUBLIC
       forge_log
       forge_net_http
       forge_plugins_net_p2p_resolver)
+
+
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+   target_compile_options(forge_plugins_chain_outbox PRIVATE -fmodules-reduced-bmi)
+endif()

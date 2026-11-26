@@ -159,23 +159,23 @@ struct outbox::impl {
       return advancing.contains({chain, transaction});
    }
 
-   boost::asio::awaitable<void> stage(forge::db::object::transaction& active, detail::outbox_attempt attempt,
-                                    const admission& admit) {
+   boost::asio::awaitable<detail::outbox_attempt>
+   stage(forge::db::object::transaction& active, detail::outbox_attempt attempt, const admission& admit) {
       require_uncaptured(active);
-      const auto existing = co_await find(active, attempt.chain, attempt.transaction);
+      auto existing = co_await find(active, attempt.chain, attempt.transaction);
       if (existing) {
          if (!matches(*existing, attempt)) {
             FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::conflict,
                                   "transaction ID has another retained chain outbox packet or policy");
          }
-         co_return;
+         co_return std::move(*existing);
       }
       if (admit) {
          co_await admit(active, attempt.transaction, attempt.packed);
          require_uncaptured(active);
       }
 
-      co_await active.create<detail::outbox_attempt>([&](auto& saved) {
+      co_return co_await active.create<detail::outbox_attempt>([&](auto& saved) {
          attempt.id = saved.id;
          saved = std::move(attempt);
       });
@@ -310,10 +310,12 @@ struct outbox::impl {
                              {attempt.transaction, expires, attempt.sends, state}) == outbox::replay::same_packed;
    }
 
-   boost::asio::awaitable<void> advance(forge::chain::protocol::chain_id chain,
-                                        forge::chain::protocol::transaction_id transaction, std::stop_token stop) {
+   boost::asio::awaitable<void> advance(const detail::outbox_attempt& saved, std::stop_token stop) {
       require_running(stop);
-      const auto key = std::pair{chain, transaction};
+      if (!saved.pending() || saved.next_check > now_ms()) {
+         co_return;
+      }
+      const auto key = std::pair{saved.chain, saved.transaction};
       {
          const auto lock = std::scoped_lock{advancing_mutex};
          if (!advancing.insert(key).second) {
@@ -325,10 +327,34 @@ struct outbox::impl {
          advancing.erase(key);
          changed.notify();
       });
+      auto target = decode_destination(saved.peer);
+      auto check = first_send_check{};
+      if (settings.prepare_first_send && saved.state == detail::delivery_state::staged && saved.expires > now_ms() &&
+          (!io.configured || io.configured(target))) {
+         auto failure = std::exception_ptr{};
+         try {
+            check = co_await settings.prepare_first_send(saved.chain, target, saved.transaction, saved.packed, stop);
+            if (!check) {
+               FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::invalid_request,
+                                     "Chain first-send preparation omitted its admission check");
+            }
+         } catch (...) {
+            failure = std::current_exception();
+         }
+         if (failure) {
+            if (!stop.stop_requested()) {
+               co_await finish(saved, detail::delivery_state::staged);
+            }
+            std::rethrow_exception(failure);
+         }
+      }
+
+      require_running(stop);
       auto active = co_await store.begin_transaction();
-      auto attempt = co_await find(active, chain, transaction);
+      auto attempt = co_await active.find(saved.id);
       const auto now = now_ms();
-      if (!attempt || !attempt->pending() || attempt->next_check > now) {
+      if (!attempt || attempt->state != saved.state || attempt->revision != saved.revision ||
+          attempt->next_check != saved.next_check || attempt->next_check > now || !matches(*attempt, saved)) {
          co_await active.rollback();
          co_return;
       }
@@ -341,7 +367,6 @@ struct outbox::impl {
          co_return;
       }
 
-      auto target = decode_destination(attempt->peer);
       if (io.configured && !io.configured(target)) {
          if (expired) {
             attempt->state = detail::delivery_state::unresolved;
@@ -353,13 +378,39 @@ struct outbox::impl {
          co_return;
       }
 
+      if (first && settings.prepare_first_send) {
+         if (!check) {
+            co_await active.rollback();
+            co_return;
+         }
+         require_uncaptured(active);
+         const auto decision = co_await check(active);
+         require_running(stop);
+         require_uncaptured(active);
+         if (decision == first_send_decision::deny) {
+            attempt->state = detail::delivery_state::rejected;
+            co_await active.replace(std::move(*attempt));
+            co_await active.commit();
+            co_return;
+         }
+         const auto expired_after_check = attempt->expires <= now_ms();
+         if (decision == first_send_decision::defer || expired_after_check) {
+            co_await active.rollback();
+            co_await finish(*attempt, expired_after_check ? detail::delivery_state::expired : detail::delivery_state::staged);
+            co_return;
+         }
+         if (decision != first_send_decision::proceed) {
+            FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::invalid_request, "Invalid chain first-send decision");
+         }
+      }
+
       if (attempt->revision == std::numeric_limits<std::uint64_t>::max()) {
          FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::resource_exhausted, "chain outbox revision exhausted");
       }
 
       ++attempt->revision;
       // Hold one durable claim through the bounded I/O window, including on a lost commit reply.
-      attempt->next_check = now + static_cast<std::uint64_t>(settings.timeout.count());
+      attempt->next_check = now_ms() + static_cast<std::uint64_t>(settings.timeout.count());
       if (first) {
          attempt->state = detail::delivery_state::possible;
          attempt->sends = 1;
@@ -376,7 +427,7 @@ struct outbox::impl {
          if (first) {
             next = co_await send(*attempt, std::move(target), stop);
          } else {
-            auto observation = co_await status(chain, target, transaction, stop);
+            auto observation = co_await status(attempt->chain, target, attempt->transaction, stop);
             if (observation && observation->state == forge::chain::protocol::transaction_lifecycle::finalized) {
                co_await retain_final(*attempt, std::move(*observation));
                co_return;
@@ -407,7 +458,7 @@ outbox::outbox(storage store, transport io, options settings)
        static_cast<std::uint64_t>(impl_->settings.timeout.count()) > service_limits.max_await_ms) {
       FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::invalid_request, "invalid chain outbox configuration");
    }
-   impl_->store.register_object(forge::db::object::registration::of<detail::outbox_attempt_index>());
+   impl_->store.register_object(model());
 }
 
 outbox::~outbox() = default;
@@ -418,9 +469,8 @@ outbox::stage(forge::db::object::transaction& active, forge::chain::protocol::ch
               delivery_policy policy) {
    auto record = make_attempt(chain, target, transaction, std::move(policy));
    auto attached = co_await impl_->store.join(active);
-   const auto id = record.transaction;
-   co_await impl_->stage(attached, std::move(record), {});
-   co_return id;
+   const auto saved = co_await impl_->stage(attached, std::move(record), {});
+   co_return saved.transaction;
 }
 
 boost::asio::awaitable<forge::chain::protocol::transaction_id>
@@ -435,10 +485,10 @@ outbox::submit(forge::chain::protocol::chain_id chain, destination target,
        [&](std::stop_token stop) -> boost::asio::awaitable<forge::chain::protocol::transaction_id> {
           require_running(stop);
           auto active = co_await impl_->store.begin_transaction();
-          co_await impl_->stage(active, std::move(record), admit);
+          const auto staged = co_await impl_->stage(active, std::move(record), admit);
           require_running(stop);
           co_await active.commit();
-          co_await impl_->advance(chain, id, stop);
+          co_await impl_->advance(staged, stop);
           for (;;) {
              const auto observed = impl_->changed.epoch();
              const auto saved = co_await impl_->read(chain, id);
@@ -499,6 +549,24 @@ outbox::result(forge::chain::protocol::chain_id chain, destination target,
    co_return final;
 }
 
+forge::db::object::registration outbox::model() {
+   return forge::db::object::registration::of<detail::outbox_attempt_index>();
+}
+
+boost::asio::awaitable<std::optional<forge::chain::protocol::packed_transaction>>
+outbox::retained(forge::db::object::snapshot& read, forge::chain::protocol::chain_id chain,
+                 forge::chain::protocol::transaction_id transaction) {
+   auto saved = co_await find(read, chain, transaction);
+   co_return saved ? std::optional{std::move(saved->packed)} : std::nullopt;
+}
+
+boost::asio::awaitable<std::optional<forge::chain::protocol::packed_transaction>>
+outbox::retained(forge::db::object::transaction& read, forge::chain::protocol::chain_id chain,
+                 forge::chain::protocol::transaction_id transaction) {
+   auto saved = co_await find(read, chain, transaction);
+   co_return saved ? std::optional{std::move(saved->packed)} : std::nullopt;
+}
+
 boost::asio::awaitable<void> outbox::recover(std::stop_token parent_stop) {
    auto scope = forge::asio::cancellation_scope{co_await boost::asio::this_coro::executor, std::array{parent_stop},
                                                 co_await boost::asio::this_coro::cancellation_state};
@@ -515,7 +583,7 @@ boost::asio::awaitable<void> outbox::recover(std::stop_token parent_stop) {
                 co_return;
              }
              try {
-                co_await impl_->advance(attempt.chain, attempt.transaction, stop);
+                co_await impl_->advance(attempt, stop);
              } catch (const std::exception&) {
                 // The claim schedules another reconciliation even if I/O or its acknowledgement fails.
              }

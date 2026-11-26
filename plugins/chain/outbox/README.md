@@ -12,6 +12,15 @@ and can supply a per-method delivery policy and an admission callback.
 Select a durable backend for the outbox. The plugin synchronizes the database
 before sending a packet.
 
+Applications using `plugin_options::deferred_configuration` can call
+`setup::configure_read` during initialization. The profile binds a typed Chain
+API to a destination, verified client options, a concurrent call limit and a
+deadline. It selects its own chain, trust root and state domain. With only a read
+profile configured, startup opens the read transport without opening the named
+delivery store or resolving a signer. A typed read for this API rejects a
+different destination. Typed APIs without a read profile use the default chain
+verification options.
+
 Configure named HTTP endpoints under `plugins.chain.outbox.http`.
 
 ```yaml
@@ -42,6 +51,13 @@ Keep remote calls outside this database transaction. If the callback throws,
 the transaction rolls back. A submission acknowledgement yields a transaction ID.
 Use the Chain binding's status operation to fetch the verified final receipt.
 A timeout can leave the transaction queued for recovery.
+
+Set `plugin_options::delivery.prepare_first_send` when an application must
+recheck a staged packet immediately before its first possible send. Preparation
+can obtain evidence outside the writer. The returned check can atomically
+record local application state with the delivery decision. Register the same
+handler at startup so the check applies to packets restored after restart.
+See [the outbox decisions](../../../libraries/api/chain/README.md) for details.
 
 The `forge_plugins_chain_outbox` target is provided by the
 `plugins_chain_outbox` package component. Import

@@ -54,15 +54,45 @@ void test_restart(const std::filesystem::path& root, replay original, const demo
       client = demo::start_client(config, demo::delivery_plugin(peer.finality(), original, p2p), signing.provide,
                                   p2p_bootstrap);
       const auto view = forge::api::core::view{client->apis()};
+      const auto genesis = forge::asio::blocking::run(client->runtime(), demo::finalized(view, target));
+      const auto headers = peer.header_reads();
+      const auto rows = peer.row_reads();
+      forge::asio::blocking::run(client->runtime(), demo::check_read_session(view, target, genesis));
+      require(peer.header_reads() == headers + 1 && peer.row_reads() == rows + 2,
+              "Grouped counter reads fetched another header or repeated an admitted row check");
+      const auto read = [&](auto key) { return forge::asio::blocking::run(client->runtime(),
+                                                                          demo::find_counter(view, target, genesis, key)); };
+      require(read(1) == 7 && !read(2), "Typed counter read did not verify the row and its absence");
+      require(peer.header_reads() == headers + 3 && peer.row_reads() == rows + 4,
+              "Counter verification outlived its read session");
+      bool rejected_proof = false;
+      try {
+         (void)read(3);
+      } catch (const forge::chain::api::exceptions::invalid_state_proof&) {
+         rejected_proof = true;
+      }
+      require(rejected_proof && *signing.calls == 0 && peer.submissions().empty(),
+              "A proof for a different key must fail before a value is returned");
+      bool expired = false;
+      try {
+         (void)forge::asio::blocking::run(client->runtime(),
+              demo::increment(view, target, 7, genesis, protocol::time_point_sec{1}));
+      } catch (const forge::chain::api::exceptions::deadline_exceeded&) {
+         expired = true;
+      }
+      require(expired && *signing.calls == 0 && peer.submissions().empty(), "Expired action reached the signer");
+      const auto expiration = protocol::time_point_sec{
+          std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()) + 45s};
       bool pending = false;
       try {
-         (void)forge::asio::blocking::run(client->runtime(), demo::increment(view, target, 7));
+         (void)forge::asio::blocking::run(client->runtime(), demo::increment(view, target, 7, genesis, expiration));
       } catch (const forge::chain::api::exceptions::unavailable&) {
          pending = true;
       }
       require(pending, "A missing submission response must leave the call pending");
       require(peer.wait_for_submissions(1, 5s), "Counter call did not reach the peer");
       const auto first = peer.submissions().front();
+      require(first.get_signed_transaction().expiration == expiration, "Caller expiration changed before signing");
       const auto id = forge::asio::blocking::run(client->runtime(), demo::admitted_transaction(view));
       require(id == first.id(), "Saved client admission does not identify the packet received by the server");
       require(*signing.calls == 1 && peer.value() == 7, "Expected one signer call and an unresolved delivery");
@@ -90,6 +120,8 @@ void test_restart(const std::filesystem::path& root, replay original, const demo
       }
       require(peer.wait_for_proof(12s), "Restart did not reconcile the saved transaction ID");
       const auto restarted = forge::api::core::view{client->apis()};
+      require(forge::asio::blocking::run(client->runtime(), demo::find_counter(restarted, target, genesis, 1)) == 7,
+              "Historical counter read changed after the head advanced");
       const auto restored_id = forge::asio::blocking::run(client->runtime(), demo::admitted_transaction(restarted));
       require(restored_id == id, "Restart lost the durable counter admission");
       const auto recovered =

@@ -6,6 +6,7 @@ module;
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 export module test.api_chain.counter_client;
@@ -45,6 +46,16 @@ boost::asio::awaitable<void> test_staged_http_profile(const std::filesystem::pat
                                                       const forge::chain::protocol::packed_transaction& packet);
 boost::asio::awaitable<forge::chain::protocol::transaction_id>
 increment(forge::api::core::view apis, forge::api::chain::destination target, std::uint64_t expected);
+boost::asio::awaitable<forge::chain::protocol::transaction_id>
+increment(forge::api::core::view apis, forge::api::chain::destination target, std::uint64_t expected,
+          forge::chain::protocol::block_id block, forge::chain::protocol::time_point_sec expiration);
+boost::asio::awaitable<forge::chain::protocol::block_id> finalized(forge::api::core::view apis,
+                                                                   forge::api::chain::destination target);
+boost::asio::awaitable<std::optional<std::uint64_t>>
+find_counter(forge::api::core::view apis, forge::api::chain::destination target, forge::chain::protocol::block_id block,
+             std::uint64_t key);
+boost::asio::awaitable<void> check_read_session(forge::api::core::view apis, forge::api::chain::destination target,
+                                                forge::chain::protocol::block_id block);
 boost::asio::awaitable<forge::chain::protocol::transaction_status_response>
 status(forge::api::core::view apis, forge::api::chain::destination target, forge::chain::protocol::transaction_id id);
 

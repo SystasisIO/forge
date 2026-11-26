@@ -22,9 +22,11 @@ module forge.plugins.chain.outbox.plugin;
 
 import forge.api.chain.outbox;
 import forge.api.core.exceptions;
+import forge.api.core.types;
 import forge.asio.cancellation_scope;
 import forge.asio.notification;
 import forge.asio.task;
+import forge.chain.api.exceptions;
 import forge.chain.protocol.info;
 import forge.chain.transaction.types;
 import forge.chain.api.verified_client_factory;
@@ -46,14 +48,27 @@ void plugin::impl::require_running() const {
    }
 }
 
-void plugin::impl::begin_call() {
+const plugin::impl::read_profile* plugin::impl::begin_call(
+    const std::optional<forge::api::core::api_ref>& read_contract) {
    const auto lock = std::scoped_lock{calls_mutex};
    require_running();
+   const auto* profile = read_contract ? profile_for(*read_contract) : nullptr;
+   if (profile) {
+      if (profile->active >= profile->max_calls) {
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::resource_exhausted,
+                               "Chain read profile has too many active calls");
+      }
+      ++profile->active;
+   }
    ++calls;
+   return profile;
 }
 
-void plugin::impl::end_call() noexcept {
+void plugin::impl::end_call(const read_profile* profile) noexcept {
    const auto lock = std::scoped_lock{calls_mutex};
+   if (profile) {
+      --profile->active;
+   }
    if (--calls == 0) {
       calls_changed.notify();
    }

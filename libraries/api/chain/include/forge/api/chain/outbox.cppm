@@ -42,12 +42,23 @@ class outbox {
       forge::chain::protocol::transaction_lifecycle state = forge::chain::protocol::transaction_lifecycle::unknown;
    };
 
+   enum class first_send_decision { proceed, defer, deny };
+
+   // Recheck and optionally write application state in the outbox writer.
+   // The callback must not commit this writer or perform network I/O.
+   using first_send_check =
+       std::function<boost::asio::awaitable<first_send_decision>(forge::db::object::transaction&)>;
+
    struct options {
       std::size_t batch_limit = 16;
       std::uint32_t max_sends = 8;
       std::chrono::milliseconds poll_interval{1000};
       std::chrono::milliseconds timeout{30000};
       std::function<replay(const delivery_policy&, const delivery_observation&)> decide;
+      // Prepare a check outside the writer from the retained packet, including after restart.
+      std::function<boost::asio::awaitable<first_send_check>(
+          forge::chain::protocol::chain_id, const destination&, forge::chain::protocol::transaction_id,
+          const forge::chain::protocol::packed_transaction&, std::stop_token)> prepare_first_send;
    };
 
    struct transport {
@@ -99,6 +110,17 @@ class outbox {
    boost::asio::awaitable<std::optional<forge::chain::protocol::transaction_status_response>>
    result(forge::chain::protocol::chain_id chain, destination target,
           forge::chain::protocol::transaction_id transaction, std::stop_token stop = {});
+
+   // Register this model on an offline store before inspecting its retained packets.
+   [[nodiscard]] static forge::db::object::registration model();
+
+   // Reads the exact staged packet through the caller's existing ObjectDB view.
+   static boost::asio::awaitable<std::optional<forge::chain::protocol::packed_transaction>>
+   retained(forge::db::object::snapshot& read, forge::chain::protocol::chain_id chain,
+            forge::chain::protocol::transaction_id transaction);
+   static boost::asio::awaitable<std::optional<forge::chain::protocol::packed_transaction>>
+   retained(forge::db::object::transaction& read, forge::chain::protocol::chain_id chain,
+            forge::chain::protocol::transaction_id transaction);
 
    // Performs one bounded reconciliation pass over due records.
    boost::asio::awaitable<void> recover(std::stop_token stop = {});

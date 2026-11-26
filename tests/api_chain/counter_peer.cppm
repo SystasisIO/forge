@@ -24,6 +24,8 @@ class counter_peer {
    ~counter_peer();
 
    void install(forge::api::core::installer apis) const;
+   unsigned header_reads() const;
+   unsigned row_reads() const;
    package_chain_api_component::p2p_publication_callbacks publication() const;
    std::shared_ptr<forge::chain::api::finality_verifier> finality() const;
    void allow_execution();

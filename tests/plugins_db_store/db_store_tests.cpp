@@ -4363,7 +4363,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_configured_rocksdb_revision_preserves_blob_ret
 #if FORGE_HAS_MDBX
 BOOST_AUTO_TEST_CASE(store_open_prerequisite_rejects_the_whole_invalid_graph_before_native_open) {
    auto root = root_guard{};
-   for (auto mode = 0U; mode < 9U; ++mode) {
+   for (auto mode = 0U; mode < 8U; ++mode) {
       const auto first = root.root / ("first-" + std::to_string(mode));
       const auto second = root.root / ("second-" + std::to_string(mode));
       auto calls = 0U;
@@ -4395,14 +4395,11 @@ BOOST_AUTO_TEST_CASE(store_open_prerequisite_rejects_the_whole_invalid_graph_bef
          options.prerequisites = {{"first", {"second"}, {}}};
          break;
       case 7:
-         options.prerequisites = {{"first", {}, check}};
-         break;
-      case 8:
          options.prerequisites = {{"first", {"second"}, check}};
          break;
       }
       auto first_config = configured_mdbx_store("first", first, true, false);
-      if (mode == 8U) {
+      if (mode == 7U) {
          std::get<forge::config::core::value::object_type>(first_config.storage).erase("object");
       }
       auto document = forge::config::core::document{};
@@ -4423,6 +4420,26 @@ BOOST_AUTO_TEST_CASE(store_open_prerequisite_rejects_the_whole_invalid_graph_bef
       BOOST_TEST(!std::filesystem::exists(first));
       BOOST_TEST(!std::filesystem::exists(second));
    }
+}
+
+BOOST_AUTO_TEST_CASE(store_open_prerequisite_checks_a_single_store_before_startup) {
+   auto root = root_guard{};
+   const auto path = root.root / "compute";
+   auto document = forge::config::core::document{};
+   document.set("plugins.db.store.stores",
+                forge::config::core::value::array_type{configured_mdbx_store("compute", path, true, false)});
+   auto calls = 0U;
+   auto app = make_open_prerequisite_app(std::move(document), {{{
+       .store = "compute",
+       .check = [&](forge::db::object::store& objects) -> boost::asio::awaitable<void> {
+          auto active = co_await objects.begin_transaction();
+          ++calls;
+          co_await active.rollback();
+       },
+   }}});
+   forge::asio::blocking::run(app->runtime(), app->startup());
+   BOOST_TEST(calls == 1U);
+   forge::asio::blocking::run(app->runtime(), app->shutdown());
 }
 
 BOOST_AUTO_TEST_CASE(store_open_prerequisite_keeps_the_same_native_and_schema_owner_until_ready) {

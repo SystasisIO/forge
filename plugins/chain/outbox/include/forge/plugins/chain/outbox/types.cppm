@@ -39,6 +39,7 @@ struct plugin_options {
                                              const forge::chain::protocol::packed_transaction&)> admit;
    std::vector<http_profile> http;
    bool p2p = true;
+   bool deferred_configuration = false;
 };
 
 BOOST_DESCRIBE_STRUCT(http_profile, (), (name, url))

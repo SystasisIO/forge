@@ -14,6 +14,7 @@ module;
 module test.api_chain.counter_client;
 
 import forge.plugins.chain.outbox.plugin;
+import forge.chain.api.contract_table_projection_verifier;
 import forge.api.chain.outbox;
 import forge.api.core.types;
 import forge.db.object.transaction;
@@ -38,7 +39,8 @@ forge::app::plugin_descriptor delivery_plugin(std::shared_ptr<forge::chain::api:
        .store = "counter",
        .verification = {.chain = finality->trusted_chain().value(),
                         .state_domain = "forge.test.counter",
-                        .finality = finality},
+                        .finality = finality,
+                        .projections = forge::chain::api::make_contract_table_projection_verifier()},
        .delivery = {.batch_limit = 2, .poll_interval = 250ms, .timeout = 5s},
        .policy =
            [mode](const forge::api::core::api_ref& contract, std::string_view method) {

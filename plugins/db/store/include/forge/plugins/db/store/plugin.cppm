@@ -25,7 +25,7 @@ export namespace forge::plugins::db::store {
 // awaitable completes. Do not retain store copies, transactions or tasks.
 struct open_prerequisite {
    std::string store;
-   std::vector<std::string> before;
+   std::vector<std::string> before; // Other stores that must open after this check.
    std::function<boost::asio::awaitable<void>(forge::db::object::store&)> check;
 };
 

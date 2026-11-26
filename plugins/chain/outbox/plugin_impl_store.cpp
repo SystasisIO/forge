@@ -4,6 +4,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <cstddef>
 #include <memory>
@@ -16,6 +17,7 @@ module;
 module forge.plugins.chain.outbox.plugin;
 
 import forge.api.chain.outbox;
+import forge.api.core.types;
 import forge.asio.notification;
 import forge.asio.task;
 import forge.chain.api.verified_client_factory;

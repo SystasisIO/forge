@@ -14,6 +14,8 @@ import forge.api.core.binding;
 import forge.api.http.binding;
 import forge.asio.runtime;
 import forge.chain.api.info;
+import forge.chain.api.block;
+import forge.chain.api.state;
 import forge.chain.api.submission;
 import forge.chain.api.transaction;
 import forge.net.http.body;
@@ -41,6 +43,8 @@ struct counter_http_server::impl {
       http::router routes;
       const auto methods = forge::api::core::binding().serve(apis).build();
       routes.mount(forge::api::http::binding().use(methods).bind<api::info>().build());
+      routes.mount(forge::api::http::binding().use(methods).bind<api::block>().build());
+      routes.mount(forge::api::http::binding().use(methods).bind<api::state>().build());
       routes.mount(forge::api::http::binding().use(methods).bind<api::transaction>().build());
       submission.mount(forge::api::http::binding().use(methods).bind<api::submission>().build());
       routes.post_stream("/v1/chain/transactions/submit",

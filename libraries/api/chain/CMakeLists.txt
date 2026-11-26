@@ -1,4 +1,4 @@
-add_library(forge_api_chain STATIC binding.cpp outbox.cpp)
+add_library(forge_api_chain STATIC binding.cpp outbox.cpp read_snapshot.cpp)
 forge_target_modules_at(forge_api_chain api/chain)
 
 target_include_directories(forge_api_chain
@@ -16,3 +16,8 @@ target_link_libraries(forge_api_chain PUBLIC
    forge_db_object
    forge_net_p2p
    PRIVATE forge_exceptions forge_log forge_raw)
+
+
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+   target_compile_options(forge_api_chain PRIVATE -fmodules-reduced-bmi)
+endif()

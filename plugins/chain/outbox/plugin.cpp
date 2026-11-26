@@ -6,6 +6,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <cstddef>
 #include <memory>
@@ -19,7 +20,9 @@ module forge.plugins.chain.outbox.plugin;
 
 import forge.api.chain.outbox;
 import forge.api.chain.runtime;
+import forge.plugins.chain.outbox.setup;
 import forge.api.core.exceptions;
+import forge.api.core.types;
 import forge.asio.exceptions;
 import forge.asio.notification;
 import forge.asio.task;
@@ -80,7 +83,7 @@ boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component
    if (!decoded.ok()) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Invalid chain outbox configuration");
    }
-   if (!_impl->options.verification.finality) {
+   if (!_impl->options.deferred_configuration && !_impl->options.verification.finality) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
                             "Chain outbox requires a finality verifier");
    }
@@ -93,7 +96,11 @@ boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component
 }
 
 boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
-   provider.install<forge::api::chain::runtime>(std::make_shared<api_impl>(_impl));
+   auto service = std::make_shared<api_impl>(_impl);
+   provider.install<forge::api::chain::runtime>(service);
+   if (_impl->options.deferred_configuration) {
+      provider.install<setup>(std::move(service));
+   }
    co_return;
 }
 
@@ -104,20 +111,29 @@ boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& c
 }
 
 boost::asio::awaitable<void> plugin::on_after_initialize() {
-   _impl->resolve_signer();
-   co_await _impl->open(_impl->connect());
+   _impl->initialized = true;
+   if (!_impl->options.verification.finality && _impl->read_profiles.empty()) {
+      co_return;
+   }
+   auto transport = _impl->connect();
+   if (_impl->options.verification.finality) {
+      _impl->resolve_signer();
+      co_await _impl->open(std::move(transport));
+   }
 }
 
 boost::asio::awaitable<void> plugin::on_startup() {
    auto state = _impl;
-   state->worker = state->scheduler->submit(forge::asio::task::awaitable{
-       .name = "chain.outbox",
-       .work = [state](forge::asio::task::context& task) { return state->recover(task); },
-   });
-   if (!state->worker.accepted()) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Chain outbox recovery task was rejected");
+   if (state->queue) {
+      state->worker = state->scheduler->submit(forge::asio::task::awaitable{
+          .name = "chain.outbox",
+          .work = [state](forge::asio::task::context& task) { return state->recover(task); },
+      });
+      if (!state->worker.accepted()) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Chain outbox recovery task was rejected");
+      }
    }
-   state->running = true;
+   state->running = static_cast<bool>(state->read_client);
    co_return;
 }
 

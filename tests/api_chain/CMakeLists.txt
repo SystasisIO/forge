@@ -7,6 +7,8 @@ add_executable(test_forge_api_chain_counter
    counter_staged.cpp
    counter_node.cpp
    counter_delivery.cpp
+   counter_read.cpp
+   ../package_chain_api_component/read_fixture.cpp
    counter_peer.cpp
    ../package_chain_api_component/p2p_runtime.cpp
    ../package_chain_api_component/test_support.cpp)
@@ -16,6 +18,8 @@ target_sources(test_forge_api_chain_counter PRIVATE FILE_SET CXX_MODULES
       counter.cppm
       counter_client.cppm
       counter_http.cppm
+      counter_read.cppm
+      ../package_chain_api_component/read_fixture.cppm
       counter_peer.cppm
       ../package_chain_api_component/p2p_runtime.cppm
       ../package_chain_api_component/test_support.cppm)

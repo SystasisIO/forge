@@ -37,7 +37,7 @@ class info_implementation final : public chain_api::info {
    protocol::info_response response_;
 };
 
-class block_implementation final : public chain_api::block {
+class block_implementation : public chain_api::block {
  public:
    explicit block_implementation(protocol::block_state_response response);
 
@@ -62,7 +62,7 @@ class block_implementation final : public chain_api::block {
    protocol::block_state_response response_;
 };
 
-class state_implementation final : public chain_api::state {
+class state_implementation : public chain_api::state {
  public:
    explicit state_implementation(protocol::table_changes_response response);
 

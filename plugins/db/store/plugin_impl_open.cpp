@@ -118,7 +118,7 @@ boost::asio::awaitable<void> plugin::impl::open() {
          };
          for (auto index = std::size_t{}; index < opening.prerequisites.size(); ++index) {
             const auto& prerequisite = opening.prerequisites[index];
-            if (prerequisite.store.empty() || prerequisite.before.empty() || !prerequisite.check ||
+            if (prerequisite.store.empty() || !prerequisite.check ||
                 prerequisite.before.size() > pending.size()) {
                FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid store opening prerequisite");
             }
