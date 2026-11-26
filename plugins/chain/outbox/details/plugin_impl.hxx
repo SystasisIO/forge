@@ -9,6 +9,7 @@ struct plugin::impl : std::enable_shared_from_this<impl> {
       forge::chain::api::verified_client_options verification;
       std::size_t max_calls;
       std::chrono::milliseconds timeout;
+      bool trust_execution;
       mutable std::size_t active = 0;
    };
 

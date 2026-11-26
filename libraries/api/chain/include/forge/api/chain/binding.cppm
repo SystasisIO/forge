@@ -21,6 +21,11 @@ export import forge.chain.transaction.builder;
 
 export namespace forge::api::chain {
 
+template <typename Value> struct action_request {
+   Value value;
+   ::forge::chain::transaction::builder& transaction;
+};
+
 template <typename Interface> class proxy;
 
 class read_session {

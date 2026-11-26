@@ -24,6 +24,18 @@ export import forge.chain.protocol.audit;
 
 export namespace forge::chain::protocol {
 
+// Invoke the deployed contract's synchronous read-only ABI on a finalized block.
+struct contract_call_request {
+   block_id block;
+   account_name contract;
+   bytes data;
+};
+
+struct contract_call_response {
+   state_anchor anchor;
+   std::optional<bytes> value;
+};
+
 struct account_request : account_selector {
    std::optional<block_id> anchor;
    std::optional<block_id> finality_from;
@@ -310,6 +322,8 @@ BOOST_DESCRIBE_STRUCT(account_response, (audited_response), (account))
 BOOST_DESCRIBE_STRUCT(code_request, (account_selector),
                       (include_wasm, include_abi, known_abi_hash, anchor, finality_from, audit))
 BOOST_DESCRIBE_STRUCT(code_response, (audited_response), (code, wasm, abi))
+BOOST_DESCRIBE_STRUCT(contract_call_request, (), (block, contract, data))
+BOOST_DESCRIBE_STRUCT(contract_call_response, (), (anchor, value))
 BOOST_DESCRIBE_STRUCT(permission_links_request, (account_selector),
                       (code, message_type, limit, cursor, anchor, finality_from, audit))
 BOOST_DESCRIBE_STRUCT(permission_links_response, (audited_response), (links, next))

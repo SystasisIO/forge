@@ -11,7 +11,7 @@ class plugin::api_impl final : public forge::api::chain::runtime, public setup {
                   forge::api::chain::outbox::admission admit) override;
    void configure_read(forge::api::core::api_ref contract, forge::api::chain::destination target,
                        forge::chain::api::verified_client_options verification, std::size_t max_calls,
-                       std::chrono::milliseconds timeout) override;
+                       std::chrono::milliseconds timeout, bool trust_execution) override;
 
    boost::asio::awaitable<forge::chain::protocol::block_id> finalized(forge::api::chain::destination target) override;
 

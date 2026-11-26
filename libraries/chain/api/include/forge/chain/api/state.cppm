@@ -3,6 +3,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <forge/api/core/macros.hpp>
 #include <forge/api/http/macros.hpp>
+#include <forge/exceptions/macros.hpp>
 
 #include <type_traits>
 
@@ -44,6 +45,9 @@ class state
    virtual boost::asio::awaitable<protocol::account_changes_response>
    get_account_changes(protocol::account_changes_request value) = 0;
    virtual boost::asio::awaitable<protocol::code_response> get_code(protocol::code_request value) = 0;
+   virtual boost::asio::awaitable<protocol::contract_call_response> call(protocol::contract_call_request) {
+      FORGE_THROW_EXCEPTION(exceptions::unavailable, "Read-only contract execution is unavailable");
+   }
    virtual boost::asio::awaitable<protocol::permission_links_response>
    get_permission_links(protocol::permission_links_request value) = 0;
    virtual boost::asio::awaitable<protocol::table_rows_response> get_table_rows(protocol::table_rows_request value) = 0;
@@ -68,8 +72,19 @@ export namespace forge::api::core {
 template <> struct method_descriptor_customization<::forge::chain::api::state> {
    template <auto Method, bool EnableRaw>
    static void apply(method_builder<::forge::chain::api::state, EnableRaw>& method) {
-      ::forge::chain::api::exceptions::descriptor::declare_historical_query<Method>(method);
       using request = ::forge::api::core::method_request_t<Method>;
+      if constexpr (std::is_same_v<request, ::forge::chain::protocol::contract_call_request>) {
+         namespace errors = ::forge::chain::api::exceptions;
+         using status = ::forge::api::core::status;
+         errors::descriptor::declare_common(method);
+         errors::descriptor::declare_deadline(method);
+         method.template error<errors::anchor_unavailable>(
+             "anchor_unavailable", {.status_code = status::not_found, .retryable = false});
+         method.template error<errors::history_unavailable>(
+             "history_unavailable", {.status_code = status::failed_precondition, .retryable = false});
+      } else {
+         ::forge::chain::api::exceptions::descriptor::declare_historical_query<Method>(method);
+      }
       if constexpr (std::is_same_v<request, ::forge::chain::protocol::account_request> ||
                     std::is_same_v<request, ::forge::chain::protocol::code_request> ||
                     std::is_same_v<request, ::forge::chain::protocol::permission_links_request>) {
@@ -80,13 +95,15 @@ template <> struct method_descriptor_customization<::forge::chain::api::state> {
 
 } // namespace forge::api::core
 
-FORGE_EXPORT_API(::forge::chain::api::state, FORGE_API_CONTRACT("forge.chain.api.state", 3, 0),
+FORGE_EXPORT_API(::forge::chain::api::state, FORGE_API_CONTRACT("forge.chain.api.state", 3, 1),
                  FORGE_API_METHOD_TYPED(get_account, ::forge::chain::protocol::account_request,
                                         ::forge::chain::protocol::account_response),
                  FORGE_API_METHOD_TYPED(get_account_changes, ::forge::chain::protocol::account_changes_request,
                                         ::forge::chain::protocol::account_changes_response),
                  FORGE_API_METHOD_TYPED(get_code, ::forge::chain::protocol::code_request,
                                         ::forge::chain::protocol::code_response),
+                 FORGE_API_METHOD_TYPED(call, ::forge::chain::protocol::contract_call_request,
+                                        ::forge::chain::protocol::contract_call_response),
                  FORGE_API_METHOD_TYPED(get_permission_links, ::forge::chain::protocol::permission_links_request,
                                         ::forge::chain::protocol::permission_links_response),
                  FORGE_API_METHOD_TYPED(get_table_rows, ::forge::chain::protocol::table_rows_request,
@@ -115,6 +132,7 @@ FORGE_HTTP_API(
                    "/v1/chain/state/codes?id={id}&key={key}&include_wasm={include_wasm}&include_abi={include_abi}"
                    "&known_abi_hash={known_abi_hash}&anchor={anchor}&finality_from={finality_from}&audit={audit}",
                    FORGE_HTTP_CACHE(no_store)),
+    FORGE_HTTP_POST(call, "/v1/chain/state/call", ok, FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_GET(get_permission_links,
                    "/v1/chain/state/permission-links?id={id}&key={key}&code={code}&message_type={message_type}"
                    "&limit={limit}&cursor={cursor}&anchor={anchor}&finality_from={finality_from}&audit={audit}",

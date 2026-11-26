@@ -7,7 +7,7 @@ import sys
 
 def require(text: str, needle: str, source: Path) -> None:
     if needle not in text:
-        raise SystemExit(f"{source}: missing required State API 3.0 surface: {needle}")
+        raise SystemExit(f"{source}: missing required State API 3.1 surface: {needle}")
 
 
 def forbid(text: str, needle: str, source: Path) -> None:
@@ -126,7 +126,9 @@ def main() -> int:
     forbid(table, "table_record", table_path)
     forbid_pattern(table, r"\busing\s+table\s*=", table_path, "table compatibility alias")
 
-    require(state, 'FORGE_API_CONTRACT("forge.chain.api.state", 3, 0)', state_path)
+    require(state, 'FORGE_API_CONTRACT("forge.chain.api.state", 3, 1)', state_path)
+    require(state, "FORGE_API_METHOD_TYPED(call, ::forge::chain::protocol::contract_call_request", state_path)
+    require(state, 'FORGE_HTTP_POST(call, "/v1/chain/state/call"', state_path)
     require(state, "FORGE_API_METHOD_TYPED(get_permission_links", state_path)
     require(state, "FORGE_HTTP_GET(get_permission_links", state_path)
     require(state, "/v1/chain/state/accounts?id={id}&key={key}", state_path)

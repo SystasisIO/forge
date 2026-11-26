@@ -660,6 +660,12 @@ verified_client::get_permission_links(protocol::permission_links_request request
    co_return response;
 }
 
+boost::asio::awaitable<protocol::contract_call_response>
+verified_client::trusted_call(protocol::contract_call_request request) {
+   co_return co_await invoke_service<protocol::contract_call_response>(
+       "state.call", request, limits_, [&] { return client_.state().call(request); });
+}
+
 boost::asio::awaitable<protocol::table_rows_response>
 verified_client::get_table_rows(protocol::table_rows_request request) {
    auto& projections = require_projection(projections_, "state.get_table_rows");

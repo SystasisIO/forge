@@ -58,7 +58,7 @@ void plugin::api_impl::configure(std::string store, forge::chain::api::verified_
 
 void plugin::api_impl::configure_read(forge::api::core::api_ref contract, forge::api::chain::destination target,
                                        forge::chain::api::verified_client_options verification,
-                                       std::size_t max_calls, std::chrono::milliseconds timeout) {
+                                       std::size_t max_calls, std::chrono::milliseconds timeout, bool trust_execution) {
    if (!_state->options.deferred_configuration || _state->initialized || contract.id.value.empty() ||
        verification.chain == forge::chain::protocol::chain_id{} || verification.state_domain.empty() ||
        !verification.finality || !verification.projections || !max_calls ||
@@ -66,7 +66,8 @@ void plugin::api_impl::configure_read(forge::api::core::api_ref contract, forge:
        _state->profile_for(contract)) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Invalid chain read profile");
    }
-   _state->read_profiles.push_back({std::move(contract), std::move(target), std::move(verification), max_calls, timeout});
+   _state->read_profiles.push_back(
+       {std::move(contract), std::move(target), std::move(verification), max_calls, timeout, trust_execution});
 }
 
 forge::api::chain::destination plugin::api_impl::read_target(const forge::api::core::api_ref& contract) const {
@@ -205,10 +206,14 @@ boost::asio::awaitable<void> plugin::api_impl::read(forge::api::chain::destinati
              request.num = std::get<std::uint32_t>(*block);
           }
           const auto header = co_await client.get_header(std::move(request));
+          auto trusted = forge::api::chain::read_snapshot::contract_caller{};
+          if (profile && profile->trust_execution) {
+             trusted = [&](auto call) { return client.trusted_call(std::move(call)); };
+          }
           const auto snapshot = forge::api::chain::read_snapshot{
               *header.context.anchor, forge::chain::protocol::time_point_sec{header.header.timestamp.to_time_point()},
               [&](auto request) { return client.get_table_rows(std::move(request)); },
-              [&](auto request) { return client.get_code(std::move(request)); }};
+              [&](auto request) { return client.get_code(std::move(request)); }, std::move(trusted)};
           co_await handler(snapshot);
        }, profile ? profile->timeout : state->options.delivery.timeout);
 }

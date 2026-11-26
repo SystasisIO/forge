@@ -168,6 +168,8 @@ class verified_client {
    boost::asio::awaitable<protocol::account_changes_response>
    get_account_changes(protocol::account_changes_request request);
    boost::asio::awaitable<protocol::code_response> get_code(protocol::code_request request);
+   // The caller explicitly trusts the configured source for the returned value.
+   boost::asio::awaitable<protocol::contract_call_response> trusted_call(protocol::contract_call_request request);
    boost::asio::awaitable<protocol::permission_links_response>
    get_permission_links(protocol::permission_links_request request);
    boost::asio::awaitable<protocol::table_rows_response> get_table_rows(protocol::table_rows_request request);

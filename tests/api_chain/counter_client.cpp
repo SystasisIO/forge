@@ -13,6 +13,7 @@ import test.api_chain.counter;
 import forge.api.chain.binding;
 import forge.api.core.exceptions;
 import forge.chain.protocol.action;
+import forge.chain.api.exceptions;
 import forge.chain.api.table_key;
 import forge.raw.codec;
 
@@ -89,6 +90,46 @@ boost::asio::awaitable<void> check_read_session(forge::api::core::view apis, for
           if (session.anchor().block != block || (co_await counter->find(session, 1)) != 7 ||
               (co_await counter->find(session, 1)) != 7 || (co_await counter->find(session, 2))) {
              throw std::logic_error("Borrowed counter reads returned inconsistent values");
+          }
+          const auto contract = protocol::account_name{"counter"};
+          const auto data = forge::raw::pack(std::uint64_t{1});
+          auto wrong_anchor = false;
+          const auto execution = forge::api::chain::read_snapshot{
+              session.anchor(), session.time(), {}, {},
+              [&](protocol::contract_call_request request)
+                   -> boost::asio::awaitable<protocol::contract_call_response> {
+                 if (request.block != block || request.contract != contract || request.data != data) {
+                    throw std::logic_error("Contract execution did not receive the pinned request");
+                 }
+                 auto anchor = session.anchor();
+                 if (wrong_anchor) {
+                    ++anchor.block_num;
+                 }
+                 co_return protocol::contract_call_response{anchor, forge::raw::pack(std::uint64_t{7})};
+              }};
+          const auto calculated = co_await execution.call(contract, data);
+          if (!calculated || forge::raw::unpack_exact<std::uint64_t>(*calculated) != 7) {
+             throw std::logic_error("Contract execution changed a valid response");
+          }
+          wrong_anchor = true;
+          auto rejected = false;
+          try {
+             (void)co_await execution.call(contract, data);
+          } catch (const forge::chain::api::exceptions::invalid_finality&) {
+             rejected = true;
+          }
+          if (!rejected) {
+             throw std::logic_error("Contract execution accepted a different state anchor");
+          }
+          const auto read_only = forge::api::chain::read_snapshot{session.anchor(), session.time(), {}, {}};
+          rejected = false;
+          try {
+             (void)co_await read_only.call(contract, data);
+          } catch (const forge::chain::api::exceptions::unavailable&) {
+             rejected = true;
+          }
+          if (!rejected) {
+             throw std::logic_error("Contract execution silently trusted an ordinary read profile");
           }
           try {
              (void)co_await other->find(session, 1);

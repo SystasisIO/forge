@@ -25,7 +25,7 @@ class setup : public forge::api::core::contract<setup> {
 
    virtual void configure_read(forge::api::core::api_ref contract, forge::api::chain::destination target,
                                forge::chain::api::verified_client_options verification, std::size_t max_calls,
-                               std::chrono::milliseconds timeout) = 0;
+                               std::chrono::milliseconds timeout, bool trust_execution = false) = 0;
 };
 
 } // namespace forge::plugins::chain::outbox

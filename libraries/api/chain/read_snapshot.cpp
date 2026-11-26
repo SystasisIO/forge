@@ -19,8 +19,9 @@ namespace protocol = ::forge::chain::protocol;
 read_snapshot::check::check() : _id(std::make_shared<const identity>()) {}
 
 read_snapshot::read_snapshot(protocol::state_anchor anchor, protocol::time_point_sec time,
-                             rows_reader rows, code_reader code)
-    : _anchor(std::move(anchor)), _time(time), _rows(std::move(rows)), _code(std::move(code)) {}
+                             rows_reader rows, code_reader code, contract_caller trusted)
+    : _anchor(std::move(anchor)), _time(time), _rows(std::move(rows)), _code(std::move(code)),
+      _trusted(std::move(trusted)) {}
 
 bool read_snapshot::verified(const check& rule) const noexcept {
    return std::atomic_load_explicit(&_verified, std::memory_order_acquire) == rule._id;
@@ -58,6 +59,20 @@ boost::asio::awaitable<protocol::code_response> read_snapshot::get_code(protocol
    auto result = co_await _code(std::move(request));
    require_anchor(result, _anchor);
    co_return result;
+}
+
+boost::asio::awaitable<std::optional<protocol::bytes>>
+read_snapshot::call(protocol::account_name contract, protocol::bytes data) const {
+   if (!_trusted) {
+      FORGE_THROW_EXCEPTION(::forge::chain::api::exceptions::unavailable,
+                            "This chain read profile does not trust contract execution");
+   }
+   auto result = co_await _trusted({.block = _anchor.block, .contract = contract, .data = std::move(data)});
+   if (result.anchor != _anchor) {
+      FORGE_THROW_EXCEPTION(::forge::chain::api::exceptions::invalid_finality,
+                            "Contract execution returned a different chain state anchor");
+   }
+   co_return std::move(result.value);
 }
 
 } // namespace forge::api::chain

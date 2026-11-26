@@ -3,6 +3,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <functional>
 #include <memory>
+#include <optional>
 
 export module forge.api.chain.read_snapshot;
 
@@ -30,8 +31,11 @@ class read_snapshot {
    using code_reader = std::function<boost::asio::awaitable<::forge::chain::protocol::code_response>(
        ::forge::chain::protocol::code_request)>;
 
+   using contract_caller = std::function<boost::asio::awaitable<::forge::chain::protocol::contract_call_response>(
+       ::forge::chain::protocol::contract_call_request)>;
+
    read_snapshot(::forge::chain::protocol::state_anchor anchor, ::forge::chain::protocol::time_point_sec time,
-                 rows_reader rows, code_reader code);
+                 rows_reader rows, code_reader code, contract_caller trusted = {});
 
    [[nodiscard]] const ::forge::chain::protocol::state_anchor& anchor() const noexcept {
       return _anchor;
@@ -47,6 +51,10 @@ class read_snapshot {
    boost::asio::awaitable<::forge::chain::protocol::code_response>
    get_code(::forge::chain::protocol::code_request request) const;
 
+   // Execute against this snapshot at an explicitly trusted destination.
+   boost::asio::awaitable<std::optional<::forge::chain::protocol::bytes>>
+   call(::forge::chain::protocol::account_name contract, ::forge::chain::protocol::bytes data) const;
+
    read_snapshot(const read_snapshot&) = delete;
    read_snapshot& operator=(const read_snapshot&) = delete;
    read_snapshot(read_snapshot&&) = default;
@@ -56,6 +64,7 @@ class read_snapshot {
    ::forge::chain::protocol::time_point_sec _time;
    rows_reader _rows;
    code_reader _code;
+   contract_caller _trusted;
    mutable std::shared_ptr<const check::identity> _verified;
 };
 
